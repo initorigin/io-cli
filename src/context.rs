@@ -122,6 +122,34 @@ const MEMORY_GLOBAL_HEAD: &str = "[memory: every workspace] Notes kept for every
 /// that follows it names a tool whose constant io-harness may re-spell.
 pub const SKILLS_HEAD: &str = "Skills available to you";
 
+/// The two openers of io-harness's planning directive, either of which ends the
+/// skill catalogue (0.37.0).
+///
+/// **The directive is glued to the last catalogue line with no newline between
+/// them, so a line scan cannot see the boundary.** `compose` builds the prompt as
+/// `with_skill_catalog(..)` and then `out.push_str(&directive)`
+/// (io-harness-0.76.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
+/// last `- name: description` line carrying **no trailing newline**
+/// (src/skills.rs:470-476); and `planning_directive` returns a string beginning
+/// with a space (src/run/gate.rs:282-286). So with a plan gate registered — which
+/// is every contained turn — the final line on the wire reads
+/// `- bundle__skill: description Before you do anything else you must call …`,
+/// still starts with `- `, and a naive scan swallows the whole directive.
+///
+/// The cost of missing this is not only a wrong total. `bundle_cost` charges
+/// catalogue lines to bundles by prefix, so the directive's tokens land on
+/// whichever bundle owns the alphabetically last skill, and that bundle's figure
+/// on `/plugin` moves when the operator toggles `/plan` — for a reason that has
+/// nothing to do with it.
+///
+/// Two constants because the directive's first sentence has two forms and they
+/// share no usable prefix. Both are gated against the pinned `run/gate.rs` by
+/// `tests/context.rs`, for the reason [`SKILLS_HEAD`] is.
+pub const PLAN_DIRECTIVE_HEADS: [&str; 2] = [
+    "If any part of this needs the repository written to",
+    "Before you do anything else you must call",
+];
+
 /// One request, as it went out.
 ///
 /// A copy rather than a borrow, because the request is consumed by the provider
@@ -320,26 +348,58 @@ pub fn bundle_cost(seen: &Request, contract: &TaskContract) -> BTreeMap<String, 
 /// little more rather than saving anything. A reader who is told a tool was
 /// withheld will assume the request got smaller unless told otherwise, and the
 /// assumption is the one the roadmap this release was planned from also made.
-pub fn withhold(mask: &io_harness::ToolMask, said: &crate::commands::Masked) -> (ToolMask, String) {
+/// `offered` is the catalogue the last request actually carried, and it is a
+/// parameter because a name that answers to nothing is a mask that does nothing.
+/// io-harness **keeps** an unknown name rather than rejecting it, deliberately, so
+/// that a mask written against one build stays portable to another with different
+/// cargo features — which means the harness cannot warn and this is the only place
+/// that can. Withholding a misspelling therefore succeeds, silently, and leaves the
+/// tool fully callable: `mask_gate` matches on the exact name.
+///
+/// So the name is still added — refusing it here would break the portability the
+/// harness designed for — and the operator is told it matches nothing on the wire.
+/// The `Allow` arm has always refused to be a silent no-op; this is the same
+/// courtesy on the direction where the cost of not having it is a safety lever the
+/// operator believes is on.
+pub fn withhold(
+    mask: &io_harness::ToolMask,
+    said: &crate::commands::Masked,
+    offered: &[String],
+) -> (ToolMask, String) {
     use crate::commands::Masked;
 
     let mut names: Vec<String> = mask.names().map(str::to_string).collect();
     match said {
         Masked::Withhold(tool) => {
             if names.iter().any(|n| n == tool) {
-                let line = format!("{tool} is already withheld from the next turn");
+                let line = format!("{tool} is already withheld until you allow it again");
                 return (ToolMask::withholding(names), line);
             }
             names.push(tool.clone());
-            // Said in full every time rather than only on the first withhold: the
-            // cost direction is the thing an operator is most likely to have
-            // wrong, and a note that appears once is a note most people never see.
-            let line = format!(
-                "{tool} is withheld from the next turn — the model is still offered it and it \
-                 still costs its definition, and calling it will be refused before anything \
-                 starts. {} withheld now.",
-                names.len()
-            );
+            // **Only when a catalogue is known.** Before the first turn `offered`
+            // is empty, and warning that every name is unrecognised when nothing
+            // has been offered yet would be noise that trains the reader to ignore
+            // the warning that matters.
+            let unknown = !offered.is_empty() && !offered.iter().any(|name| name == tool);
+            let line = if unknown {
+                format!(
+                    "{tool} is withheld, but no tool of that name was in the last request — \
+                     check the spelling against /context, which lists what was offered. \
+                     A mask entry that matches nothing withholds nothing. {} withheld now.",
+                    names.len()
+                )
+            } else {
+                // Said in full every time rather than only on the first withhold:
+                // the cost direction is the thing an operator is most likely to
+                // have wrong, and a note that appears once is a note most people
+                // never see.
+                format!(
+                    "{tool} is withheld until you allow it again — the model is still offered \
+                     it and it still costs its definition, and calling it will be refused \
+                     before anything starts. {} withheld now.",
+                    names.len()
+                )
+            };
             (ToolMask::withholding(names), line)
         }
         Masked::Allow(tool) => {
@@ -381,6 +441,17 @@ pub fn withhold(mask: &io_harness::ToolMask, said: &crate::commands::Masked) -> 
     }
 }
 
+/// The names the last request offered, for [`withhold`] to check a spelling
+/// against.
+///
+/// Empty before any turn has run, which [`withhold`] reads as "no catalogue is
+/// known" rather than as "nothing is offered" — the two must not collapse, or
+/// every name typed at a fresh prompt would be reported as a misspelling.
+pub fn offered(seen: Option<&Request>) -> Vec<String> {
+    seen.map(|request| request.tools.iter().map(|t| t.name.clone()).collect())
+        .unwrap_or_default()
+}
+
 /// What the mask is, drawn for the page.
 ///
 /// Absent entirely when nothing is withheld, because a row saying "nothing is
@@ -391,9 +462,15 @@ pub fn withheld_line(mask: &io_harness::ToolMask, dash: &str) -> Option<String> 
         return None;
     }
     let names: Vec<&str> = mask.names().collect();
+    // **"until you allow it again", never "for the next turn".** io-harness
+    // documents `ToolMask` as a request about one turn, and it is — but io-cli
+    // re-applies this one to every turn until `/context allow`, so the harness's
+    // wording describes the contract's lifetime and would describe the operator's
+    // posture wrongly. A reader told "the next turn" reasonably stops thinking
+    // about it, which is the 0.26.0 `/effort` defect in the opposite direction.
     Some(format!(
-        "withheld: {} {dash} refused for the next turn. The catalogue above is unchanged: \
-         withholding costs one extra sentence and saves nothing.",
+        "withheld: {} {dash} refused until you allow it again. The catalogue above is \
+         unchanged: withholding costs one extra sentence and saves nothing.",
         names.join(", ")
     ))
 }
@@ -419,13 +496,23 @@ fn server_of(tool: &str, contract: &TaskContract) -> String {
         Some(bare) => bare,
         None => return String::new(),
     };
-    for server in &contract.mcp {
-        if bare
-            .strip_prefix(&server.id)
-            .is_some_and(|r| r.starts_with("__"))
-        {
-            return server.id.clone();
-        }
+    // **The LONGEST matching id, not the first.** `contract.mcp` lists the
+    // operator's own `[[mcp]]` entries before the plugin servers `Plugins::apply_to`
+    // appends, and a bare id is validated by nobody — so `github` and
+    // `github__enterprise` can both be configured, and a first-match loop charges
+    // every enterprise tool to `github` while `github__enterprise` reads
+    // "not yet on a request" for the life of the session. The same shape fires when
+    // an operator's bare `docs` collides with a bundle `docs` contributing `search`.
+    if let Some(server) = contract
+        .mcp
+        .iter()
+        .filter(|server| {
+            bare.strip_prefix(&server.id)
+                .is_some_and(|r| r.starts_with("__"))
+        })
+        .max_by_key(|server| server.id.len())
+    {
+        return server.id.clone();
     }
     bare.split_once("__")
         .map(|(server, _)| server.to_string())
@@ -516,7 +603,17 @@ fn skills_in(haystack: &str) -> Option<&str> {
         }
         end += line.len();
     }
-    Some(&haystack[at..end])
+    let block = &haystack[at..end];
+    // And cut the planning directive back off the last line, where io-harness
+    // appended it with no newline. See [`PLAN_DIRECTIVE_HEADS`] — without this the
+    // row over-reports by the directive's length and one bundle is charged for it.
+    let cut = PLAN_DIRECTIVE_HEADS
+        .iter()
+        .filter_map(|head| block.find(head))
+        .min()
+        .map(|at| block[..at].trim_end().len())
+        .unwrap_or(block.len());
+    Some(&block[..cut])
 }
 
 /// The bundle that contributed `server`, or `None` for one the operator declared.

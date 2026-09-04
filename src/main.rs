@@ -5280,9 +5280,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // between a working column and 0.31.0's shape, where every row
                     // the release added was listable and the pipeline behind it had
                     // no caller at all behind a fully green suite.
-                    let view = io_cli::pluginview::view(holdings.loaded()).with_costs(
-                        io_cli::context::bundle_cost(&seen.latest().unwrap_or_default(), &opening),
-                    );
+                    // **Costs attached only when a request has actually gone out.**
+                    // `bundle_cost` lists every loaded bundle, so a `Request::default()`
+                    // stand-in returns a map of real zeroes — and a zero on this
+                    // column says "this bundle is free", which is the one claim that
+                    // stops an operator looking. `/mcp` gets this right for free
+                    // because an unmeasured server is simply absent from its map;
+                    // `/plugin`'s rows are keyed the other way and need the decision
+                    // made here. Without it the two surfaces disagree on the first
+                    // draw of a session, which is exactly what they exist not to do.
+                    let view = io_cli::pluginview::view(holdings.loaded());
+                    let view = match seen.latest() {
+                        Some(request) => {
+                            view.with_costs(io_cli::context::bundle_cost(&request, &opening))
+                        }
+                        None => view,
+                    };
                     // **The same call `/skills` makes, deliberately.** A bundle
                     // whose declared skills directory is absent ends every turn of
                     // the session, and both surfaces have to say so — but saying
@@ -6483,7 +6496,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // The transition and the sentence are both `context::withhold`'s
                     // — nothing under `tests/` links this binary, so a rule written
                     // here could be neither asserted nor sabotaged.
-                    let (next, line) = io_cli::context::withhold(&mask, &said);
+                    // The catalogue the last request carried, so a misspelling is
+                    // caught here — io-harness keeps an unknown name deliberately,
+                    // to keep a mask portable across feature sets, so nothing
+                    // downstream can warn.
+                    let offered = io_cli::context::offered(seen.latest().as_ref());
+                    let (next, line) = io_cli::context::withhold(&mask, &said, &offered);
                     mask = next;
                     app.say(Tone::Muted, line);
                 }
@@ -8015,7 +8033,10 @@ async fn turn<P: Provider>(
                                     // the sentence says so rather than implying the
                                     // running turn was changed.
                                     Action::Context(Some(said)) => {
-                                        let (next, line) = io_cli::context::withhold(mask, &said);
+                                        let offered =
+                                            io_cli::context::offered(seen.latest().as_ref());
+                                        let (next, line) =
+                                            io_cli::context::withhold(mask, &said, &offered);
                                         *mask = next;
                                         app.say(Tone::Muted, line);
                                     }

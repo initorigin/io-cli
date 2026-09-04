@@ -22,8 +22,9 @@ three reach the wire — MCP servers, skills and agents — and four are free: h
 declared binary, and policy layers. A bundle that ships only hooks costs nothing on any request,
 forever, and nothing told you that before.
 
-And `/context withhold <tool>` takes a tool away from the next turn. `/context allow` puts it
-back. This answers a limitation this product already published in its own words: a model that
+And `/context withhold <tool>` takes a tool away and keeps it away until you say otherwise;
+`/context allow <tool>` puts that one back, and bare `/context allow` clears the whole mask.
+This answers a limitation this product already published in its own words: a model that
 reaches for `docx_write` in a session where you never meant a document to be written was stopped
 by the write gate rather than by the absence of the tool. Now it can be stopped by name, before
 anything starts.

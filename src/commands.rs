@@ -152,7 +152,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     // ask the question this answers.
     (
         "/context",
-        "what is in the model's window, read from the request that carried the turn",
+        "what is in the model's window, read from the request that carried the turn, \
+         and withhold or allow a tool by name",
     ),
     (
         "/steer",

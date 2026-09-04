@@ -87,8 +87,11 @@ the absence of the tool — which is what the gate is for, and why the writers a
 named one by one in [Documents](media.md#documents) rather than counted.
 
 **Since 0.37.0 you can stop it earlier, by name.** `/context withhold docx_write`
-refuses that tool for the turn before anything is started, and `/context allow`
-puts it back. Both sentences above stay true: the tool is not taken out of the
+refuses that tool before anything is started, and it stays refused until you say
+otherwise — `/context withhold` is a posture, not a one-shot. `/context allow
+docx_write` puts that one back; **bare `/context allow` clears the whole mask**,
+so name the tool unless dropping every one of them is what you meant. Both
+sentences above stay true: the tool is not taken out of the
 set, the catalogue the model is offered is byte for byte the one it would have
 been offered anyway, and the definition still costs its tokens on every request.
 What a mask changes is what may be *called*.
