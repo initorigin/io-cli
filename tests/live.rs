@@ -4276,3 +4276,86 @@ fn live_an_acp_client_that_denies_a_write_stops_it() {
          not reach the run",
     );
 }
+
+/// **0.38.1 O3 — a gated run that cannot pass ends, and says `6`.**
+///
+/// The defect this proves closed was found by running the released binary, not by
+/// the suite, and it could only be found that way: every offline assertion about
+/// the gate passed while a real `io exec` ran for nine minutes and was killed
+/// without ever printing an exit code. So the evidence has to be a real turn.
+///
+/// **The gate is a command that cannot succeed**, so the run's criterion can
+/// never be met however well the model does the work. What is being measured is
+/// therefore the *bound* rather than the model: before this release io-harness
+/// kept handing the failure back and the agent kept stepping toward
+/// `contract::MAX_STEPS`, a thousand.
+///
+/// Three assertions, and the wall clock is the one that matters. An exit code
+/// alone would have been produced eventually by the old build too — at a
+/// thousand steps, which is what "never ends" means in practice. Bounding the
+/// elapsed time is what distinguishes a run that ended because the gate bound it
+/// from one that ended because the model gave up.
+///
+/// `[run]` carries no budget on purpose: any of `max_steps`, `max_duration_secs`
+/// or `max_tokens` would bound the run by itself and the arm would pass without
+/// `GATED_MAX_STEPS` existing.
+#[test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+fn live_o3_a_gated_run_that_cannot_pass_exits_six() {
+    use std::process::Command;
+
+    let config = tempfile::tempdir().expect("a config directory");
+    let workspace = tempfile::tempdir().expect("a workspace");
+
+    // `false` is on every unix host and exits 1 whatever happens. No `[run]`
+    // section at all — see the doc comment.
+    std::fs::write(
+        config.path().join("io.toml"),
+        format!(
+            "[[provider]]\nkind = \"openrouter\"\nmodel = {:?}\n\n\
+             [policy.defaults]\nread = \"allow\"\nwrite = \"allow\"\n\
+             exec = \"allow\"\nnet = \"deny\"\n\n\
+             [app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n",
+            model()
+        ),
+    )
+    .expect("the configuration is written");
+
+    let began = std::time::Instant::now();
+    let run = Command::new(env!("CARGO_BIN_EXE_io"))
+        .arg("-C")
+        .arg(workspace.path())
+        .arg("exec")
+        .arg("Create gate.txt containing the word ok.")
+        .env("IO_CONFIG", config.path().join("io.toml"))
+        .env("OPENROUTER_API_KEY", key())
+        .output()
+        .expect("the built binary runs");
+    let elapsed = began.elapsed();
+
+    let code = run.status.code();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    println!(
+        "exit {code:?} after {elapsed:?}\n--- stderr ---\n{}",
+        stderr.trim()
+    );
+
+    assert_eq!(
+        code,
+        Some(6),
+        "a run whose criterion cannot pass must report UNVERIFIED; stderr was:\n{stderr}",
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(600),
+        "the run took {elapsed:?}. The field test killed the old build at nine \
+         minutes and it was still going, so an unbounded run is exactly what this \
+         asserts against — an exit code reached at a thousand steps is not the \
+         gate bounding anything",
+    );
+    // The gate is reported rather than silently deciding the exit code. A `6`
+    // with nothing said about why is a CI failure nobody can act on.
+    assert!(
+        stderr.contains("gate"),
+        "stderr must say the gate is what ended this: {stderr}",
+    );
+}

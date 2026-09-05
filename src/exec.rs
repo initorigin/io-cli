@@ -1525,8 +1525,8 @@ impl WithProvider for Resuming {
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.78.0/src/run.rs:1806`, `:2140`, `:3184`). Recovery has
-        // `resume_with_recovery_observed` (`:2602`) and nothing tree-aware, so it
+        // (`io-harness-0.79.0/src/run.rs:1811`, `:2145`, `:3189`). Recovery has
+        // `resume_with_recovery_observed` (`:2607`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree
         // entry points, and resuming through the flat one would drop it.

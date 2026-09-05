@@ -853,9 +853,7 @@ fn the_gate_retry_admits_a_run_that_failed_its_verification() {
 
 /// A configuration naming a command criterion, plus whatever else is given.
 fn gated(extra: &str) -> Config {
-    let text = format!(
-        "[app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n{extra}",
-    );
+    let text = format!("[app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n{extra}");
     Config::from_toml(&text).expect("the fixture parses")
 }
 
@@ -906,15 +904,13 @@ fn f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap() {
     // this run may take, and none of them is this crate's to overrule.
     for (extra, why) in [
         ("[run]\nmax_steps = 500\n", "a step cap they wrote"),
-        (
-            "[run]\nmax_duration_secs = 60\n",
-            "a wall clock they set",
-        ),
+        ("[run]\nmax_duration_secs = 60\n", "a wall clock they set"),
         ("[run]\nmax_tokens = 50000\n", "a spend they set"),
     ] {
         let steps = build(&gated(extra));
         assert_ne!(
-            steps, io_cli::contract::GATED_MAX_STEPS,
+            steps,
+            io_cli::contract::GATED_MAX_STEPS,
             "{why} bounds the run already, so the gated cap must not replace it",
         );
     }
