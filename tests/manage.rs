@@ -1392,3 +1392,71 @@ fn f3_a_mistyped_verb_names_the_verbs_that_surface_takes() {
         );
     }
 }
+
+/// One `io` invocation against a scratch home, returning stdout and stderr.
+///
+/// The home is redirected the way `tests/exec.rs` redirects it, and both
+/// configuration variables are cleared, so the run cannot read this machine's own
+/// `io.toml` and cannot write to it.
+fn io_at(home: &Path, args: &[&str]) -> (String, String) {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .args(args)
+        .env_remove(io_harness::config::CONFIG_VAR)
+        .env_remove(io_harness::config::CONFIG_HOME_VAR);
+    #[cfg(windows)]
+    command
+        .env("USERPROFILE", home)
+        .env("APPDATA", home.join("AppData").join("Roaming"));
+    #[cfg(not(windows))]
+    command.env("HOME", home).env_remove("XDG_CONFIG_HOME");
+
+    let run = command.output().expect("the built binary runs");
+    (
+        String::from_utf8_lossy(&run.stdout).into_owned(),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
+    )
+}
+
+/// **F2 — the shell door writes the value that was typed, through the real argv.**
+///
+/// Driven against the built binary rather than against `manage::parse`, and that
+/// is the point rather than thoroughness for its own sake: nothing under `tests/`
+/// links `src/main.rs`, and this seam has caught something in four consecutive
+/// releases. The 2026-09-05 field test drove exactly these commands at a real
+/// command line and got `"4"` back.
+///
+/// Sabotage: restore the unconditional quote in `configure::source_for`'s `None`
+/// arm and the first two rows fail here as well as in `tests/configure.rs` — the
+/// two are deliberately not the same assertion, because a unit test proves the
+/// function and this proves the binary reaches it.
+#[test]
+fn f2_the_argv_door_writes_the_shape_that_was_typed() {
+    let fixture = tempfile::tempdir().expect("a temporary home");
+    let home = fixture.path();
+
+    for (key, typed, read_back) in [
+        ("app.io-cli.containment.max_total_agents", "4", "4"),
+        ("run.context.max_tokens", "120000", "120000"),
+        ("app.io-cli.plain", "true", "true"),
+        ("app.io-cli.gates.rubric", "be strict", "\"be strict\""),
+    ] {
+        let (_, stderr) = io_at(home, &["config", "set", key, typed, "--scope", "user"]);
+        let (out, _) = io_at(home, &["config", "get", key]);
+        assert!(
+            out.contains(read_back),
+            "`io config set {key} {typed}` then `get` should read back \
+             `{read_back}`, and it read:\n{out}\nthe write said:\n{stderr}",
+        );
+    }
+
+    // The one that is not about typing: a value the file holds as a string must
+    // still come back quoted, or the assertions above would pass over a `get`
+    // that had stopped printing the TOML form at all.
+    let (out, _) = io_at(home, &["config", "get", "app.io-cli.gates.rubric"]);
+    assert!(
+        out.contains('"'),
+        "a string value must still read back quoted, or this test is asserting \
+         nothing about shape:\n{out}",
+    );
+}

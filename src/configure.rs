@@ -326,12 +326,214 @@ pub fn exec_mode_label(mode: io_harness::ExecMode) -> String {
     }
 }
 
+/// The TOML source for `words`, checked against what the key admits.
+///
+/// **One speller, and both doors call it (0.38.1).** io-harness owns what a
+/// setting *means*; [`kind_of`] answers only how a value is obtained, and this
+/// turns a typed word into the source that expresses it. It lived in
+/// `crate::manage` while `io config set` was the only door that spelled anything
+/// — the session's `/config` handed `crate::main`'s `write_where` the operator's
+/// raw text as TOML source with no speller at all. So the same key typed the same
+/// way got two answers, and the 2026-09-05 field test found both of them:
+/// `app.io-cli.containment.max_total_agents 4` was written `"4"` by the shell
+/// door and `4` by the session, and `policy.defaults.net allow` was refused by
+/// the session because `allow` is not a TOML value.
+///
+/// **A key the catalogue does not name is no longer quoted unconditionally, and
+/// that arm was the whole defect.** It quoted every unknown key's value, so every
+/// number under `[app.io-cli.containment]` and `[run.context]` — sections
+/// `kind_of` has never named — reached the file as a string, io-harness refused
+/// to deserialize the section, and the session ran on defaults behind one warning
+/// line. Reading the shape off the word the operator typed is not io-cli
+/// inventing a schema: `4` typed at a command line means the number four in every
+/// language a person has used before this one, and `configure::write`'s round
+/// trip still refuses and rolls back a value io-harness will not read back, in
+/// io-harness's own words. A refusal at write time is strictly better than a
+/// silently wrong file.
+pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
+    let kind = kind_of(key);
+    if matches!(kind, Some(Kind::Machine)) {
+        return Err(format!(
+            "`{key}` is written by io itself rather than typed — it dates the price table, and a \
+             date set by hand is a claim about a fetch that never happened; `/config` offers the \
+             refresh that writes it"
+        ));
+    }
+    // The one key whose value is a list (`app.io-cli.gates.command`), so the
+    // remaining words are the value rather than a mistake. A scalar written there
+    // is a value io-harness cannot read back.
+    if matches!(kind, Some(Kind::List)) {
+        if words.is_empty() {
+            return Err(format!(
+                "`{key}` is a command and its arguments, so it needs at least one word, as in \
+                 `config set {key} cargo test`"
+            ));
+        }
+        let items: Vec<&str> = words.iter().map(String::as_str).collect();
+        return Ok(crate::edit::array(&items));
+    }
+
+    let word = match words {
+        [word] => word.as_str(),
+        [] => {
+            return Err(format!(
+                "`config set {key}` has no value after it; {}",
+                offered(key, kind.as_ref())
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "`{key}` takes one value and {} words were given ({}); quote a value that \
+                 contains a space",
+                words.len(),
+                words.join(" ")
+            ))
+        }
+    };
+
+    match kind {
+        Some(Kind::Flag) => match word {
+            "true" | "false" => Ok(word.to_string()),
+            other => Err(format!(
+                "`{other}` is not a value `{key}` takes; it is on or off, written `true` or \
+                 `false`"
+            )),
+        },
+        Some(Kind::Choice(options)) => {
+            if options.iter().any(|option| option == word) {
+                Ok(crate::servers::quoted(word))
+            } else {
+                Err(format!(
+                    "`{word}` is not a value `{key}` takes; the options are {}",
+                    options
+                        .iter()
+                        .map(|option| format!("`{option}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
+        Some(Kind::Number { signed }) => {
+            let number: i64 = word.parse().map_err(|_| {
+                format!("`{word}` is not a whole number, and `{key}` counts in whole numbers")
+            })?;
+            if !signed && number < 0 {
+                return Err(format!(
+                    "`{key}` counts something and cannot be negative; `{word}` was not written"
+                ));
+            }
+            // Re-rendered from the parsed number rather than passed through, so
+            // that a form TOML would reject (`+5`, a leading zero run) becomes
+            // the value it meant instead of a refused write.
+            Ok(number.to_string())
+        }
+        // A model name, a path and free text are strings in the file, and all
+        // three are escaped rather than wrapped in quotes by hand.
+        Some(Kind::Model | Kind::File | Kind::Text) => Ok(crate::servers::quoted(word)),
+        // A key the catalogue does not name. Its shape is read off the word.
+        None => Ok(inferred(word)),
+        // Both are answered above, before a single word was demanded, so this arm
+        // is unreachable — and it is written as a refusal rather than left to a
+        // wildcard or a `panic!`. A wildcard would swallow a `Kind` variant a
+        // later release adds and write it as a string; a panic would end the
+        // process on something an operator typed. `Kind` is io-cli's own enum, so
+        // the exhaustive match is a compile-time gate this crate can keep.
+        Some(Kind::List | Kind::Machine) => Err(format!(
+            "`{key}` was read as two different kinds in one parse, which is a defect in io \
+             rather than in what you typed; nothing was written"
+        )),
+    }
+}
+
+/// The TOML source for a word under a key no catalogue entry names.
+///
+/// **Four shapes, in the order TOML itself resolves them, and a string last.**
+/// A bare `true`/`false` is a boolean, an integer literal is an integer, a float
+/// literal is a float, and everything else is a quoted string — which is what
+/// every unknown key got unconditionally before 0.38.1.
+///
+/// The integer is re-rendered from the parsed value for the reason
+/// [`Kind::Number`] is above: `+5` and `007` are shapes a person types and TOML
+/// rejects, and writing back what the number *meant* is better than writing a
+/// line io-harness cannot read. The float is passed through instead, because
+/// re-rendering an `f64` changes `1.10` to `1.1` and `1e3` to `1000` — a
+/// round-trip that alters the operator's own text without being asked to.
+///
+/// **`inf` and `nan` are strings here, deliberately.** They are valid TOML floats
+/// and `f64::from_str` accepts both, so admitting them would mean a key whose
+/// value is the word `nan` — a plausible model name, a plausible label — silently
+/// becoming a float. No `[app.io-cli]` or io-harness key takes a non-finite
+/// number, so the finite check costs nothing real and stops the one shape where
+/// inference would surprise.
+fn inferred(word: &str) -> String {
+    if matches!(word, "true" | "false") {
+        return word.to_string();
+    }
+    if let Ok(number) = word.parse::<i64>() {
+        return number.to_string();
+    }
+    if word.parse::<f64>().is_ok_and(f64::is_finite) {
+        return word.to_string();
+    }
+    crate::servers::quoted(word)
+}
+
+/// The words a composer line's value half is made of.
+///
+/// **The composer is not a shell, and this is the whole of the difference
+/// (0.38.1).** `io config set k a b` arrives at [`source_for`] as three argv
+/// words with the shell's own quoting already applied; `/config k a b` arrives as
+/// one string, because the composer does no splitting and there is no shell
+/// behind it to do any. Handing that string to `source_for` whole would make
+/// every multi-word value a single word containing spaces, which is right for a
+/// rubric and wrong for `app.io-cli.gates.command`.
+///
+/// So: one surrounding pair of double quotes is stripped and the inside is one
+/// word — the operator quoted it precisely to say "this is one value" and there
+/// was no shell to honour that — and anything else splits on whitespace, which is
+/// what a shell would have done.
+#[must_use]
+pub fn composer_words(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        return vec![trimmed[1..trimmed.len() - 1].to_string()];
+    }
+    trimmed
+        .split_whitespace()
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
+/// What to say a key admits, for the refusal that has no value to name.
+fn offered(key: &str, kind: Option<&Kind>) -> String {
+    match kind {
+        Some(Kind::Flag) => "it is on or off, written `true` or `false`".to_string(),
+        Some(Kind::Choice(options)) => format!(
+            "the options are {}",
+            options
+                .iter()
+                .map(|option| format!("`{option}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Some(Kind::Number { .. }) => "it takes a whole number".to_string(),
+        _ => format!("`config get {key}` shows what it is set to now"),
+    }
+}
+
 /// The kind of a catalogue key, or `None` for a key no catalogue entry names.
 ///
 /// `None` is not a gap to fill in: [`settings`] deliberately lists keys an
-/// operator wrote which this catalogue does not know about, and a kind guessed for
-/// one of those would be io-cli inventing a schema. Such a key stays readable and
-/// is edited as text.
+/// operator wrote which this catalogue does not know about, and a kind invented
+/// for one of those would be io-cli deciding a schema it does not own. Such a key
+/// stays readable and is edited as text.
+///
+/// **What [`source_for`] does with a `None` is a narrower question and it is not
+/// this one (0.38.1).** It reads the *scalar shape* off the word the operator
+/// typed — `4` is an integer, `true` is a boolean, everything else is a string —
+/// which decides how the value is spelled in the file and says nothing about what
+/// the key means or what values it admits. Those two remain io-harness's, and its
+/// own round trip is still what refuses a value it cannot read back.
 #[must_use]
 pub fn kind_of(key: &str) -> Option<Kind> {
     Some(match key {

@@ -1816,3 +1816,116 @@ fn f9_the_profile_list_sees_every_scope_and_not_only_the_last() {
          rather than merely narrow",
     );
 }
+
+/// One word, as it would be typed.
+fn words(value: &str) -> Vec<String> {
+    vec![value.to_string()]
+}
+
+/// **F1 — a key the catalogue does not name is typed from the word, not quoted.**
+///
+/// The 2026-09-05 field test's finding 3 and finding 28, at the one line that
+/// caused both: `kind_of` answers `None` for every key under
+/// `[app.io-cli.containment]` and `[run.context]`, and the `None` arm quoted its
+/// word unconditionally. So `max_total_agents 4` reached the file as `"4"`,
+/// io-harness refused to deserialize the section, and the session ran on defaults
+/// behind a single warning line — a feature switched off in silence, which is the
+/// worst shape a defect can have in a product whose claim is honesty.
+///
+/// Sabotage: restore `None => Ok(crate::servers::quoted(word))` in `source_for`
+/// and the first two rows fail.
+#[test]
+fn f1_an_unknown_key_takes_the_shape_of_the_word_that_was_typed() {
+    for (key, typed, written) in [
+        // The two the field test found, by name.
+        ("app.io-cli.containment.max_total_agents", "4", "4"),
+        ("run.context.max_tokens", "120000", "120000"),
+        // The other three shapes, so the inference is asserted as a whole rather
+        // than at the one number that prompted it.
+        ("app.io-cli.containment.detached", "true", "true"),
+        ("app.io-cli.containment.detached", "false", "false"),
+        ("some.unknown.ratio", "1.5", "1.5"),
+        // Not a number, not a boolean: still a string, exactly as before.
+        ("some.unknown.label", "steady", "\"steady\""),
+        // A negative is a number too. Only `Kind::Number { signed: false }`
+        // refuses one, and that is a rule about a key the catalogue *does* name.
+        ("some.unknown.offset", "-3", "-3"),
+    ] {
+        assert_eq!(
+            configure::source_for(key, &words(typed)).as_deref(),
+            Ok(written),
+            "`{key} {typed}` should be written as `{written}`",
+        );
+    }
+
+    // **A form TOML rejects becomes the value it meant**, the same rule the
+    // catalogue's own number kind already keeps, and for the same reason: writing
+    // `+5` produces a line io-harness cannot read back.
+    assert_eq!(
+        configure::source_for("some.unknown.count", &words("+5")).as_deref(),
+        Ok("5"),
+    );
+
+    // **`inf` and `nan` are strings, deliberately.** Both are valid TOML floats
+    // and `f64::from_str` takes both, so admitting them would turn a key whose
+    // value is the word `nan` into a float nobody asked for.
+    for word in ["inf", "nan", "-inf", "NaN"] {
+        assert_eq!(
+            configure::source_for("some.unknown.label", &words(word)).as_deref(),
+            Ok(format!("\"{word}\"").as_str()),
+            "`{word}` is a word an operator typed, not a non-finite float",
+        );
+    }
+
+    // And a key the catalogue DOES name is untouched by any of it: the shape
+    // still comes from the kind, which is what stops this inference from becoming
+    // a second opinion about a schema io-harness owns.
+    assert_eq!(
+        configure::source_for("sandbox.mode", &words("read-only")).as_deref(),
+        Ok("\"read-only\""),
+    );
+    assert!(
+        configure::source_for("run.max_steps", &words("lots")).is_err(),
+        "a catalogue key still refuses a value its kind does not admit",
+    );
+}
+
+/// **F1 — the composer is not a shell, and that is the only difference between
+/// the two doors.**
+///
+/// `io config set k a b` arrives as three argv words the shell has already split
+/// and unquoted. `/config k a b` arrives as one string, because nothing has split
+/// or unquoted anything. So the composer's half needs the splitting a shell would
+/// have done — and needs to honour a quoted value, since the operator typed those
+/// quotes precisely to say "this is one value" and there was no shell to act on
+/// it.
+///
+/// Sabotage: return `vec![raw.to_string()]` and the multi-word row fails; drop
+/// the quote-stripping branch and the quoted row fails.
+#[test]
+fn f1_the_composer_splits_a_value_the_way_a_shell_would_have() {
+    assert_eq!(configure::composer_words("4"), vec!["4".to_string()]);
+    assert_eq!(
+        configure::composer_words("  cargo test  "),
+        vec!["cargo".to_string(), "test".to_string()],
+    );
+    assert_eq!(
+        configure::composer_words("\"all green\""),
+        vec!["all green".to_string()],
+        "the quotes are the operator saying this is one value, and no shell ate them",
+    );
+    assert!(configure::composer_words("   ").is_empty());
+
+    // The two doors agreeing is the whole criterion, so it is asserted directly
+    // rather than left to follow from the two halves above.
+    for typed in ["4", "true", "steady"] {
+        assert_eq!(
+            configure::source_for("app.io-cli.containment.max_total_agents", &words(typed)),
+            configure::source_for(
+                "app.io-cli.containment.max_total_agents",
+                &configure::composer_words(typed),
+            ),
+            "the shell door and the session door must spell `{typed}` the same way",
+        );
+    }
+}

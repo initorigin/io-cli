@@ -79,7 +79,6 @@ use std::path::{Path, PathBuf};
 use io_harness::config::Scope;
 use io_harness::{McpServer, McpTransport};
 
-use crate::configure::Kind;
 use crate::edit::Edit;
 
 /// One sentence an operator typed, on whichever surface they typed it.
@@ -235,8 +234,9 @@ pub enum ConfigVerb {
     /// One key's value and what decided it.
     Get { key: String },
     /// Write one key. `value` is TOML source, already checked against the key's
-    /// [`Kind`]: a choice arrives quoted, a number and a flag bare, so that what
-    /// is written is a value io-harness reads back as the one that was typed.
+    /// [`crate::configure::Kind`]: a choice arrives quoted, a number and a flag
+    /// bare, so that what is written is a value io-harness reads back as the one
+    /// that was typed.
     Set {
         key: String,
         value: String,
@@ -1608,120 +1608,15 @@ fn config_set(args: &Args) -> Result<Request, String> {
 
 /// The TOML source for `words`, checked against what the key admits.
 ///
-/// **The kind decides the shape and never the meaning.** io-harness owns what a
-/// setting does; [`crate::configure::kind_of`] answers only how a value is
-/// obtained, and this turns a typed word into the source that expresses it. A key
-/// the catalogue does not name is written as a string and left to
-/// `configure::write`'s round trip, which is io-harness reading its own file back
-/// — inventing a kind for it here would be io-cli deciding a schema it does not
-/// own.
+/// **The body moved to [`crate::configure::source_for`] in 0.38.1, and the move
+/// is the fix rather than a tidy-up.** It lived here while `io config set` was
+/// the only door that spelled a value. The session's `/config` never reached it:
+/// `Action::Config` carried the operator's raw text straight to `write_where` as
+/// TOML source, so `4` landed as the integer `4` there and as the string `"4"`
+/// here, and `allow` landed as a bare word TOML cannot parse at all. Two doors,
+/// two spellings, neither of them right — and the module that owns the catalogue
+/// is the one that should own the spelling. This name is kept because it is what
+/// this module's own parse reads well as.
 fn config_value(key: &str, words: &[String]) -> Result<String, String> {
-    let kind = crate::configure::kind_of(key);
-    if matches!(kind, Some(Kind::Machine)) {
-        return Err(format!(
-            "`{key}` is written by io itself rather than typed — it dates the price table, and a \
-             date set by hand is a claim about a fetch that never happened; `/config` offers the \
-             refresh that writes it"
-        ));
-    }
-    // The one key whose value is a list (`app.io-cli.gates.command`), so the
-    // remaining words are the value rather than a mistake. A scalar written there
-    // is a value io-harness cannot read back.
-    if matches!(kind, Some(Kind::List)) {
-        if words.is_empty() {
-            return Err(format!(
-                "`{key}` is a command and its arguments, so it needs at least one word, as in \
-                 `config set {key} cargo test`"
-            ));
-        }
-        let items: Vec<&str> = words.iter().map(String::as_str).collect();
-        return Ok(crate::edit::array(&items));
-    }
-
-    let word = match words {
-        [word] => word.as_str(),
-        [] => {
-            return Err(format!(
-                "`config set {key}` has no value after it; {}",
-                offered(key, kind.as_ref())
-            ))
-        }
-        _ => {
-            return Err(format!(
-                "`{key}` takes one value and {} words were given ({}); quote a value that \
-                 contains a space",
-                words.len(),
-                words.join(" ")
-            ))
-        }
-    };
-
-    match kind {
-        Some(Kind::Flag) => match word {
-            "true" | "false" => Ok(word.to_string()),
-            other => Err(format!(
-                "`{other}` is not a value `{key}` takes; it is on or off, written `true` or \
-                 `false`"
-            )),
-        },
-        Some(Kind::Choice(options)) => {
-            if options.iter().any(|option| option == word) {
-                Ok(crate::servers::quoted(word))
-            } else {
-                Err(format!(
-                    "`{word}` is not a value `{key}` takes; the options are {}",
-                    options
-                        .iter()
-                        .map(|option| format!("`{option}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }
-        }
-        Some(Kind::Number { signed }) => {
-            let number: i64 = word.parse().map_err(|_| {
-                format!("`{word}` is not a whole number, and `{key}` counts in whole numbers")
-            })?;
-            if !signed && number < 0 {
-                return Err(format!(
-                    "`{key}` counts something and cannot be negative; `{word}` was not written"
-                ));
-            }
-            // Re-rendered from the parsed number rather than passed through, so
-            // that a form TOML would reject (`+5`, a leading zero run) becomes
-            // the value it meant instead of a refused write.
-            Ok(number.to_string())
-        }
-        // A model name, a path, free text, and a key no catalogue entry names.
-        // All four are strings in the file, and all four are escaped rather than
-        // wrapped in quotes by hand.
-        Some(Kind::Model | Kind::File | Kind::Text) | None => Ok(crate::servers::quoted(word)),
-        // Both are answered above, before a single word was demanded, so this arm
-        // is unreachable — and it is written as a refusal rather than left to a
-        // wildcard or a `panic!`. A wildcard would swallow a `Kind` variant a
-        // later release adds and write it as a string; a panic would end the
-        // process on something an operator typed. `Kind` is io-cli's own enum, so
-        // the exhaustive match is a compile-time gate this crate can keep.
-        Some(Kind::List | Kind::Machine) => Err(format!(
-            "`{key}` was read as two different kinds in one parse, which is a defect in io \
-             rather than in what you typed; nothing was written"
-        )),
-    }
-}
-
-/// What to say a key admits, for the refusal that has no value to name.
-fn offered(key: &str, kind: Option<&Kind>) -> String {
-    match kind {
-        Some(Kind::Flag) => "it is on or off, written `true` or `false`".to_string(),
-        Some(Kind::Choice(options)) => format!(
-            "the options are {}",
-            options
-                .iter()
-                .map(|option| format!("`{option}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Some(Kind::Number { .. }) => "it takes a whole number".to_string(),
-        _ => format!("`config get {key}` shows what it is set to now"),
-    }
+    crate::configure::source_for(key, words)
 }
