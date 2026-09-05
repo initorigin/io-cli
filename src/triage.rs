@@ -41,7 +41,7 @@ pub enum Disposition {
     Silent,
 }
 
-/// Every kind io-harness 0.76 declares, in its own declaration order.
+/// Every kind io-harness 0.79 declares, in its own declaration order.
 ///
 /// The order is the enum's rather than alphabetical so that this table can be
 /// read down the side of `observe.rs` when the pin moves.
@@ -296,6 +296,32 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         Disposition::Line,
         "the dial line, carrying the host as the command asked for it, the port, and whether the \
          policy permitted it",
+    ),
+    // **0.79.0 — a kind this crate cannot receive, dispositioned anyway.**
+    // `EventKind::Program` is declared unconditionally in `observe.rs`, but every
+    // site that emits it is behind io-harness's `codeact` feature, which this
+    // crate does not enable. So the row exists because the table is total over
+    // what the harness *declares*, and the disposition is the one a run would
+    // get if the feature were ever turned on.
+    //
+    // Silent rather than a line, and the discovery half is why: the event is
+    // emitted once before the first step saying `available` or `withheld`, and
+    // once per program afterwards. A capability's availability is a fact about
+    // the run's configuration rather than about the conversation, and the acts a
+    // program takes are not on this event at all — each one re-enters dispatch
+    // and arrives as its own `tool_call`, which the transcript already draws. A
+    // line here would announce that a program ran and then say nothing about
+    // what it did.
+    //
+    // **Revisit when this crate enables `codeact`.** A program a turn wrote is
+    // the largest thing a model can do in one step, and the roadmap says it
+    // belongs in the transcript as source. That is a release, not a row.
+    (
+        "program",
+        Disposition::Silent,
+        "`io exec --json`, which forwards it verbatim, and the durable trace; no run this crate \
+         drives emits it, because every emitting site is behind io-harness's `codeact` feature and \
+         this crate does not enable it",
     ),
     (
         "finished",

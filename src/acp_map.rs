@@ -305,6 +305,18 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
         Update::None,
         "reaching the provider is below the conversation",
     ),
+    // 0.79.0. Declared unconditionally by `observe.rs` and emitted only behind
+    // io-harness's `codeact` feature, which this crate does not enable — so the
+    // row is here because the table is total over what the harness declares, and
+    // it decides what an editor would be told if the feature were ever on.
+    (
+        "program",
+        Update::None,
+        "the acts a program took are not on this event — each re-enters dispatch \
+         and arrives as its own `tool_call`, which is already translated; \
+         announcing the program itself would put a tool call in the editor that \
+         has no `call_id` and never completes",
+    ),
     (
         "finished",
         Update::None,
@@ -396,6 +408,11 @@ pub const TOOL_KINDS: &[(&str, &str)] = &[
     ("git_branch", "execute"),
     ("git_worktree", "execute"),
     ("spawn_agent", "execute"),
+    // 0.79.0, and `execute` is the only honest kind: it runs a program the model
+    // wrote, under the run's own exec mode. Declared unconditionally by
+    // `tools/mod.rs`, so this row is needed whether or not this crate enables
+    // io-harness's `codeact` feature — which today it does not.
+    ("run_program", "execute"),
     // Fetches — the browser reaches something outside the workspace.
     ("browser_navigate", "fetch"),
     ("browser_screenshot", "fetch"),

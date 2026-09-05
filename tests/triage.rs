@@ -70,14 +70,27 @@ fn the_table_names_every_kind_the_locked_harness_declares() {
         "these names are no longer io-harness event kinds: {gone:?}",
     );
 
-    // And the count last, which now catches only what the two sets above cannot:
-    // a harness that declared the same names twice, or a parser that stopped
-    // reading the enum and handed back a shorter list that happens to be a subset.
+    // And the degenerate-parse check last, which catches what the two sets above
+    // cannot: a harness that declared the same name twice, or a parser that read
+    // one line twice. A subset is already caught — a parser that handed back
+    // fewer names than the enum has puts every missing one in `gone`.
+    //
+    // **This was a literal `53` until 0.38.1, and the literal was the defect.**
+    // io-harness 0.79.0 added `Program` without declaring a break, so the count
+    // moved to 54 and this assertion failed with a number rather than with the
+    // name of the new kind — the least useful half of this test failing in place
+    // of the most useful one, which is the very thing the comment above says the
+    // ordering exists to prevent. Raising it to 54 would have repaired a count
+    // gate by raising its count, which weakens the gate to accommodate the change
+    // that fired it. The property the number was standing in for is
+    // *no duplicates*, and that is what is asserted now.
+    let unique: std::collections::BTreeSet<&String> = declared.iter().collect();
     assert_eq!(
+        unique.len(),
         declared.len(),
-        53,
-        "the locked io-harness declares fifty-three event kinds; found {}",
+        "the parser read {} names but only {} are distinct, so a kind was counted twice",
         declared.len(),
+        unique.len(),
     );
 }
 
@@ -150,7 +163,17 @@ fn the_table_has_no_duplicate_and_every_row_records_a_route() {
             "{name} has no route recorded, so nobody can check whether its fact reaches anyone",
         );
     }
-    assert_eq!(seen.len(), 53);
+    // Derived from the locked harness rather than written as a literal (0.38.1).
+    // A row count is only ever interesting as "one per kind the harness
+    // declares", and a literal states that indirectly and goes stale on every
+    // pin that adds a variant.
+    assert_eq!(
+        seen.len(),
+        support::harness_event_kinds().len(),
+        "the table has {} rows for {} declared kinds",
+        seen.len(),
+        support::harness_event_kinds().len(),
+    );
 }
 
 /// A `Line` kind with no arm behind it is the old defect wearing the new table's
@@ -468,9 +491,17 @@ fn the_dispositions_are_the_three_the_contract_names() {
         .iter()
         .filter(|(_, d, _)| *d == Disposition::Silent)
         .count();
+    // Against the table's own length rather than a literal (0.38.1). What this
+    // asserts is that the three dispositions **partition** the table — every row
+    // is exactly one of them, none is missed by all three — and a literal states
+    // that only for the length the table happened to have on the day it was
+    // written. `the_table_has_no_duplicate_and_every_row_records_a_route` is what
+    // ties `TRIAGE.len()` to the locked harness, so the two together still say
+    // "one of three, for every kind io-harness declares" without either one going
+    // stale on a pin.
     assert_eq!(
         lines + status + silent,
-        53,
+        TRIAGE.len(),
         "every kind is exactly one of the three: {lines} lines, {status} status, {silent} silent",
     );
     // The release's own claim, and the reason it exists: most kinds are not
