@@ -1837,13 +1837,16 @@ fn words(value: &str) -> Vec<String> {
 #[test]
 fn f1_an_unknown_key_takes_the_shape_of_the_word_that_was_typed() {
     for (key, typed, written) in [
-        // The two the field test found, by name.
+        // The two the field test found, by name. The first is now a `CATALOGUE`
+        // key — `[app.io-cli.containment]` is this crate's own schema and belongs
+        // there — and the second is io-harness's, so it reaches the inference.
         ("app.io-cli.containment.max_total_agents", "4", "4"),
+        ("app.io-cli.containment.max_depth", "3", "3"),
         ("run.context.max_tokens", "120000", "120000"),
-        // The other three shapes, so the inference is asserted as a whole rather
-        // than at the one number that prompted it.
-        ("app.io-cli.containment.detached", "true", "true"),
-        ("app.io-cli.containment.detached", "false", "false"),
+        // The other shapes, so the inference is asserted as a whole rather than
+        // at the one number that prompted it.
+        ("some.unknown.flag", "true", "true"),
+        ("some.unknown.flag", "false", "false"),
         ("some.unknown.ratio", "1.5", "1.5"),
         // Not a number, not a boolean: still a string, exactly as before.
         ("some.unknown.label", "steady", "\"steady\""),
@@ -1874,6 +1877,26 @@ fn f1_an_unknown_key_takes_the_shape_of_the_word_that_was_typed() {
             configure::source_for("some.unknown.label", &words(word)).as_deref(),
             Ok(format!("\"{word}\"").as_str()),
             "`{word}` is a word an operator typed, not a non-finite float",
+        );
+    }
+
+    // **The boundary the adversarial review put here: inference stops at
+    // `[app.io-cli]`.** Everywhere else, a wrong guess is refused and rolled back
+    // by `configure::write`'s round trip through io-harness. io-harness does not
+    // type io-cli's own section at all — which is how `max_total_agents = "4"`
+    // shipped — so a wrong guess there fails at the next session start behind one
+    // warning line instead. `app.io-cli.keys.accept` is the concrete case: a
+    // one-character binding is legitimate, the map is `BTreeMap<String, String>`,
+    // and a bare `1` would take the whole section down.
+    //
+    // Sabotage: drop the `key.starts_with(APP_PREFIX)` arm from `source_for` and
+    // both rows below fail.
+    for typed in ["1", "true"] {
+        assert_eq!(
+            configure::source_for("app.io-cli.keys.accept", &words(typed)).as_deref(),
+            Ok(format!("\"{typed}\"").as_str()),
+            "an `app.io-cli.*` key the catalogue does not name is written as a \
+             string, because nothing validates that section on the way back",
         );
     }
 

@@ -326,6 +326,14 @@ pub fn exec_mode_label(mode: io_harness::ExecMode) -> String {
     }
 }
 
+/// The dotted prefix of io-cli's own configuration section.
+///
+/// Built from [`crate::settings::APP_KEY`] rather than spelled, so the two cannot
+/// drift: that constant is what `Config::app` is asked for, and this is the same
+/// name as it appears in a dotted key. See [`source_for`]'s `None` arms for why
+/// the distinction between this section and io-harness's carries weight.
+pub const APP_PREFIX: &str = "app.io-cli.";
+
 /// The TOML source for `words`, checked against what the key admits.
 ///
 /// **One speller, and both doors call it (0.38.1).** io-harness owns what a
@@ -364,9 +372,15 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
     // is a value io-harness cannot read back.
     if matches!(kind, Some(Kind::List)) {
         if words.is_empty() {
+            // **No command word in the sentence, because two doors reach it
+            // (0.38.1).** These refusals were written when `io config set` was
+            // the only caller and named it outright; the session's `/config` now
+            // reaches the same function, and an operator who typed a slash
+            // command was being told to run a shell one. Naming the value
+            // instead of the invocation is true on both surfaces and shorter.
             return Err(format!(
-                "`{key}` is a command and its arguments, so it needs at least one word, as in \
-                 `config set {key} cargo test`"
+                "`{key}` is a command and its arguments, so it needs at least one word — the \
+                 program first, as in `cargo test`"
             ));
         }
         let items: Vec<&str> = words.iter().map(String::as_str).collect();
@@ -377,7 +391,7 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
         [word] => word.as_str(),
         [] => {
             return Err(format!(
-                "`config set {key}` has no value after it; {}",
+                "`{key}` has no value after it; {}",
                 offered(key, kind.as_ref())
             ))
         }
@@ -430,7 +444,28 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
         // A model name, a path and free text are strings in the file, and all
         // three are escaped rather than wrapped in quotes by hand.
         Some(Kind::Model | Kind::File | Kind::Text) => Ok(crate::servers::quoted(word)),
-        // A key the catalogue does not name. Its shape is read off the word.
+        // A key the catalogue does not name. Its shape is read off the word —
+        // **except under `[app.io-cli]`, where it is quoted as it always was.**
+        //
+        // The asymmetry is not timidity, it is where the round trip reaches.
+        // `configure::write` re-discovers through io-harness, so a wrong shape
+        // written to one of *its* sections is refused and rolled back in its own
+        // words at the moment of writing. io-harness does not type `[app.io-cli]`
+        // at all — it reads the table as an opaque value and hands it over — so
+        // this crate's `CliSettings` is what fails, at the next session start,
+        // behind a single warning line. That is precisely how
+        // `max_total_agents = "4"` reached a file and switched fan-out off in
+        // silence, and inferring into the same section would buy the same failure
+        // with the types reversed: `app.io-cli.keys.accept 1` is a legitimate
+        // single-character binding whose map is `BTreeMap<String, String>`, and a
+        // bare `1` there takes the whole section down with it.
+        //
+        // So io-cli's own section is typed by io-cli's own catalogue, above, and
+        // a key it does not name is left as a string. Adding a key to
+        // `[app.io-cli]` therefore means adding it to `CATALOGUE` and `kind_of`,
+        // which is a smaller obligation than it looks: this crate defines that
+        // schema, so it is the one place that can.
+        None if key.starts_with(APP_PREFIX) => Ok(crate::servers::quoted(word)),
         None => Ok(inferred(word)),
         // Both are answered above, before a single word was demanded, so this arm
         // is unreachable — and it is written as a refusal rather than left to a
@@ -495,8 +530,24 @@ fn inferred(word: &str) -> String {
 #[must_use]
 pub fn composer_words(raw: &str) -> Vec<String> {
     let trimmed = raw.trim();
-    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
-        return vec![trimmed[1..trimmed.len() - 1].to_string()];
+    // **One pair, and nothing quoted inside it.** `"cargo" "test"` also starts
+    // and ends with a quote, and stripping the outer pair would hand back the
+    // single word `cargo" "test` — a one-element command naming a binary that
+    // does not exist, which TOML accepts, `Vec<String>` accepts and the round
+    // trip accepts. A wrong value written silently is worse than a refusal, and
+    // worse than the whitespace split this now falls through to. Found by the
+    // adversarial review before the merge.
+    //
+    // The interior check is on the slice *between* the outer quotes, so a value
+    // that legitimately contains an escaped quote is unaffected, and `""` is
+    // still one empty word.
+    let inner = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'));
+    if let Some(inner) = inner {
+        if !inner.contains('"') {
+            return vec![inner.to_string()];
+        }
     }
     trimmed
         .split_whitespace()
@@ -517,7 +568,9 @@ fn offered(key: &str, kind: Option<&Kind>) -> String {
                 .join(", ")
         ),
         Some(Kind::Number { .. }) => "it takes a whole number".to_string(),
-        _ => format!("`config get {key}` shows what it is set to now"),
+        // Named without a command word for the same reason as the two refusals
+        // above: both doors reach this sentence.
+        _ => format!("reading `{key}` shows what it is set to now"),
     }
 }
 
@@ -568,7 +621,22 @@ pub fn kind_of(key: &str) -> Option<Kind> {
         | "app.io-cli.spawn_background_after_secs"
         | "app.io-cli.gates.retries"
         | "app.io-cli.routing.escalate_after.failures"
-        | "app.io-cli.routing.downshift_under.bytes" => Kind::Number { signed: false },
+        | "app.io-cli.routing.downshift_under.bytes"
+        // **`[app.io-cli.containment]`, named here in 0.38.1 rather than left to
+        // inference.** These are `io_harness::Containment`'s own fields and the
+        // section is io-cli's, so the catalogue is where they belong — and it is
+        // the only place they can be typed *safely*. Nothing validates
+        // `[app.io-cli]` on the way back: io-harness reads it as an opaque value
+        // and this crate's `CliSettings` is what fails, at the next session
+        // start, behind one warning line. That is exactly how
+        // `max_total_agents = "4"` shipped in the first place, and it means
+        // `configure::write`'s round trip is not a safety net for this section
+        // the way it is for io-harness's own.
+        | "app.io-cli.containment.max_total_agents"
+        | "app.io-cli.containment.max_concurrent_agents"
+        | "app.io-cli.containment.max_depth"
+        | "app.io-cli.containment.max_total_tokens"
+        | "app.io-cli.containment.max_total_cost" => Kind::Number { signed: false },
         "app.io-cli.gates.reviewer"
         | "app.io-cli.routing.escalate_after.model"
         | "app.io-cli.routing.downshift_under.model" => Kind::Model,

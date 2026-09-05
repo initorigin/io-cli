@@ -1443,20 +1443,25 @@ fn f2_the_argv_door_writes_the_shape_that_was_typed() {
     ] {
         let (_, stderr) = io_at(home, &["config", "set", key, typed, "--scope", "user"]);
         let (out, _) = io_at(home, &["config", "get", key]);
-        assert!(
-            out.contains(read_back),
-            "`io config set {key} {typed}` then `get` should read back \
-             `{read_back}`, and it read:\n{out}\nthe write said:\n{stderr}",
+
+        // **The value column, compared by equality — `contains` could not fail
+        // on the defect this test names, and the adversarial review caught it
+        // before the merge.** `config get` prints the raw TOML slice, so a
+        // regression writes `"4"` and `contains("4")` is still true: the only
+        // binary-level gate on this release's headline fix was passing over the
+        // very sabotage its doc comment described. The column is tab-separated
+        // (`key\tvalue\torigin`), so the value is taken by position.
+        let value = out
+            .lines()
+            .find(|line| line.starts_with(key))
+            .and_then(|line| line.split('\t').nth(1))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("`config get {key}` printed no row:\n{out}"));
+        assert_eq!(
+            value, read_back,
+            "`io config set {key} {typed}` then `get` should read back exactly \
+             `{read_back}`; a quoted number here is the defect this release \
+             exists to remove. The write said:\n{stderr}",
         );
     }
-
-    // The one that is not about typing: a value the file holds as a string must
-    // still come back quoted, or the assertions above would pass over a `get`
-    // that had stopped printing the TOML form at all.
-    let (out, _) = io_at(home, &["config", "get", "app.io-cli.gates.rubric"]);
-    assert!(
-        out.contains('"'),
-        "a string value must still read back quoted, or this test is asserting \
-         nothing about shape:\n{out}",
-    );
 }

@@ -877,12 +877,16 @@ fn gated(extra: &str) -> Config {
 #[test]
 fn f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap() {
     let workspace = PathBuf::from(".");
+    // **Through `contract::configured`, not a bare `TaskContract`.** `gated_bound`
+    // reads `contract.verify` — the criterion that will actually run — rather
+    // than re-deriving one from the configuration, so a fixture that skipped the
+    // builder would arrive with `Verification::None` and the cap would never
+    // apply. The first draft of this test did exactly that and would have passed
+    // over the feature being absent.
     let build = |config: &Config| {
-        let contract = config.apply_to(
-            io_harness::TaskContract::workspace("goal", workspace.clone())
-                .with_max_steps(io_cli::contract::MAX_STEPS),
-        );
-        io_cli::contract::gated_bound(config, contract).max_steps
+        let contract =
+            io_cli::contract::configured("goal", workspace.clone(), config, &config.plugins());
+        io_cli::contract::gated_bound(contract).max_steps
     };
 
     assert_eq!(
@@ -914,6 +918,29 @@ fn f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap() {
             "{why} bounds the run already, so the gated cap must not replace it",
         );
     }
+
+    // **The one colliding value, asserted so it is a chosen cost.** `[run]
+    // max_steps = 1000` is the documented default written down, and
+    // `Config::apply_to` sets the field unconditionally — so it is
+    // indistinguishable from the floor `configured` applied, and the gated run
+    // takes forty. io-harness's `run` section is private, so nothing here can ask
+    // whether the key was present; this row exists so that the behaviour is
+    // recorded rather than discovered. Any other number, `1001` included, is
+    // honoured as written — which the row below proves, so this is a collision at
+    // exactly one value and not a rule.
+    assert_eq!(
+        build(&gated(&format!(
+            "[run]\nmax_steps = {}\n",
+            io_cli::contract::MAX_STEPS
+        ))),
+        io_cli::contract::GATED_MAX_STEPS,
+        "writing the default explicitly is indistinguishable from not writing it",
+    );
+    assert_eq!(
+        build(&gated("[run]\nmax_steps = 1001\n")),
+        1001,
+        "and one step either side of the collision is honoured as written",
+    );
 }
 
 /// **F3 — a gate that cannot be read refuses the headless run.**

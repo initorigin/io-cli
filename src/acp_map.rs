@@ -300,15 +300,12 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
         Update::None,
         "as `sandbox` — the boundary is io-cli's status line",
     ),
-    (
-        "dialed",
-        Update::None,
-        "reaching the provider is below the conversation",
-    ),
-    // 0.79.0. Declared unconditionally by `observe.rs` and emitted only behind
-    // io-harness's `codeact` feature, which this crate does not enable — so the
-    // row is here because the table is total over what the harness declares, and
-    // it decides what an editor would be told if the feature were ever on.
+    // 0.79.0, and placed where `EventKind` declares it — between `contained` and
+    // `dialed` — because this table's ordering rule is that it can be read down
+    // the side of `observe.rs` when the pin moves. Declared unconditionally by
+    // the harness and emitted only behind its `codeact` feature, which this crate
+    // does not enable, so the row is here because the table is total over what
+    // the harness declares.
     (
         "program",
         Update::None,
@@ -316,6 +313,11 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
          and arrives as its own `tool_call`, which is already translated; \
          announcing the program itself would put a tool call in the editor that \
          has no `call_id` and never completes",
+    ),
+    (
+        "dialed",
+        Update::None,
+        "reaching the provider is below the conversation",
     ),
     (
         "finished",
