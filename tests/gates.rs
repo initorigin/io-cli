@@ -846,3 +846,124 @@ fn the_gate_retry_admits_a_run_that_failed_its_verification() {
          firing for exactly the run it exists to retry",
     );
 }
+
+// ---------------------------------------------------------------------------
+// F3 — a gated headless run is bounded
+// ---------------------------------------------------------------------------
+
+/// A configuration naming a command criterion, plus whatever else is given.
+fn gated(extra: &str) -> Config {
+    let text = format!(
+        "[app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n{extra}",
+    );
+    Config::from_toml(&text).expect("the fixture parses")
+}
+
+/// **F3 — a gate takes away every bound `MAX_STEPS` is safe because of.**
+///
+/// `contract::MAX_STEPS` is a thousand, and its own documentation argues that is
+/// safe because three other bounds exist: the harness stops an agent that stalls,
+/// `[run]`'s budgets stop one that spends, and `Ctrl+C` stops one an operator has
+/// seen enough of. Configure a criterion that cannot pass and run it headless and
+/// all three are gone at once — io-harness evaluates the criterion after every
+/// step and hands the failure back, which is a reason to keep going; a run with no
+/// budget is measured against nothing; and there is no operator. The 2026-09-05
+/// field test killed such a run at nine minutes with no exit code.
+///
+/// The four rows are the whole decision: bound it when nothing else does, and
+/// leave it alone in every case where something already does.
+///
+/// Sabotage: return `contract` unconditionally from `contract::gated_bound` and
+/// the first row fails; drop either budget from the `budgeted` test and the row
+/// naming it fails.
+#[test]
+fn f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap() {
+    let workspace = PathBuf::from(".");
+    let build = |config: &Config| {
+        let contract = config.apply_to(
+            io_harness::TaskContract::workspace("goal", workspace.clone())
+                .with_max_steps(io_cli::contract::MAX_STEPS),
+        );
+        io_cli::contract::gated_bound(config, contract).max_steps
+    };
+
+    assert_eq!(
+        build(&gated("")),
+        io_cli::contract::GATED_MAX_STEPS,
+        "a gated run the operator gave no budget is what walks to a thousand steps",
+    );
+
+    // Ungated: untouched, because the three fallbacks the constant rests on are
+    // all still there. This is the row that stops the bound leaking onto every
+    // headless run.
+    assert_eq!(
+        build(&plain()),
+        io_cli::contract::MAX_STEPS,
+        "a run with no criterion is not gated and keeps the floor",
+    );
+
+    // Three budgets, one row each. Any of them is the operator saying how long
+    // this run may take, and none of them is this crate's to overrule.
+    for (extra, why) in [
+        ("[run]\nmax_steps = 500\n", "a step cap they wrote"),
+        (
+            "[run]\nmax_duration_secs = 60\n",
+            "a wall clock they set",
+        ),
+        ("[run]\nmax_tokens = 50000\n", "a spend they set"),
+    ] {
+        let steps = build(&gated(extra));
+        assert_ne!(
+            steps, io_cli::contract::GATED_MAX_STEPS,
+            "{why} bounds the run already, so the gated cap must not replace it",
+        );
+    }
+}
+
+/// **F3 — a gate that cannot be read refuses the headless run.**
+///
+/// `[app.io-cli]` has no `deny_unknown_fields`, but it is still one section: a
+/// single mistyped value anywhere in it fails the whole `Config::app` call, and
+/// `settings::stored` then answers `None` for every key including the gate. The
+/// field test produced exactly that with `io config set` writing
+/// `max_total_agents = "4"`. A session prints the notice to somebody looking at
+/// it; `io exec` never called `stored` at all, so the run proceeded with no
+/// criterion and exit `0` — a verification the operator configured, silently not
+/// applied, on the surface whose whole purpose is to be trusted unattended.
+///
+/// The three rows are the three answers, and the middle one is the one a naive
+/// implementation gets wrong: a broken section that names no gate is not a
+/// refusal, because nothing about verification was asked for.
+///
+/// Sabotage: return `None` unconditionally and the first row fails; drop the
+/// `is_ok` early return and the third row fails.
+#[test]
+fn f3_a_gate_inside_a_section_that_will_not_parse_refuses_the_run() {
+    let broken_and_gated = Config::from_toml(
+        "[app.io-cli]\nplain = \"yes\"\n\n[app.io-cli.gates]\ncommand = [\"false\"]\n",
+    )
+    .expect("the file itself is valid TOML; it is the section that will not type");
+    let refusal = io_cli::settings::ungated_by_a_broken_section(&broken_and_gated)
+        .expect("a gate inside a section that will not parse is refused");
+    assert!(
+        refusal.contains("no criterion is in force"),
+        "the refusal must say what is not happening rather than only that something \
+         failed to parse: {refusal}",
+    );
+
+    // Broken, but nothing about a gate was asked for. Refusing here would stop
+    // runs over a key that has nothing to do with verification.
+    assert!(
+        io_cli::settings::ungated_by_a_broken_section(
+            &Config::from_toml("[app.io-cli]\nplain = \"yes\"\n").expect("valid TOML"),
+        )
+        .is_none(),
+        "a section that will not parse and names no gate is not a gate defect",
+    );
+
+    // And a section that parses is never refused, however the gate is set.
+    assert!(
+        io_cli::settings::ungated_by_a_broken_section(&gated("")).is_none(),
+        "a readable gate is in force and must not be refused",
+    );
+}

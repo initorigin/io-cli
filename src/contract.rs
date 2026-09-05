@@ -110,6 +110,56 @@ impl Capabilities {
 /// any of those, and it was standing in for all three.
 pub const MAX_STEPS: u32 = 1_000;
 
+/// The cap a **gated headless** run takes instead, when nothing else bounds it.
+///
+/// **A gate falsifies every one of the three fallbacks [`MAX_STEPS`] rests on,
+/// and the 2026-09-05 field test is what proved it.** The paragraph above argues
+/// that a thousand is safe because it is not the only bound in the system: the
+/// harness stops an agent that stalls, `[run]`'s budgets stop one that spends,
+/// and `Ctrl+C` stops one an operator has seen enough of. Configure a criterion
+/// that cannot pass, run it under `io exec`, and all three are gone at once. The
+/// harness does not stop a stalled agent — it evaluates the criterion after every
+/// step and hands the failure back, which is precisely a reason to keep going. A
+/// run with no `[run]` budget spends nothing it is measured against. And headless
+/// has no operator to press anything.
+///
+/// So the run walks to a thousand steps. The field test killed it at nine minutes
+/// with no stdout at all, and exit `6` — which `docs/CONTRACT.md` publishes as
+/// `UNVERIFIED` for a CI job to branch on — was never delivered. `exec::code`
+/// computes it correctly; the run simply never ended.
+///
+/// **Forty is a chosen number and it is named as one.** A gate exists to be
+/// retried against, so the cap has to leave room for several write-then-check
+/// cycles — io-harness's own twelve does not, which is the whole reason
+/// [`MAX_STEPS`] exists — while still ending a hopeless run in the minutes an
+/// unattended job can afford rather than the hours it had. It applies **only**
+/// where nothing else bounds the run: any `[run] max_steps`, `max_duration_secs`
+/// or `max_tokens` the operator wrote is a bound they chose, and it wins.
+pub const GATED_MAX_STEPS: u32 = 40;
+
+/// The step cap for a headless run, given whether it is gated and what it budgets.
+///
+/// Separate from [`configured`] because it is `io exec`'s alone: a session
+/// applies the gate turn by turn, with `gates::may_retry` deciding whether to
+/// send the agent back and an operator watching either way. Nothing headless has
+/// either of those, which is why the bound has to be a property of the contract
+/// there and need not be here.
+///
+/// **The test for "the operator set no step cap" is that the floor survived.**
+/// `configured` calls `with_max_steps(MAX_STEPS)` *before* `Config::apply_to`, so
+/// a `[run] max_steps` in the file has already overwritten it by the time this
+/// runs — the same reading `crate::status` takes of the same field, rather than a
+/// second question put to the configuration.
+#[must_use]
+pub fn gated_bound(config: &Config, contract: TaskContract) -> TaskContract {
+    let ungated = criterion_of(config).is_none();
+    let budgeted = contract.max_duration.is_some() || contract.max_tokens.is_some();
+    if ungated || budgeted || contract.max_steps != MAX_STEPS {
+        return contract;
+    }
+    contract.with_max_steps(GATED_MAX_STEPS)
+}
+
 /// What io-cli tells the agent about itself, appended to io-harness's own.
 ///
 /// **Every turn before 0.13.0 ran `SystemPrompt::Builtin`**, which the harness

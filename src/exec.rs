@@ -691,6 +691,13 @@ pub fn contract(
         config,
         resolved.loaded(),
     );
+    // **The gated bound, and it is here rather than in `configured` because it
+    // is this door's alone (0.38.1).** A session applies a gate turn by turn,
+    // with `gates::may_retry` deciding whether to send the agent back and an
+    // operator watching either way; headless has neither, so the bound has to
+    // ride the contract. See `contract::gated_bound` for why a gate takes away
+    // every fallback `contract::MAX_STEPS` is safe because of.
+    let contract = crate::contract::gated_bound(config, contract);
     // The flag last, so it beats the file, and applied with `with_exec_mode`
     // rather than by replacing the whole `SandboxConfig` — the limits the file
     // set are the operator's and are not this flag's to discard.
@@ -792,6 +799,21 @@ pub async fn main(
     // Before a store is opened, a session is created or a provider is built, so
     // a refused posture costs nothing and leaves no run behind.
     let posture = args.policy.map(posture_for).transpose()?;
+
+    // **Before the run, because the point is that the run does not happen
+    // (0.38.1).** A `[app.io-cli]` section that will not parse takes the gate
+    // down with it, and until this release `io exec` never called
+    // `settings::stored` at all — so a configured criterion was silently not
+    // applied and the run reported success without verifying anything. A session
+    // prints the notice to somebody who is looking at it; this door refuses.
+    if let Some(refusal) = settings::ungated_by_a_broken_section(&config) {
+        return Err(refusal);
+    }
+    // A section that broke without naming a gate is still worth a line here, for
+    // the same reason: the notice existed and headless never printed it.
+    if let (_, Some(notice)) = settings::stored(&config) {
+        eprintln!("io: {notice}");
+    }
 
     // And before those too: a template that does not resolve is a goal that does
     // not exist, and a run started on one would spend a provider call to say so.
