@@ -3226,3 +3226,108 @@ fn f7_a_withheld_call_is_one_refused_cell_that_names_the_mask() {
          describes a call that ran and changed nothing: {whole:?}"
     );
 }
+
+/// **F8 — a thought is drawn above the answer it produced, not under it.**
+///
+/// The arm flushed the buffered prose first and pushed its footer after, which is
+/// right only if the event arrives before the tokens it explains. It does not:
+/// the 2026-09-05 field test found `thought · 2.3s` under the final reply, and
+/// the same order in the JSON stream — the `reasoning` event follows the `token`
+/// it produced. A reader met the answer and then a note saying the model had been
+/// thinking, which reads as a thought *about* the answer rather than the thinking
+/// that reached it.
+///
+/// The fixture is the broken order on purpose: tokens first, then the reasoning.
+/// Asserting the fixed order against the *already correct* order would pass
+/// before the change as well as after, which is the shape that proves nothing.
+///
+/// Sabotage: put `flush_text` back at the top of the arm and this fails.
+#[test]
+fn f8_a_thought_is_committed_above_the_prose_it_produced() {
+    let mut events = Events::new(DARK);
+    started_at(&mut events, Duration::from_secs(1));
+
+    // The provider streamed the answer, and only then said it had reasoned.
+    let _ = events.event(
+        &event(EventKind::Token {
+            text: "the parser is the only caller".into(),
+        }),
+        Duration::from_millis(3_000),
+    );
+    let committed = rows(events.event(
+        &event(thought("checking the callers", 120)),
+        Duration::from_millis(3_500),
+    ));
+
+    let thought_at = committed
+        .iter()
+        .position(|row| row.contains("thought"))
+        .unwrap_or_else(|| panic!("the thought row is committed: {committed:?}"));
+    let answer_at = committed
+        .iter()
+        .position(|row| row.contains("only caller"))
+        .unwrap_or_else(|| panic!("the buffered answer is committed with it: {committed:?}"));
+    assert!(
+        thought_at < answer_at,
+        "the thought must be drawn above the answer it produced: {committed:?}",
+    );
+}
+
+/// **F8 — a spawned child's outcome is words, not a struct literal.**
+///
+/// io-harness formats it with `{outcome:?}`, so the sentence handed to this crate
+/// is literally `spawned child 149: Success { steps: 1 }` and the fleet result
+/// line drew it verbatim — a Rust struct in the one row meant to tell an operator
+/// what their children did.
+///
+/// Asserted over the punctuation rather than over one expected string, and over
+/// several `RunOutcome` shapes rather than one, because the point is that no
+/// `Debug` survives — including a variant a later pin adds, which is precisely
+/// what a table of the eighteen would miss.
+///
+/// Sabotage: drop the `said_plainly` rebinding in the `Step` arm and every row
+/// with a brace in it fails.
+#[test]
+fn f8_a_spawned_childs_outcome_is_drawn_as_words() {
+    for debug in [
+        "Success { steps: 1 }",
+        "VerificationFailed { steps: 9 }",
+        "SchemaUnsatisfied { steps: 3 }",
+        "Interrupted",
+    ] {
+        let mut events = Events::new(DARK);
+        started_at(&mut events, Duration::from_secs(1));
+        let whole = rendered(
+            &mut events,
+            EventKind::Step {
+                decision: format!("spawned child 149: {debug}"),
+                tool_call: "spawn_agent:{}".into(),
+                tokens: 8_800,
+                changed: true,
+            },
+        );
+
+        assert!(
+            !whole.contains('{') && !whole.contains('}'),
+            "a struct body reached the transcript for `{debug}`: {whole}",
+        );
+        // And the facts survived the rewriting — this is a rendering of
+        // io-harness's own sentence, so losing the child or its step count would
+        // be worse than the punctuation it removes.
+        assert!(
+            whole.contains("spawned child 149"),
+            "the child is still named for `{debug}`: {whole}",
+        );
+        if debug.contains("steps") {
+            let steps = debug
+                .split("steps: ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .expect("the fixture states a step count");
+            assert!(
+                whole.contains(&format!("steps {steps}")),
+                "the step count is still reported for `{debug}`: {whole}",
+            );
+        }
+    }
+}

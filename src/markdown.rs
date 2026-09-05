@@ -46,17 +46,27 @@ impl Markdown {
         let indent = &text[..text.len() - trimmed.len()];
 
         // A fence opens and closes on its own line, and the line itself is not
-        // content. Drawn as the muted rule it is rather than dropped, so a reader
-        // can see where the code begins and ends.
+        // content — so it draws a blank row, which is where the code begins and
+        // ends.
+        //
+        // **The language tag used to be drawn on that row and it read as content
+        // (0.38.1).** An opening ```` ```python ```` committed the bare word
+        // `python`, muted, on the line above the code. The intent was to show a
+        // reader where the block starts; what a reader saw was a one-word
+        // paragraph, indistinguishable from the model having written the word
+        // `python` on its own line — which is what the 2026-09-05 field test
+        // reported it as. Muting is not a distinction at that width: a short
+        // muted line and a short prose line are the same shape.
+        //
+        // Dropped rather than decorated, because the boundary was never carried
+        // by the word. Everything inside the fence is drawn `Tone::Literal` and
+        // everything outside it is not, so where the code begins and ends is
+        // already on the screen in the only way that survives a narrow terminal,
+        // `--plain`, and `NO_COLOR`. The language is notation about the block and
+        // the reader is looking at the block.
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             self.fenced = !self.fenced;
-            let language = trimmed.trim_start_matches(['`', '~']).trim();
-            let rule = if self.fenced && !language.is_empty() {
-                format!("{indent}{language}")
-            } else {
-                String::new()
-            };
-            return Line::from(Span::styled(rule, theme.style(Tone::Muted)));
+            return Line::from(Span::styled(String::new(), theme.style(Tone::Muted)));
         }
         if self.fenced {
             return Line::from(Span::styled(text.to_string(), theme.style(Tone::Literal)));

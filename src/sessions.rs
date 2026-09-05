@@ -222,15 +222,31 @@ pub fn resume(store: &Store, id: i64) -> Result<io_harness::Session, io_harness:
     io_harness::Session::reopen(store, id)
 }
 
-/// The store's own timestamp, cut to the minute.
+/// The store's own timestamp, cut to the minute and **marked as UTC**.
 ///
 /// A stored string sliced, never a clock read and never a relative age. *Two
 /// minutes ago* would need the current time, and `src/main.rs` is the only module
 /// in this crate allowed to ask for it — a rule `tests/timing.rs` enforces and
 /// which a resume picker is the most tempting thing yet shipped to break.
+///
+/// **The marker, and why it is a marker rather than local time (0.38.1).** The
+/// store writes UTC and this drew it bare, so the 2026-09-05 field test read
+/// `03:21` at twenty to nine in the morning and had no way to know the two were
+/// the same instant — an unmarked timestamp is worse than no timestamp, because a
+/// reader believes it.
+///
+/// Local time was the friendlier answer and it is not available here. Converting
+/// needs the current offset, which needs a clock this module may not read and a
+/// timezone database this crate has no dependency for — and adding one would take
+/// the direct dependency set past the ten names `tests/dependencies.rs` holds it
+/// to, for a rendering. So the fact is stated instead of being converted, which
+/// is the same trade this file already makes by refusing to say *two minutes
+/// ago*.
+pub const ZONE: &str = " UTC";
+
 fn stamp(created_at: &str) -> String {
     let cut: String = created_at.chars().take(16).collect();
-    cut.replace('T', " ")
+    format!("{}{ZONE}", cut.replace('T', " "))
 }
 
 /// The mark a session's row carries, or `None` for one that finished.

@@ -503,3 +503,69 @@ fn the_origin_word_is_the_variable_the_harness_reads() {
         io_harness::config::CONFIG_HOME_VAR
     );
 }
+
+/// **F8 — the home line is drawn when this run did something, and not otherwise.**
+///
+/// It was last and unconditional, on the reasoning that a run which moved nothing
+/// is the product answering "where does it live" without being asked. What the
+/// 2026-09-05 field test found is that almost every run moves nothing — the
+/// migration happens once, ever — so `io keeps its files in …` printed above the
+/// output of every `io config get`, every `io mcp list`, every invocation in a
+/// shell loop. Answering an unasked question once is a courtesy; answering it
+/// every time is noise on a surface a script reads.
+///
+/// The four rows are the whole rule. The last is the one that matters: an adopted
+/// home with nothing to report says **nothing at all**, not a shorter something.
+///
+/// Sabotage: drop the condition in `Report::lines` and the last row fails; drop
+/// `created` from it and the first row fails.
+#[test]
+fn f8_the_home_line_is_drawn_only_when_this_run_created_or_moved_something() {
+    let home = PathBuf::from("/tmp/io-cli-home");
+    let report = |created: bool, moved: bool| home::Report {
+        home: home.clone(),
+        moved: if moved {
+            vec![(PathBuf::from("/old/io.toml"), home.join("io.toml"))]
+        } else {
+            Vec::new()
+        },
+        kept: Vec::new(),
+        blocked: None,
+        created,
+    };
+    let says_home =
+        |r: &home::Report| r.lines().iter().any(|line| line.contains("keeps its files in"));
+
+    assert!(
+        says_home(&report(true, false)),
+        "the run that made the home is the one invocation that should say where it is",
+    );
+    assert!(
+        says_home(&report(false, true)),
+        "a file moved is a migration, and a migration names the destination",
+    );
+    assert!(
+        says_home(&report(true, true)),
+        "created and moved is still one report",
+    );
+    assert!(
+        !says_home(&report(false, false)),
+        "an ordinary run moves nothing and made nothing, and printing the home \
+         there is the noise on every invocation this criterion exists to remove",
+    );
+    assert!(
+        report(false, false).lines().is_empty(),
+        "and it says nothing at all rather than something shorter",
+    );
+
+    // The kept case is a migration too — a file left behind is something the
+    // operator has to know about, and the home is where the one in force lives.
+    let kept = home::Report {
+        home: home.clone(),
+        moved: Vec::new(),
+        kept: vec![(PathBuf::from("/old/io.toml"), home.join("io.toml"))],
+        blocked: None,
+        created: false,
+    };
+    assert!(says_home(&kept));
+}

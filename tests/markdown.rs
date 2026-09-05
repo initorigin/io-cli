@@ -168,3 +168,45 @@ fn a_rule_is_drawn_in_the_glyph_sets_own_character() {
     assert!(text(line).starts_with("──"), "{:?}", text(line));
     assert!(!text(line).contains('-'), "{:?}", text(line));
 }
+
+/// **F8 — a fence's language tag is not drawn as a line of its own.**
+///
+/// An opening ```` ```python ```` committed the bare word `python`, muted, on the
+/// row above the code. Muting is not a distinction at that width — a short muted
+/// line and a short prose line are the same shape — so what the 2026-09-05 field
+/// test saw was the model apparently writing the word `python` on its own line
+/// above a code block.
+///
+/// The boundary the tag was supposed to mark is carried by `Tone::Literal`, which
+/// is on every row inside the fence and no row outside it, and which survives a
+/// narrow terminal, `--plain` and `NO_COLOR` in a way a word does not. Both halves
+/// are asserted here, because dropping the tag is only right if the styling is
+/// genuinely doing the work.
+///
+/// Sabotage: restore the `format!("{indent}{language}")` arm and the first
+/// assertion fails.
+#[test]
+fn f8_a_fence_draws_no_bare_language_line() {
+    let mut md = Markdown::default();
+    let opened = md.line("```python", &DARK);
+    assert!(
+        text(&opened).trim().is_empty(),
+        "the language tag was drawn as a line of its own: {:?}",
+        text(&opened),
+    );
+
+    // The block itself is literal, which is the boundary that replaced the word.
+    let inside = md.line("print('hi')", &DARK);
+    assert_eq!(text(&inside), "print('hi')");
+    assert!(
+        inside.spans.iter().any(|span| span.style != DARK.style(io_cli::theme::Tone::Normal)),
+        "code inside a fence must not be styled as ordinary prose, or nothing \
+         marks where the block is",
+    );
+
+    // Closing returns to prose, so the fence state still tracks.
+    let closed = md.line("```", &DARK);
+    assert!(text(&closed).trim().is_empty());
+    let after = md.line("back to prose", &DARK);
+    assert_eq!(text(&after), "back to prose");
+}

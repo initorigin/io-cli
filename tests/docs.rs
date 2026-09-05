@@ -2582,3 +2582,662 @@ fn n3_no_shipped_page_claims_a_mask_reduces_what_a_turn_costs() {
         bad.join("\n"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// 0.38.1 F10 — the front page and the contract page reach the five releases of
+// work that happened after them.
+//
+// The README was 240 lines that predated 0.34.0. ACP — two releases of work and
+// this crate's whole answer to an editor — was named once, in a row of the guides
+// table. The tool mask, the schema contract and `RunOutcome::SchemaUnsatisfied`
+// were named zero times, and the last of those is an exit a scripted caller
+// branches on. Nothing failed, because nothing asked.
+//
+// These four gates are the asking. Each one is bound to something the page cannot
+// edit: a constant, a parse, an outcome's own mapping, or a file on disk. A page
+// that stops being true has to break one of them.
+// ---------------------------------------------------------------------------
+
+/// **F10 — both front pages name the editor door, and the door is still there.**
+///
+/// `io acp` is 0.36.0's adapter and 0.38.0's permission round trip, and until this
+/// release an operator arriving at the repository could learn of it only from a
+/// six-word cell in the guides table. Zed and a JetBrains IDE are the two clients
+/// the protocol work was written against, so naming the protocol without naming
+/// them leaves a reader unable to tell whether their editor is one of them.
+///
+/// The transport claim is the one most able to go quietly wrong: ACP is
+/// **newline-delimited** JSON-RPC 2.0 and not LSP's `Content-Length` framing, and a
+/// writer who has met LSP first will write the other one. Both pages say the
+/// newline form and neither offers the header form.
+///
+/// Bound to the code twice. [`io_cli::acp::PROTOCOL_VERSION`] is the version the
+/// server answers with, so a v2 that moved past these pages fails here; and
+/// `src/acp.rs` really does raise `session/request_permission`, which is the
+/// sentence 0.38.0 earned and the one a page could otherwise claim on its own.
+///
+/// Sabotage: delete any needle from either page; bump `PROTOCOL_VERSION`; or take
+/// the permission request out of `src/acp.rs`. Each fails on its own.
+#[test]
+fn f10_the_front_page_and_the_contract_name_the_editor_door() {
+    // The permission round trip exists in the code the prose is describing —
+    // `f2_the_install_discloses_before_it_writes_and_says_so`'s shape, for its
+    // reason: the prose half alone would pass if the feature were ripped out.
+    let acp = std::fs::read_to_string(repo().join("src/acp.rs")).expect("src/acp.rs exists");
+    assert!(
+        acp.contains("\"session/request_permission\""),
+        "both pages say an editor session is asked for permission, and nothing in \
+         src/acp.rs sends the request that asks",
+    );
+    assert_eq!(
+        io_cli::acp::PROTOCOL_VERSION,
+        1,
+        "the pages describe the v1 protocol; the server now answers a different \
+         version and both are describing a wire this build does not speak",
+    );
+
+    let readme = flat(&read("README.md"));
+    for needle in [
+        // The protocol, its framing, and the two clients — in one cell, because a
+        // reader deciding whether this product reaches their editor is asking one
+        // question.
+        "`io acp` serves the Agent Client Protocol (ACP) as newline-delimited JSON-RPC 2.0 over stdio",
+        "Zed or a JetBrains IDE",
+        // 0.38.0's half. Without it the row describes 0.36.0.
+        "arrives as a `session/request_permission` you answer in the editor",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README.md is missing {needle:?}. ACP is this crate's answer to an \
+             editor and two releases of work; a front page that names it once in a \
+             table row has not reached it",
+        );
+    }
+
+    let contract = flat(&read("docs/CONTRACT.md"));
+    for needle in [
+        "Serves the Agent Client Protocol (ACP) on stdin and stdout",
+        "an ACP client such as Zed or a JetBrains IDE spawns it",
+        // Already on the page and asserted here so it cannot leave with the rest:
+        // the framing is the claim a rewrite is most likely to get wrong.
+        "speaks newline-delimited JSON-RPC 2.0 at its stdin",
+        "session/request_permission",
+    ] {
+        assert!(
+            contract.contains(needle),
+            "docs/CONTRACT.md is missing {needle:?}; `io acp` is a subcommand a \
+             script and an editor both address and this is the page that enumerates \
+             what may be depended on",
+        );
+    }
+
+    // And the framing nobody may claim: ACP is newline-delimited, and a page that
+    // said `Content-Length` would be describing LSP.
+    for (name, text) in shipped_prose() {
+        assert!(
+            !text.contains("Content-Length"),
+            "{name} describes the ACP transport with LSP's header framing; ACP \
+             delimits frames with newlines and forbids an interior one",
+        );
+    }
+}
+
+/// **F10 — both front pages name the tool mask, in the direction that is true.**
+///
+/// 0.37.0 built `/context withhold` and neither front page mentioned it. The gate
+/// that already exists — `n3_no_shipped_page_claims_a_mask_reduces_what_a_turn_costs`
+/// — forbids the wrong sentence everywhere, and a page that says nothing satisfies
+/// it perfectly. This is the positive half: the pages have to carry the claim, and
+/// carrying it is what puts them under that sweep at all.
+///
+/// Bound to [`io_cli::context::withheld_line`], which is the sentence the product
+/// itself prints. A release that changed the mask's cost story would change that
+/// function, and the pages would then be describing something else.
+///
+/// Sabotage: delete either page's mask sentence, or teach `withheld_line` to
+/// promise a saving. Each fails on its own.
+#[test]
+fn f10_both_pages_name_the_tool_mask_and_say_what_it_does_not_do() {
+    // What the product says when a tool is withheld. The needle is the *direction*
+    // — the catalogue is unchanged — rather than the whole sentence, because the
+    // sentence is prose and gets reworded.
+    let mask = io_harness::ToolMask::withholding(["docx_write"]);
+    let line = io_cli::context::withheld_line(&mask, "—")
+        .expect("a non-empty mask earns the line that explains it");
+    assert!(
+        line.contains("The catalogue above is unchanged"),
+        "`withheld_line` stopped saying the catalogue is unchanged, so the pages \
+         below are describing a cost story the product no longer tells: {line}",
+    );
+
+    let readme = flat(&read("README.md"));
+    for needle in [
+        "`/context withhold <tool>` builds the session's tool mask",
+        "keeps that tool refused until `/context allow`",
+        // The honest half, which is the whole reason this row is hard to write.
+        "io-harness sends a byte-identical catalogue either way, so the request \
+         grows by the one sentence naming what is withheld",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README.md is missing {needle:?}. The mask is 0.37.0's capability and \
+             the front page named it zero times; a row that named it without the \
+             second half would be the exact sentence N3 exists to forbid",
+        );
+    }
+
+    let contract = flat(&read("docs/CONTRACT.md"));
+    for needle in [
+        "**The mask changes what the agent may call and not what a turn costs.**",
+        "io-harness sends the same catalogue either way and io adds one sentence \
+         naming what is withheld, so a masked request is the longer of the two",
+        // The portability rule, which is why a misspelling is kept rather than
+        // refused — a script author reading this page is the person most likely to
+        // write a name against the wrong build.
+        "because io-harness keeps an unknown name deliberately so a mask stays \
+         portable between builds",
+    ] {
+        assert!(
+            contract.contains(needle),
+            "docs/CONTRACT.md is missing {needle:?}; the mask is the one mid-turn \
+             command that changes something, and this page already says so without \
+             saying what it changes",
+        );
+    }
+}
+
+/// **F10 — both front pages name the schema contract and the outcome it produces.**
+///
+/// `RunOutcome::SchemaUnsatisfied` is io-harness 0.77.0's, undeclared in its own
+/// changelog, and `RunOutcome` is `#[non_exhaustive]` — so it arrived here silently
+/// and `src/exec.rs` maps it to `6`. Every documented account of `6` said "a
+/// verification gate", which is one of the two failures that reach it. A CI job
+/// branching on `6` and reading the gate story goes looking for a gate it never
+/// configured.
+///
+/// The three claims are asked of the code, not of a second copy of the list: the
+/// mapping from [`io_cli::exec::code`], the stderr wording from
+/// [`io_cli::exec::describe`], and the fact that a gate failure lands on the same
+/// number — which is what makes "read stderr to tell them apart" the honest advice
+/// rather than a hedge.
+///
+/// Sabotage: remap `SchemaUnsatisfied`, reword `describe`, or drop either page's
+/// paragraph. Each fails on its own.
+#[test]
+fn f10_both_pages_name_the_schema_contract_and_the_outcome_that_reaches_six() {
+    let schema = io_harness::RunOutcome::SchemaUnsatisfied { steps: 3 };
+    let gate = io_harness::RunOutcome::VerificationFailed { steps: 3 };
+
+    assert_eq!(
+        io_cli::exec::code(&schema),
+        io_cli::exec::UNVERIFIED,
+        "an unsatisfied output schema no longer exits `6`, so both pages now \
+         document a code a caller will not see for it",
+    );
+    assert_eq!(
+        io_cli::exec::code(&gate),
+        io_cli::exec::UNVERIFIED,
+        "a failed verification gate no longer exits `6`, so the pages' \"two \
+         different failures reach it\" is one failure",
+    );
+
+    // The line that separates them, which is what both pages tell a caller to
+    // read. Quoted on the contract page verbatim, so the advice is followable.
+    let said = io_cli::exec::describe(&schema);
+    const STDERR: &str = "never produced the shape its output schema asked for";
+    assert!(
+        said.contains(STDERR),
+        "`describe` stopped naming the schema failure in the words the contract \
+         page quotes, so a caller grepping stderr for it finds nothing: {said}",
+    );
+
+    let readme = flat(&read("README.md"));
+    for needle in [
+        "io-harness's `RunOutcome::SchemaUnsatisfied`",
+        "a run that never produced the shape `[run] output_schema` asked for",
+        "a verification gate that failed",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README.md is missing {needle:?}. Exit `6` is a number a scripted \
+             caller branches on and the front page described only one of the two \
+             ways to reach it",
+        );
+    }
+
+    let contract = flat(&read("docs/CONTRACT.md"));
+    for needle in [
+        "**Two different failures reach `6`, and a caller that has to tell them \
+         apart reads stderr rather than the code.**",
+        "**The schema contract is io-harness's `[run] output_schema`**",
+        "a run that never produces the shape it asks for is `RunOutcome::SchemaUnsatisfied`",
+        // The table cell itself, so a reader who only skims the table is not told
+        // that `6` means a gate and nothing else.
+        "| `6` | UNVERIFIED | The work was judged and did not hold up",
+    ] {
+        assert!(
+            contract.contains(needle),
+            "docs/CONTRACT.md is missing {needle:?}; this is the page a script \
+             author reads and `6` had one of its two meanings written down",
+        );
+    }
+    assert!(
+        contract.contains(STDERR),
+        "docs/CONTRACT.md tells a caller to read stderr to tell the two `6`s \
+         apart, so it has to quote the line they will be reading",
+    );
+}
+
+/// **F10 — the tap and the marketplace appear with the command that uses them.**
+///
+/// Both were mentions rather than paths. The tap and the bucket live in *this*
+/// repository, which is why `brew tap` and `scoop bucket add` have to name a URL —
+/// the repository is not `homebrew-io-cli`, so neither tool can derive one — and a
+/// reader who copies a bare `brew install io` gets somebody else's formula. The
+/// marketplace had its name on four pages and its verb on none of the two a reader
+/// arrives at.
+///
+/// Bound to disk and to the parse. The two files are asserted to exist, because a
+/// tap whose formula is gone installs nothing; the upgrade commands are taken from
+/// [`io_cli::upgrade`]'s own constants, so a renamed formula fails here rather than
+/// leaving the README printing a command that updates nothing; and the marketplace
+/// verb is fed through [`io_cli::manage::parse`], which is the same parse both the
+/// slash surface and the shell reach.
+///
+/// Sabotage: delete `Formula/io.rb`; change either upgrade constant; drop the
+/// explicit-URL form from the install section; or remove the marketplace verb from
+/// either page. Each fails on its own.
+#[test]
+fn f10_the_tap_and_the_marketplace_appear_with_the_command_that_uses_them() {
+    for path in ["Formula/io.rb", "bucket/io.json"] {
+        assert!(
+            repo().join(path).is_file(),
+            "{path} is what makes this repository its own tap, and the README \
+             links it",
+        );
+    }
+
+    let readme = flat(&read("README.md"));
+    for needle in [
+        // The explicit-URL form, both halves. `brew install io` alone resolves to
+        // core, which is not this product.
+        "brew tap initorigin/io-cli https://github.com/initorigin/io-cli",
+        "brew install initorigin/io-cli/io",
+        "scoop bucket add io-cli https://github.com/initorigin/io-cli",
+        "scoop install io",
+        // Why the URL is there, which is the part a reader otherwise reads as
+        // ceremony and drops.
+        "this repository is not named `homebrew-io-cli`",
+        // And the two files, linked rather than described.
+        "[`Formula/io.rb`](Formula/io.rb)",
+        "[`bucket/io.json`](bucket/io.json)",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README.md is missing {needle:?}; the tap is a path with a command, \
+             and a reader who cannot copy it has been told about it rather than \
+             given it",
+        );
+    }
+
+    // The upgrade lines, from the constants the binary prints. A formula renamed
+    // without these moving would leave both pages naming a command that updates
+    // nothing.
+    let contract = flat(&read("docs/CONTRACT.md"));
+    for command in [io_cli::upgrade::HOMEBREW, io_cli::upgrade::SCOOP] {
+        assert!(
+            readme.contains(&format!("`{command}`")),
+            "README.md should quote `{command}`, which is what `io upgrade` prints \
+             for that install",
+        );
+        assert!(
+            contract.contains(&format!("`{command}`")),
+            "docs/CONTRACT.md should quote `{command}`; `io upgrade` prints and \
+             does not run, so what it prints is the whole of its contract",
+        );
+    }
+
+    // The marketplace verb reaches the parse both doors share, so the command the
+    // pages print is a command that is actually routed.
+    for line in [
+        "plugin marketplace add initorigin/io-cli",
+        "plugin marketplace list",
+        "plugin marketplace remove initorigin/io-cli",
+        "plugin add ultraship",
+    ] {
+        assert!(
+            io_cli::manage::parse(&io_cli::manage::tokens(line)).is_ok(),
+            "both pages print `io {line}` and the parse both doors share refuses it",
+        );
+    }
+
+    for needle in [
+        "`/plugin marketplace add <owner>/<repo>` clones an index into your own home",
+        "`/plugin add <name>` installs a bundle out of it",
+        "as `io plugin marketplace add` and `io plugin add`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "README.md is missing {needle:?}. A marketplace was named on the front \
+             page without the verb that adds one, which leaves a reader knowing the \
+             word and not the command",
+        );
+    }
+    for needle in [
+        "`io plugin marketplace add <owner>/<repo>` clones an index",
+        "`io plugin add <name>` installs a bundle out of one",
+    ] {
+        assert!(
+            contract.contains(needle),
+            "docs/CONTRACT.md is missing {needle:?}; the argv surface is what this \
+             page exists to enumerate and `io plugin …` was an ellipsis",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 0.38.1 F9 — a help page describes the binary in front of the reader, and an
+// answer that is not an answer is not one.
+// ---------------------------------------------------------------------------
+
+/// Every `--help` page the binary can print, by the command that prints it.
+///
+/// Rendered rather than assembled out of `get_about` and `get_help`, because the
+/// claim under test is about what an operator *sees*: a global flag's help is
+/// reprinted on every subcommand's page, and a sweep that read each string once
+/// would check a paragraph in one place while it shipped in nine.
+fn help_pages() -> Vec<(String, String)> {
+    use clap::CommandFactory;
+
+    let mut cli = io_cli::cli::Cli::command();
+    let names: Vec<String> = cli
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+
+    let mut pages = vec![("io".to_string(), cli.render_long_help().to_string())];
+    for name in names {
+        let page = cli
+            .find_subcommand_mut(&name)
+            .expect("a subcommand clap has just named")
+            .render_long_help()
+            .to_string();
+        pages.push((format!("io {name}"), page));
+    }
+    pages
+}
+
+/// Every `<n>.<n>.<n>` literal in `text`.
+///
+/// Three components and not two, which is the difference between a version and a
+/// protocol: `io acp --help` says "JSON-RPC 2.0" and must go on saying it.
+fn versions_named(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .map(|token| token.trim_matches('.'))
+        .filter(|token| {
+            let parts: Vec<&str> = token.split('.').collect();
+            parts.len() == 3 && parts.iter().all(|part| !part.is_empty())
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// **No `--help` page dates itself against a version this binary is not, and none
+/// of them tells the reader a story about a release.**
+///
+/// A `--help` page describes the binary in front of the reader. Every version
+/// number on one is therefore either the pin — which the reader can act on — or a
+/// claim about a build they are not running, which at best costs them the time to
+/// work out that it does not apply. The field test of 0.38.0 found three: the
+/// harness release that added `--profile`, the io-cli release that first selected
+/// one, and the release whose `-m` defect is why `--plain` is a global flag.
+///
+/// The pin is read from `Cargo.lock` through [`pinned_harness`] and never typed
+/// here. A gate carrying the number goes stale on the next pin, which is the exact
+/// defect class this one exists to remove.
+///
+/// Sabotage: put back either sentence `src/cli.rs` used to carry on `--profile` or
+/// on `--plain`. The failure names the page and the number.
+#[test]
+fn f9_no_shipped_help_names_an_unpinned_harness_or_narrates_a_release() {
+    // Narration that carries no number at all. The version sweep below is the wide
+    // net; this is for the sentence that says a release happened without saying
+    // which, which the sweep cannot see.
+    const NARRATION: &[&str] = &[
+        "shipped a defect",
+        "did not exist because",
+        "was missing until",
+        "was green over",
+        "no io-cli release",
+        "in an earlier release",
+        "until this release",
+    ];
+
+    let pinned = pinned_harness();
+    let pages = help_pages();
+    assert!(
+        pages.len() > 5,
+        "only {} help pages were rendered, so this sweep is reading almost \
+         nothing and is not checking what it claims",
+        pages.len(),
+    );
+
+    for (command, page) in &pages {
+        for version in versions_named(page) {
+            assert_eq!(
+                version, pinned,
+                "`{command} --help` names {version}, which is neither the pinned \
+                 io-harness ({pinned}) nor anything the operator holding this \
+                 binary can act on; a version on a help page is a claim about \
+                 what is in front of the reader",
+            );
+        }
+        // Whitespace flattened first, because clap wraps a help page to the
+        // terminal's width: a phrase that fell across a line break would be
+        // missed, and the gate would be quietly reading a different string than
+        // the one an operator sees.
+        let said = page
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for phrase in NARRATION {
+            assert!(
+                !said.contains(phrase),
+                "`{command} --help` says {phrase:?}, which is a changelog entry \
+                 rather than a description of this binary; `CHANGELOG.md` and git \
+                 hold the history",
+            );
+        }
+    }
+}
+
+/// **No subcommand's help example names a subcommand other than its own.**
+///
+/// One `Args` type is shared by `io mcp`, `io plugin`, `io config` and `io skill`,
+/// so an example written into its field is an example of one of them printed on
+/// the help page of all four — which is what the 0.38.0 field test found, with an
+/// `mcp add` line under `io config --help`. The example belongs on the variant,
+/// where clap prints it once, on its own page.
+///
+/// The distinctness assertion is the one that would have caught the original: four
+/// identical paragraphs is precisely the shape of a copy-paste, and every other
+/// check here passes on it as long as the one string names its own subcommand.
+///
+/// Sabotage: move any one example back onto the `words` field of `Manage`, or copy
+/// `io mcp`'s paragraph onto `io config`. The first empties the list and fails on
+/// the four names below; the second fails on distinctness and on the name.
+#[test]
+fn f9_no_subcommands_help_example_names_another_subcommand() {
+    use clap::CommandFactory;
+
+    // The marker the examples are written behind. A convention rather than a
+    // grammar, and it is what makes this gate about *examples* — `io acp --help`
+    // mentions `io exec` in a sentence contrasting the two, which is a
+    // cross-reference an operator wants and not an example of the wrong command.
+    const MARKER: &str = "For example:";
+
+    let cli = io_cli::cli::Cli::command();
+    let names: Vec<String> = cli
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+
+    let mut examples: Vec<(String, String)> = Vec::new();
+    for sub in cli.get_subcommands() {
+        let name = sub.get_name().to_string();
+        let about = sub
+            .get_long_about()
+            .or_else(|| sub.get_about())
+            .map(|about| about.to_string())
+            .unwrap_or_default();
+        // Flattened per paragraph, for the reason the sweep above flattens a page:
+        // where the source broke its lines is not a fact about the help text, and a
+        // needle that fell across a break would be missed.
+        let paragraphs: Vec<String> = about
+            .split("\n\n")
+            .map(|part| part.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        for paragraph in paragraphs.iter().filter(|part| part.contains(MARKER)) {
+            for other in &names {
+                if *other == name {
+                    continue;
+                }
+                assert!(
+                    !paragraph.contains(&format!("io {other} ")),
+                    "`io {name} --help` gives an example of `io {other}`, so three \
+                     readers out of four are being shown a command they did not \
+                     ask about:\n{paragraph}",
+                );
+            }
+            assert!(
+                paragraph.contains(&format!("io {name} ")),
+                "`io {name} --help` carries an example that never types \
+                 `io {name}`:\n{paragraph}",
+            );
+            examples.push((name.clone(), paragraph.clone()));
+        }
+    }
+
+    // The four that share one `Args` type, by name, because a gate made of
+    // negatives passes on a binary that shows no examples at all.
+    for wanted in ["mcp", "plugin", "config", "skill"] {
+        assert!(
+            examples.iter().any(|(name, _)| name == wanted),
+            "`io {wanted} --help` shows no example, and it is one of the four \
+             subcommands that share a single argument type — the place an example \
+             cannot be written once for all of them",
+        );
+    }
+
+    for (i, (name, paragraph)) in examples.iter().enumerate() {
+        for (other, another) in &examples[i + 1..] {
+            assert_ne!(
+                paragraph, another,
+                "`io {name}` and `io {other}` show the same example word for word, \
+                 which is one subcommand's example on two pages",
+            );
+        }
+    }
+}
+
+/// **`io config get` on a key nothing names says there is no such key.**
+///
+/// `Config::origin` returns an empty slice both for a real key no file sets and
+/// for a misspelling, so through 0.38.0 both answered `default` — and an operator
+/// checking a typo was told io-harness's own default was in force, which is a
+/// wrong answer rather than a thin one.
+///
+/// The two assertions that must keep holding are the point of the other half: a
+/// catalogue key no file sets is still a default, and no row of the listing reads
+/// as unknown. A key a *file* sets which the catalogue does not name is a real key
+/// the operator wrote, `configure::settings` lists it deliberately, and it is
+/// unreachable here by construction — `Decided::Unknown` is only chosen when
+/// `origin` came back empty.
+///
+/// Sabotage: drop the `CATALOGUE` test from `configure::setting` so every unset key
+/// is `Unknown`. The listing assertion fails on the first catalogue row.
+#[test]
+fn f9_config_get_on_a_key_nothing_names_says_there_is_no_such_key() {
+    // No files at all, which is the fixture this needs: every key is one no file
+    // sets, so the catalogue is the only thing left deciding the answer.
+    let config = io_harness::config::Config::default();
+
+    let missing = io_cli::configure::setting(&config, "nonexistent.key");
+    assert_eq!(
+        missing.decided.word(),
+        "no such key",
+        "`io config get nonexistent.key` prints this word as its origin field, and \
+         `default` there claims a setting exists",
+    );
+    assert_eq!(
+        missing.value, None,
+        "there is nothing to quote for a key no file names",
+    );
+    assert!(
+        io_cli::configure::said(&missing).contains("no such key"),
+        "the session's own `/config <key>` says: {}",
+        io_cli::configure::said(&missing),
+    );
+
+    let unset = io_cli::configure::setting(&config, "run.max_retries");
+    assert_eq!(
+        unset.decided.word(),
+        "default",
+        "a catalogue key no file sets is a real key running on io-harness's own \
+         default, and calling it unknown would be a second wrong answer",
+    );
+
+    for row in io_cli::configure::settings(&config) {
+        assert_ne!(
+            row.decided.word(),
+            "no such key",
+            "the listing offers {} and then denies it exists",
+            row.path,
+        );
+    }
+}
+
+/// **`io plugin search` with no match says nothing matched.**
+///
+/// A search that prints nothing is indistinguishable from a search that did not
+/// run, and the two want different next moves — "no bundle is called that" against
+/// "this command is broken". The argv door printed nothing at all through 0.38.0;
+/// the session door said so in a `format!` of its own, which is the second
+/// implementation this crate keeps finding disagreeing later.
+///
+/// Both call sites are asserted, and that is the half that makes this a gate rather
+/// than a sentence: `marketplace::nothing_matched` existing proves nothing about
+/// what either door prints.
+///
+/// Sabotage: delete either call in `src/main.rs`, or re-spell one of them as a
+/// literal.
+#[test]
+fn f9_plugin_search_with_no_match_says_nothing_matched() {
+    let said = io_cli::marketplace::nothing_matched("nothing-is-called-this");
+    assert!(
+        said.contains("nothing-is-called-this"),
+        "the answer does not repeat the term, so a scrolled terminal cannot say \
+         which search it answers: {said}",
+    );
+    assert!(
+        said.contains("marketplace"),
+        "the answer should say where it looked: {said}",
+    );
+
+    let main = read("src/main.rs");
+    let calls = main.matches("marketplace::nothing_matched").count();
+    assert!(
+        calls >= 2,
+        "only {calls} of the two doors say it. `io plugin search <term>` and the \
+         session's `/plugin search <term>` both answer an empty search, and both \
+         call `marketplace::nothing_matched` — a door that prints nothing leaves \
+         the operator unable to tell an empty result from a broken command",
+    );
+    assert!(
+        !main.contains("no bundle in any marketplace matches"),
+        "src/main.rs spells the sentence itself instead of calling \
+         `marketplace::nothing_matched`, which is two answers to one question \
+         agreeing only until one of them is edited",
+    );
+}

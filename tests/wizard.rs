@@ -940,3 +940,46 @@ fn lines(wizard: &Wizard, newline: Newline) -> Vec<String> {
         })
         .collect()
 }
+
+/// **F8 — the welcome screen says what is at stake, and not always the same thing.**
+///
+/// It said "No configuration found, so this is the first run" whatever was on
+/// disk. The 2026-09-05 field test ran `io setup` on a machine with a 36 KB
+/// `io.toml` and was told exactly that — and the wizard goes on to write that
+/// same file. The sentence is the one that tells somebody nothing of theirs is at
+/// stake, which makes being wrong about it worse than being silent.
+///
+/// Both directions are asserted, because a fix that only ever printed the new
+/// wording would be the same defect pointing the other way: an operator with no
+/// configuration would be told a file is in force.
+///
+/// Sabotage: drop the `existing` arm from `welcome` and the first half fails;
+/// make `over` a no-op and the first half fails the same way.
+#[test]
+fn f8_the_welcome_screen_names_the_configuration_already_in_force() {
+    let commit = |wizard: &mut Wizard| match wizard.key(key(KeyCode::Enter)) {
+        Progress::Commit(lines) => lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>(),
+        other => panic!("the welcome screen commits its lines: {other:?}"),
+    };
+
+    let mut told = Wizard::new(DARK).over(Some(std::path::PathBuf::from("/home/me/.io-cli/io.toml")));
+    let said = commit(&mut told);
+    assert!(
+        said.contains("/home/me/.io-cli/io.toml"),
+        "the screen must name the file it is about to write over: {said}",
+    );
+    assert!(
+        !said.contains("first run"),
+        "and must not call it a first run when a configuration is in force: {said}",
+    );
+
+    let mut fresh = Wizard::new(DARK).over(None);
+    let said = commit(&mut fresh);
+    assert!(
+        said.contains("first run"),
+        "an operator with no configuration is genuinely on their first run: {said}",
+    );
+}

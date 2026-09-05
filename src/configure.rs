@@ -17,6 +17,13 @@
 //! default to a file the operator never wrote it in. That is a lie a reader
 //! cannot detect, so [`Decided::Default`] is its own answer and names no path.
 //!
+//! And there is a *fifth* answer under that one, because "no file named it" is
+//! two facts wearing one word: a key of io-harness's that nobody has set, and a
+//! key that does not exist. [`Decided::Unknown`] is the second — no file sets it
+//! and no [`CATALOGUE`] entry names it — and it exists because reporting
+//! `default` for a misspelling told an operator checking a typo that their
+//! setting was in force.
+//!
 //! This crate has paid for that distinction once already: 0.15.0's
 //! `home::origin` reported `IO_CONFIG_HOME` for io-cli's own default because
 //! `adopt` had set the variable itself, crediting the operator for a choice they
@@ -47,6 +54,25 @@ pub enum Decided {
     /// No file named it, so io-harness's own default is in force. This names no
     /// path on purpose.
     Default,
+    /// No file named it **and** no catalogue entry does either, so there is
+    /// nothing here to have a default of.
+    ///
+    /// **Split off [`Decided::Default`] because answering `default` for a key that
+    /// does not exist is a wrong answer, not a thin one.** `Config::origin`
+    /// returns an empty slice for a misspelling exactly as it does for a real key
+    /// no file sets, so the two were indistinguishable and `io config get
+    /// nonexistent.key` reported that io-harness's own default was in force — an
+    /// operator checking a typo was told their setting was fine.
+    ///
+    /// The test is [`CATALOGUE`] membership, which is deliberately narrower than
+    /// "a key io-harness would accept": io-harness publishes no enumeration of its
+    /// schema, so no surface here can be sure a key is *absent* from it. What this
+    /// says is what it can prove — nothing names this key and nothing sets it —
+    /// and the cost is that a real key outside the catalogue and outside every
+    /// file (`[app.io-cli.keys]`'s rebindings, say) reads the same way. That is
+    /// the better error of the two: it sends a reader to look, where `default`
+    /// sent them away satisfied.
+    Unknown,
 }
 
 impl Decided {
@@ -68,6 +94,11 @@ impl Decided {
                 ..
             } => "local",
             Decided::Default => "default",
+            // Three words rather than one, because there is no scope to name and a
+            // one-word placeholder in this column would read as one. It reaches an
+            // operator through `io config get`, which prints this word as the
+            // origin field, so it has to be the answer and not a label for one.
+            Decided::Unknown => "no such key",
         }
     }
 
@@ -75,7 +106,7 @@ impl Decided {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             Decided::File { path, .. } => Some(path),
-            Decided::Default => None,
+            Decided::Default | Decided::Unknown => None,
         }
     }
 
@@ -89,7 +120,12 @@ impl Decided {
     pub fn scope(&self) -> Option<Scope> {
         match self {
             Decided::File { scope, .. } => Some(*scope),
-            Decided::Default => None,
+            // `Unknown` answers `None` for the same reason `Default` does, and it
+            // matters that it is not a refusal: writing a key io-cli's catalogue
+            // has never heard of is a thing an operator is allowed to do — see
+            // [`source_for`]'s `None` arm — and it goes to the file a defaulted
+            // key would go to.
+            Decided::Default | Decided::Unknown => None,
         }
     }
 }
@@ -798,7 +834,10 @@ pub fn priced_models(config: &Config) -> Vec<String> {
 pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
     match setting(config, key).decided {
         Decided::File { scope, .. } => (scope, true),
-        Decided::Default => (Scope::User, false),
+        // A key no file names has nothing to inherit whether or not the catalogue
+        // knows it, so the two answer alike here. Refusing to write an uncatalogued
+        // key would be io-cli enforcing a schema it does not own.
+        Decided::Default | Decided::Unknown => (Scope::User, false),
     }
 }
 
@@ -1071,8 +1110,19 @@ pub fn settings(config: &Config) -> Vec<Setting> {
 ///
 /// A key no file names reads `not set` rather than an empty value, because an
 /// empty string is a value an operator can actually write.
+///
+/// A key nothing names at all gets a different sentence entirely, and not the
+/// shape above with a third word in the bracket: "`x` is not set (no such key)"
+/// asserts that `x` is a setting in the same breath as denying it, which is the
+/// sentence [`crate::manage`]'s refusals are written to avoid.
 #[must_use]
 pub fn said(setting: &Setting) -> String {
+    if setting.decided == Decided::Unknown {
+        return format!(
+            "there is no such key as {} — no file sets it and it is not a key io names",
+            setting.path
+        );
+    }
     let what = setting.value.as_deref().unwrap_or("not set");
     format!("{} is {what} ({})", setting.path, setting.decided.word())
 }
@@ -1087,7 +1137,14 @@ pub fn setting(config: &Config, key: &str) -> Setting {
             scope: origin.scope,
             path: origin.path.clone(),
         },
-        None => Decided::Default,
+        // **A file is asked first, and the catalogue only decides the leftover.**
+        // The order is the load-bearing part: a key an operator actually wrote is
+        // a real key of io-harness's whatever this crate's catalogue knows, and
+        // [`settings`] lists exactly those on purpose. So [`Decided::Unknown`] is
+        // reachable only for a key that no file set *and* no catalogue entry
+        // names, which is the pair of facts it claims and nothing more.
+        None if CATALOGUE.contains(&key) => Decided::Default,
+        None => Decided::Unknown,
     };
 
     let value = decided.path().and_then(|path| {

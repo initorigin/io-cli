@@ -149,15 +149,36 @@ pub struct Report {
     /// environment was not touched, and the directory in force is the one it
     /// always was.
     pub blocked: Option<PathBuf>,
+    /// Whether this run is what made the home directory.
+    ///
+    /// **The field exists so the home line can stop being unconditional
+    /// (0.38.1).** See [`Report::lines`]: without it, "did anything happen" and
+    /// "where do the files live" are the same question, and the answer to the
+    /// second was printed on every invocation of every subcommand because the
+    /// first had no way to be false.
+    pub created: bool,
 }
 
 impl Report {
-    /// One line per file, then one naming the home.
+    /// One line per file, then one naming the home — when there is something to
+    /// report.
     ///
-    /// The home line is last and unconditional: on a run that moved nothing it is
-    /// the whole report, which is the product answering "where does it live"
-    /// without being asked. Lines rather than a paragraph because the session
-    /// commits each one into the scrollback and `io exec` writes each to stderr.
+    /// **The home line was last and unconditional, and that made it the whole
+    /// output of every run that had nothing to say (0.38.1).** The reasoning was
+    /// that on a run which moved nothing it is the product answering "where does
+    /// it live" without being asked. What the 2026-09-05 field test found is that
+    /// almost every run moves nothing — the migration happens once, ever — so
+    /// `io keeps its files in …` printed above the output of `io config get`, of
+    /// every `io mcp list`, of every invocation in a shell loop. Answering an
+    /// unasked question once is a courtesy; answering it every time is noise on a
+    /// surface a script reads.
+    ///
+    /// So it is drawn when this run **did** something: created the home, moved a
+    /// file into it, or left one behind. `/status` is where the path is answered
+    /// on demand, and it always was.
+    ///
+    /// Lines rather than a paragraph because the session commits each one into
+    /// the scrollback and `io exec` writes each to stderr.
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         if let Some(blocked) = &self.blocked {
@@ -180,7 +201,9 @@ impl Report {
                 left.display()
             ));
         }
-        out.push(format!("io keeps its files in {}", self.home.display()));
+        if self.created || !self.moved.is_empty() || !self.kept.is_empty() {
+            out.push(format!("io keeps its files in {}", self.home.display()));
+        }
         out
     }
 }
@@ -383,6 +406,12 @@ pub fn adopt() -> Option<Report> {
     // and there is nothing left to migrate from.
     let previous = io_harness::config::user_path();
 
+    // Asked before `create`, for the obvious reason and one less obvious: a home
+    // that already exists is the ordinary case — the migration happens once,
+    // ever — and it is what makes the report's home line noise on every run
+    // afterwards. `create` is `create_dir_all`, which succeeds either way and so
+    // cannot answer this itself.
+    let created = !home.exists();
     // Created BEFORE the variable is set, and the variable is not set at all if it
     // cannot be: pointing io-harness at a directory that does not exist and then
     // returning `None` would move the configuration path with nobody told, which
@@ -402,6 +431,7 @@ pub fn adopt() -> Option<Report> {
         moved: Vec::new(),
         kept: Vec::new(),
         blocked: None,
+        created,
     };
 
     // **The variable is set only once every file that had to move has moved**, and
@@ -445,6 +475,10 @@ pub fn adopt() -> Option<Report> {
                 moved: Vec::new(),
                 kept: Vec::new(),
                 blocked: Some(source),
+                // The blocked report has its own two lines and never reaches the
+                // home line, so this is inert either way — and `false` is the
+                // honest value: the home in force here is the one it always was.
+                created: false,
             });
         }
         report.moved.push((source, target));

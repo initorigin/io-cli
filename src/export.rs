@@ -152,9 +152,20 @@ pub fn conversation(store: &Store, session: &io_harness::Session) -> Result<Opti
         // The store's own stamp, passed through. Never an age, never a
         // reformatting: `tests/timing.rs` forbids this crate reading a clock, and
         // a document exported twice from the same store must be the same document.
+        //
+        // **The zone is named beside it, and naming is not reformatting
+        // (0.38.1).** The store writes UTC and this printed it bare, so an export
+        // read hours later — or on another machine, which is what an export is
+        // for — carried an instant its reader would take for their own local
+        // time. The marker is `crate::sessions::ZONE`, so the session's surfaces
+        // and this document say it the same way; that module carries the argument
+        // for why it is a marker rather than a conversion.
         out.push_str(&format!(
-            "\n## Turn {} · run {} · {}\n\n",
-            turn.id, turn.run_id, turn.created_at
+            "\n## Turn {} · run {} · {}{}\n\n",
+            turn.id,
+            turn.run_id,
+            turn.created_at,
+            crate::sessions::ZONE
         ));
         out.push_str("### Prompt\n\n");
         out.push_str(&turn.prompt);

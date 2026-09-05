@@ -536,3 +536,71 @@ fn n3_the_lock_and_its_record_are_readable_by_their_owner_alone() {
 
     drop(held);
 }
+
+/// **F7 — the sweep removes a finished session's lock and never a live one.**
+///
+/// Asserted in both directions, because a sweep that removes a live lock is
+/// worse than the leak it replaces: the leak is thirty-one empty files, and the
+/// bug would be two `io` processes believing they are alone in one session.
+///
+/// The live case is the one a naive implementation gets wrong. "No owner record"
+/// is not on its own evidence that a session is over — it is also true for the
+/// window before `acquire` writes the record, and true forever on a disk too full
+/// to write one, which `acquire` deliberately treats as non-fatal. So the sweep
+/// requires `try_lock` to succeed as well, and that is what this asserts by
+/// holding the guard across the call.
+///
+/// Sabotage: drop the `owner.exists()` check and the third row fails; drop the
+/// `try_lock` check and the second fails.
+#[test]
+fn f7_the_sweep_takes_finished_locks_and_leaves_held_ones() {
+    let home = tempfile::tempdir().expect("a temporary home");
+    let root = home.path().join("workspace");
+    let now = SystemTime::now();
+
+    // 1. A session that finished: its guard is dropped, so the owner record is
+    //    gone and nothing holds the lock.
+    let (finished_lock, finished_owner) = lock::paths(home.path(), 11);
+    match lock::acquire(home.path(), 11, &root, now).expect("the lock is takeable") {
+        Taken::Held(guard) => drop(guard),
+        Taken::Refused(_) => panic!("a fresh id cannot be refused"),
+    }
+    assert!(
+        finished_lock.exists(),
+        "the lock file outlives the guard, which is the leak this sweeps",
+    );
+    assert!(
+        !finished_owner.exists(),
+        "the owner record is what `Guard::drop` already removes",
+    );
+
+    // 2. A session that is running: guard held across the sweep.
+    let (live_lock, live_owner) = lock::paths(home.path(), 22);
+    let held = match lock::acquire(home.path(), 22, &root, now).expect("the lock is takeable") {
+        Taken::Held(guard) => guard,
+        Taken::Refused(_) => panic!("a fresh id cannot be refused"),
+    };
+
+    // 3. A file under the stem that is not a session lock at all.
+    let stranger = home.path().join("session-notanumber.lock");
+    std::fs::write(&stranger, b"").expect("the stranger is written");
+
+    let gone = lock::sweep(home.path());
+
+    assert_eq!(gone, 1, "exactly the finished session's lock was removed");
+    assert!(
+        !finished_lock.exists(),
+        "the finished session's lock is what the sweep exists to take",
+    );
+    assert!(
+        live_lock.exists() && live_owner.exists(),
+        "a lock a live process holds must survive the sweep — removing it splits \
+         the inode and gives two processes two locks on one session",
+    );
+    assert!(
+        stranger.exists(),
+        "a file this module did not name is not this module's to delete",
+    );
+
+    drop(held);
+}

@@ -27,9 +27,13 @@ pub struct Cli {
     ///
     /// `[profile.<name>]` is io-harness's own — a profile body is the file
     /// format again, applied over the merged scopes through the same merge they
-    /// use. It has been in the harness since its 0.27.0 and no io-cli release
-    /// selected one until 0.16.0.
+    /// use.
     ///
+    // The history this comment used to carry — which harness release added
+    // profiles, and which io-cli release first selected one — is a changelog
+    // entry rather than a description of the flag, and being on a `global` arg it
+    // printed on every subcommand's `--help` page. A `--help` page describes the
+    // binary in front of the reader; git and `CHANGELOG.md` hold the rest.
     /// `global` for the reason `-C` and `-m` are: a set of choices you want for
     /// one run is exactly the thing you type on either side of a subcommand, and
     /// `io exec --profile ci "…"` is the shape CI reaches for. Nothing is
@@ -51,10 +55,14 @@ pub struct Cli {
     /// which a status line that only ever repaints is a state nobody can read.
     ///
     /// `global` for the same reason `-C` and `-m` are: `io --plain exec "…"` and
-    /// `io exec --plain "…"` are one command, and 0.5.0 shipped a defect where
-    /// `-m` after the subcommand was rejected. A flag whose acceptance depends on
+    /// `io exec --plain "…"` are one command. A flag whose acceptance depends on
     /// which side of a word it is typed is a flag that works on the author's
     /// machine.
+    //
+    // The release that shipped exactly that defect for `-m` is why the sentence
+    // above is written down at all, and naming it belongs in the changelog: this
+    // help page is read by an operator holding *this* binary, for whom a defect in
+    // a version they are not running is noise between them and the flag.
     ///
     /// It reaches an interactive session and stops there. `io exec` constructs no
     /// theme, draws nothing and animates nothing already — see `crate::exec` —
@@ -81,11 +89,21 @@ pub enum Command {
     Resume(Resume),
     /// Add, list, inspect, change or remove an MCP server, without opening a
     /// session.
+    ///
+    /// For example: `io mcp add semlith -- semlith --store <path> mcp` declares a
+    /// server io starts itself, and `io mcp probe semlith` goes and checks that it
+    /// answers.
     Mcp(Manage),
     /// Add, list, search for or remove a capability bundle, and manage the
     /// marketplaces bundles come from, without opening a session.
+    ///
+    /// For example: `io plugin search review` prints one line per bundle any
+    /// marketplace holds, and its first field is what `io plugin add` takes.
     Plugin(Manage),
     /// Read or write one configuration key, without opening a session.
+    ///
+    /// For example: `io config get app.io-cli.theme` says what a key is set to and
+    /// which file decided it, and `io config set app.io-cli.theme dark` changes it.
     Config(Manage),
     /// Serve the Agent Client Protocol on stdin and stdout, for an editor.
     ///
@@ -102,13 +120,20 @@ pub enum Command {
     Acp,
     /// Install, list or remove a skill, without opening a session.
     ///
-    /// **Missing until 0.30.1, and `io skill add` did not exist because of it.**
-    /// `manage::parse` accepted the surface, `manage::plan` answered for it and
-    /// the session's own arm ran it — but clap knows only the subcommands named
-    /// in this enum, so the argv door answered `unrecognized subcommand 'skill'`
-    /// for a verb the README and the CHANGELOG both documented. Nothing under
-    /// `tests/` links `src/main.rs` and nothing tested clap's routing, so the
-    /// whole suite was green over a door that did not open.
+    /// For example: `io skill add ./reviewer.md` copies one skill file into io's
+    /// home, and `io skill list` names every skill installed there.
+    //
+    // **This variant was once missing, and `io skill add` did not exist because of
+    // it.** `manage::parse` accepted the surface, `manage::plan` answered for it
+    // and the session's own arm ran it — but clap knows only the subcommands named
+    // in this enum, so the argv door answered `unrecognized subcommand 'skill'` for
+    // a verb the README and the CHANGELOG both documented. Nothing under `tests/`
+    // links `src/main.rs` and nothing tested clap's routing, so the whole suite was
+    // green over a door that did not open.
+    //
+    // Kept as a comment and not as documentation: it is why the next author must
+    // not delete a variant that "looks unused", and it is not something the
+    // operator reading `io skill --help` has any use for.
     Skill(Manage),
     /// Print the command that updates this binary, for the way it was
     /// installed.
@@ -122,7 +147,7 @@ pub enum Command {
     Upgrade,
 }
 
-/// The three management subcommands' arguments, handed through untouched.
+/// The management subcommands' arguments, handed through untouched.
 ///
 /// **Every token, verbatim, straight to `crate::manage::parse`** — which is what
 /// makes `io mcp add …` and `/mcp add …` one parse rather than two that agree
@@ -136,13 +161,22 @@ pub enum Command {
 /// own and the line dies before `manage` sees it — F7's whole subject. Nothing in
 /// `manage.rs` can compensate; the tokens have to arrive intact.
 ///
-/// The flags are not documented here on purpose. `io mcp --help` shows this
-/// paragraph and `manage`'s refusals name the accepted shapes at the point of
-/// getting one wrong, which is where an operator is actually looking; a flag list
-/// repeated in a doc comment is a second place for the grammar to drift.
+/// The flags are not documented here on purpose. `manage`'s refusals name the
+/// accepted shapes at the point of getting one wrong, which is where an operator
+/// is actually looking; a flag list repeated in a doc comment is a second place
+/// for the grammar to drift. (Nothing on this struct reaches a help page anyway —
+/// clap takes a subcommand's description from the *variant* above, not from the
+/// `Args` type behind it. Only the field below is printed.)
 #[derive(Debug, clap::Args)]
 pub struct Manage {
-    /// The verb and its arguments — `add semlith -- semlith --store <path> mcp`.
+    /// The verb and its arguments.
+    //
+    // **No example here, and that is the whole of F9's first clause.** This one
+    // field is shared by four subcommands, so an example written in it is an
+    // example of *one* of them printed on the help page of all four — which is
+    // exactly what `io mcp`, `io plugin`, `io config` and `io skill` did, each
+    // showing the same `mcp add` line. Each subcommand's own example is in its
+    // variant's description above, where clap prints it once, on its own page.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub words: Vec<String>,
 }

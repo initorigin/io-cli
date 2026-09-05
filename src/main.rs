@@ -582,6 +582,12 @@ async fn drive(
             // The only clock read on this path, and it is here because
             // `src/main.rs` is the one file `tests/timing.rs` permits one in.
             let now = std::time::SystemTime::now();
+            // **The stale ones go before this one is taken (0.38.1).** Thirty-one
+            // empty `session-N.lock` files had accumulated in `~/.io-cli` with
+            // nothing removing them; `lock::sweep` removes those whose holder is
+            // provably gone, and explains why the removal cannot happen at exit.
+            // Before `acquire`, so a session never sweeps around its own file.
+            io_cli::lock::sweep(&home);
             match io_cli::lock::acquire(&home, session.id(), root, now) {
                 Ok(io_cli::lock::Taken::Held(guard)) => Some(guard),
                 // Not reachable for a session created a line ago, and said
@@ -9262,7 +9268,15 @@ async fn wizard(
     inputs: &mut UnboundedReceiver<Event>,
     theme: Theme,
 ) -> Result<Option<Theme>, String> {
-    let mut wizard = Wizard::new(theme);
+    // **What this wizard is about to write over (0.38.1).** The welcome screen
+    // said "No configuration found, so this is the first run" whatever was on
+    // disk, so `io setup` over a 36 KB `io.toml` told the operator nothing of
+    // theirs was involved — and then wrote that file. The user scope is the one
+    // the wizard writes, so it is the one worth naming, and it is reported as in
+    // force only when it is actually there.
+    let mut wizard = Wizard::new(theme).over(
+        io_harness::config::user_path().filter(|path| path.is_file()),
+    );
     // **What the catalogue read already returned, kept instead of thrown away.**
     // The wizard reads the provider's catalogue to offer a model list, and until
     // 0.22.0 mapped every row down to its id and dropped the price on it. Holding

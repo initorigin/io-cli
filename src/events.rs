@@ -741,6 +741,11 @@ impl Events {
                 tokens,
                 changed,
             } => {
+                // **A child's outcome arrives as a Rust `Debug` and is not drawn
+                // as one (0.38.1).** See [`said_plainly`]. Rebound before
+                // anything reads it, so every use below — the pairing, the step
+                // line, the emptiness test — sees the same sentence.
+                let decision = &said_plainly(decision);
                 // This step closing is the next one opening, and a thought
                 // belonging to the next step is measured from here.
                 self.step_at = at;
@@ -1514,8 +1519,23 @@ impl Events {
                 // folds it into the next prompt. `/expand` is where it goes.
                 let elapsed = format_millis(at.saturating_sub(self.step_at));
                 self.thought = Some(text.clone());
-                let mut lines = self.flush_text();
-                lines.push(Line::from(vec![
+                // **The thought line goes ABOVE the prose it produced, not under
+                // it (0.38.1).** This arm flushed the buffered prose first and
+                // then pushed the footer, which is right only if the event
+                // arrives before the tokens it explains. It does not: the
+                // 2026-09-05 field test found `thought · 2.3s` drawn *under* the
+                // final reply, and the same ordering in the JSON stream — the
+                // `reasoning` event follows the `token` it produced. So a reader
+                // met the answer, then a note saying the model had been thinking,
+                // which reads as a thought about the answer rather than the
+                // thinking that reached it.
+                //
+                // Reordering here is the whole fix and it is safe in both
+                // directions: a provider that streams reasoning first leaves
+                // `live` empty, so `flush_text` returns nothing and the order
+                // cannot be observed. Nothing is asked of io-harness, which is
+                // reporting what its provider gave it in the order it arrived.
+                let mut lines = vec![Line::from(vec![
                     Span::styled(leader(separator), theme.style(Tone::Muted)),
                     // Italic, which is what a thought is: the model's own voice
                     // rather than the interface's, and set apart from the tool
@@ -1528,7 +1548,8 @@ impl Events {
                         format!("{separator}{elapsed}{separator}{tokens} tok"),
                         theme.style(Tone::Muted),
                     ),
-                ]));
+                ])];
+                lines.extend(self.flush_text());
                 lines
             }
             // **Nothing in this process dialled anything.** The provider ran its
@@ -2371,6 +2392,78 @@ pub fn outcome_help(outcome: &str) -> Option<&'static str> {
 /// So the names are kept and the arguments are dropped. 0.1.1's F5 asks that a
 /// step read as decision, then what it ran, then what came back, and it still
 /// does — the tool cell above it is where the arguments live now.
+/// A step's decision sentence with any Rust `Debug` in it written out as words.
+///
+/// **io-harness formats a spawned child's outcome with `{outcome:?}`**
+/// (`run/tree.rs`), so the sentence it hands this crate is literally
+/// `spawned child 149: Success { steps: 1 }`. Drawn verbatim — which is what the
+/// 2026-09-05 field test saw — the fleet result line shows a reader a struct
+/// literal from a language they may not write, in the one row that is supposed
+/// to tell them what their children did.
+///
+/// **This is a rendering of io-harness's own sentence, not a second opinion about
+/// it.** Every fact drawn comes out of the text the harness produced: the variant
+/// name it chose and the fields it printed, re-spelled as words. Nothing is
+/// looked up, inferred, or corrected — the same discipline `skill_and_file` keeps
+/// when it reads `read skill {label}` out of a decision rather than deciding for
+/// itself which skill loaded.
+///
+/// It is general over the variant rather than a table of the eighteen, for the
+/// reason the wildcard in `acp_map` is a documented hazard: a `RunOutcome` the
+/// next pin adds would fall through a table and be drawn as a struct again, and
+/// the shape of a `Debug` is the one thing that does not change when a variant
+/// does.
+///
+/// Only segments that begin `spawned child ` are touched. A decision sentence is
+/// prose the harness wrote and rewriting all of it would be exactly the second
+/// opinion this crate refuses.
+fn said_plainly(decision: &str) -> String {
+    decision
+        .split("; ")
+        .map(|part| match part.split_once(": ") {
+            Some((head, rest)) if head.starts_with("spawned child ") => {
+                format!("{head} {}", words_of_debug(rest))
+            }
+            _ => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `Success { steps: 1 }` as `success, steps 1`; `Interrupted` as `interrupted`.
+///
+/// The variant name is split on its own capitals and lowercased, the braces and
+/// parentheses go, and `field: value` becomes `field value`. A shape this does
+/// not recognise is returned with its punctuation stripped rather than guessed
+/// at, because a sentence that has lost a brace is still readable and a sentence
+/// this function invented is not.
+fn words_of_debug(text: &str) -> String {
+    let text = text.trim();
+    let (name, fields) = match text.find(['{', '(']) {
+        Some(at) => (text[..at].trim(), text[at + 1..].trim_end_matches(['}', ')']).trim()),
+        None => (text, ""),
+    };
+
+    let mut spelled = String::new();
+    for (index, c) in name.char_indices() {
+        if c.is_ascii_uppercase() && index > 0 {
+            spelled.push(' ');
+        }
+        spelled.push(c.to_ascii_lowercase());
+    }
+
+    if fields.is_empty() {
+        return spelled;
+    }
+    let said = fields
+        .split(',')
+        .map(|pair| pair.trim().replacen(':', "", 1).trim().to_string())
+        .filter(|pair| !pair.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{spelled}, {said}")
+}
+
 fn tool_names(tool_call: &str) -> String {
     tool_call
         .split(" | ")
