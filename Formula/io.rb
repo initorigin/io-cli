@@ -32,13 +32,13 @@ class Io < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/initorigin/io-cli/releases/download/v0.38.0/io-0.38.0-aarch64-apple-darwin.tar.gz"
-      sha256 "e38a9a4ac49b6149049d19b2d1398d42da6ed33f3b5d3c5f9f4f5933b725dc79"
+      url "https://github.com/initorigin/io-cli/releases/download/v0.38.1/io-0.38.1-aarch64-apple-darwin.tar.gz"
+      sha256 "ba2cc2b821c238686c835a886b5eb4eb392365b87873ffcd5960ef6560aa73d0"
     end
 
     if Hardware::CPU.intel?
-      url "https://github.com/initorigin/io-cli/releases/download/v0.38.0/io-0.38.0-x86_64-apple-darwin.tar.gz"
-      sha256 "2f7f8923a6c918a4f8bae9fc33f6c31888a91456a2184daf2eb86978a6777b68"
+      url "https://github.com/initorigin/io-cli/releases/download/v0.38.1/io-0.38.1-x86_64-apple-darwin.tar.gz"
+      sha256 "2d273e01d430de2d6f4d70f44c393d282646f421724fa78b5f4d023008d5efe7"
     end
   end
 
@@ -47,8 +47,8 @@ class Io < Formula
   # rather than a URL that 404s halfway through an install.
   on_linux do
     if Hardware::CPU.intel?
-      url "https://github.com/initorigin/io-cli/releases/download/v0.38.0/io-0.38.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "26a6e918526800047ada4050b5e6e296ee45c1a4ab5881d46741fc520b015a0c"
+      url "https://github.com/initorigin/io-cli/releases/download/v0.38.1/io-0.38.1-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "2e99e143d1c0803d7e07e005146395e82d7ed20a4d883fc4bbb27be634d4040e"
     end
   end
 
