@@ -691,6 +691,13 @@ pub fn contract(
         config,
         resolved.loaded(),
     );
+    // **The gated bound, and it is here rather than in `configured` because it
+    // is this door's alone (0.38.1).** A session applies a gate turn by turn,
+    // with `gates::may_retry` deciding whether to send the agent back and an
+    // operator watching either way; headless has neither, so the bound has to
+    // ride the contract. See `contract::gated_bound` for why a gate takes away
+    // every fallback `contract::MAX_STEPS` is safe because of.
+    let contract = crate::contract::gated_bound(contract);
     // The flag last, so it beats the file, and applied with `with_exec_mode`
     // rather than by replacing the whole `SandboxConfig` — the limits the file
     // set are the operator's and are not this flag's to discard.
@@ -792,6 +799,21 @@ pub async fn main(
     // Before a store is opened, a session is created or a provider is built, so
     // a refused posture costs nothing and leaves no run behind.
     let posture = args.policy.map(posture_for).transpose()?;
+
+    // **Before the run, because the point is that the run does not happen
+    // (0.38.1).** A `[app.io-cli]` section that will not parse takes the gate
+    // down with it, and until this release `io exec` never called
+    // `settings::stored` at all — so a configured criterion was silently not
+    // applied and the run reported success without verifying anything. A session
+    // prints the notice to somebody who is looking at it; this door refuses.
+    if let Some(refusal) = settings::ungated_by_a_broken_section(&config) {
+        return Err(refusal);
+    }
+    // A section that broke without naming a gate is still worth a line here, for
+    // the same reason: the notice existed and headless never printed it.
+    if let (_, Some(notice)) = settings::stored(&config) {
+        eprintln!("io: {notice}");
+    }
 
     // And before those too: a template that does not resolve is a goal that does
     // not exist, and a run started on one would spend a provider call to say so.
@@ -1364,6 +1386,19 @@ pub async fn resume_main(
         eprintln!("{notice}");
     }
 
+    // **Both headless doors refuse an unreadable gate, not just the first.** A
+    // resume rebuilds the contract from the same configuration, so a broken
+    // `[app.io-cli]` naming a gate leaves the carried-on run with no criterion
+    // and `verified_code` with no standing to read — the same silent success
+    // `io exec` now refuses, reached by the command an operator runs after the
+    // first one stopped.
+    if let Some(refusal) = settings::ungated_by_a_broken_section(&config) {
+        return Err(refusal);
+    }
+    if let (_, Some(notice)) = settings::stored(&config) {
+        eprintln!("io: {notice}");
+    }
+
     let path = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&path).map_err(|error| error.to_string())?;
 
@@ -1494,6 +1529,16 @@ impl WithProvider for Resuming {
             &self.config,
             resolved.loaded(),
         );
+        // **The gated bound rides a resume too, and leaving it off was the whole
+        // shape of the 0.38.1 defect repeating itself (found by the adversarial
+        // review, before the merge).** `io exec` and `io resume` are the two
+        // headless doors, and a resume is what an operator reaches for *after*
+        // the first one ended badly — which for the 2026-09-05 field test means
+        // exactly this run: it was killed, a killed run is `Pending::Died`, and
+        // `Died` is carried on rather than refused. Bounding one door and not the
+        // other would have fixed the walk to a thousand steps only until somebody
+        // typed the obvious next command.
+        let contract = crate::contract::gated_bound(contract);
         // `None` on every arm: a containment is a fleet's shared budget, this
         // subcommand takes no flag that expresses one, and `crate::resume::recover`
         // refuses a contained run outright because io-harness publishes no
@@ -1503,8 +1548,8 @@ impl WithProvider for Resuming {
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.78.0/src/run.rs:1806`, `:2140`, `:3184`). Recovery has
-        // `resume_with_recovery_observed` (`:2602`) and nothing tree-aware, so it
+        // (`io-harness-0.79.0/src/run.rs:1811`, `:2145`, `:3189`). Recovery has
+        // `resume_with_recovery_observed` (`:2607`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree
         // entry points, and resuming through the flat one would drop it.

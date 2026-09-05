@@ -6,6 +6,60 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-09-05
+
+Two defects that switched a feature off without saying so, found by driving the released 0.38.0
+the way a user drives it rather than by running its test suite.
+
+`io config set` wrote a quoted string for every key it did not know by name, and
+`[app.io-cli.containment]` and `[run.context]` are two such sections — so `max_total_agents 4`
+reached the file as `"4"`, io-harness refused to read the section back, and fan-out was simply
+off behind one warning line. Meanwhile the in-session `/config` never went through that code at
+all and wrote the operator's raw text as TOML source, so the same key typed the same way got two
+different answers depending on which door it came through. There is now one speller and both
+doors call it.
+
+A failing verification gate under `io exec` never ended the run. io-harness evaluates the
+criterion after every step and hands the failure back, which is a reason for the agent to keep
+going, so the only thing that stopped it was this crate's own step cap of a thousand — and that
+constant is documented as safe precisely because three other bounds exist, every one of which a
+gate removes. A gated headless run now ends, and exit `6` arrives.
+
+### Changed
+
+- **Behaviour change for scripts.** `io config get` on a key io-cli's catalogue does not name now
+  reads back an unquoted number or boolean where it read back a quoted string. A script that
+  matched on `"4"` will see `4`. This is the fix, not a side effect: the quoted form is what
+  io-harness refused to deserialize.
+- **Behaviour change for CI.** A gated `io exec` that previously ran to the step cap now ends and
+  exits `6` (`UNVERIFIED`) once its criterion has failed and nothing else bounds the run. A job
+  that relied on a timeout to stop it will now fail fast instead, which is the documented
+  behaviour it should always have had. A gated run that genuinely needs more steps sets
+  `[run] max_steps`, `max_duration_secs` or `max_tokens` — any of the three wins over the new
+  bound.
+- `/config` refuses a value the key does not admit at the moment it is typed, rather than opening
+  a picker asking which file to write a value into that will not be written.
+
+### Fixed
+
+- `io config set` types a bare value as it was written for keys outside io-cli's catalogue: an
+  integer as an integer, a float as a float, `true` and `false` as booleans, everything else as a
+  quoted string. `app.io-cli.containment.*` and `run.context.*` can be set from the shell again.
+- `/config <key> <value>` in a session goes through the same speller as `io config set`, so
+  `policy.defaults.net allow` is written as a string instead of being refused as invalid TOML.
+- `io exec` refuses before the first step when `[app.io-cli]` will not deserialize while naming a
+  gate, instead of running with no criterion and reporting success. When the broken section names
+  no gate, the notice is printed rather than swallowed — headless never printed it at all.
+
+### Dependencies
+
+- io-harness `0.78` → `0.79`. No breaking change is declared and no line of its `src/` was
+  deleted. It adds `EventKind::Program` and the `run_program` tool name **unconditionally** rather
+  than behind its `codeact` feature, which this crate does not enable, so `triage::TRIAGE`,
+  `acp_map::MAPPING` and `acp_map::TOOL_KINDS` each take a row for something no run here can
+  currently emit. Three test assertions that counted event kinds by literal now derive the count
+  instead, so the next such addition names the new kind rather than a number.
+
 ## [0.38.0] - 2026-09-04
 
 The release that lets you install io the way you install everything else. Distribution was a
@@ -3461,6 +3515,7 @@ client, tool, sandbox, policy engine or session store of its own.
 - No test in this release asserts on wall-clock time.
 
 [Unreleased]: https://github.com/initorigin/io-cli/compare/v0.38.0...HEAD
+[0.38.1]: https://github.com/initorigin/io-cli/compare/v0.38.0...v0.38.1
 [0.38.0]: https://github.com/initorigin/io-cli/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/initorigin/io-cli/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/initorigin/io-cli/compare/v0.35.0...v0.36.0

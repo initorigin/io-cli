@@ -128,7 +128,7 @@ pub const SKILLS_HEAD: &str = "Skills available to you";
 /// **The directive is glued to the last catalogue line with no newline between
 /// them, so a line scan cannot see the boundary.** `compose` builds the prompt as
 /// `with_skill_catalog(..)` and then `out.push_str(&directive)`
-/// (io-harness-0.78.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
+/// (io-harness-0.79.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
 /// last `- name: description` line carrying **no trailing newline**
 /// (src/skills.rs:470-476); and `planning_directive` returns a string beginning
 /// with a space (src/run/gate.rs:282-286). So with a plan gate registered — which
