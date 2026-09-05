@@ -2288,3 +2288,45 @@ fn f3_the_cost_columns_are_filled_by_the_driver_and_not_only_by_tests() {
         );
     }
 }
+
+/// **F1 — the session door spells a configuration value through the library.**
+///
+/// The criterion's production site is `src/main.rs`'s `Action::Config` arm, and
+/// nothing under `tests/` links the driver, so without this gate the criterion is
+/// unfalsifiable by construction — the exact shape 0.33.0 shipped three of before
+/// a sabotage pass found them.
+///
+/// What it holds is the half that cannot be asserted from a unit test:
+/// `configure::source_for` is *reached* from the driver, and the driver builds no
+/// TOML value of its own on the way. Before 0.38.1 the arm read
+/// `write_where(session.root(), key, value)` with the operator's raw text as TOML
+/// source — which is why `/config k 4` wrote an integer and `io config set k 4`
+/// wrote a string for the same key. `source_for`'s own behaviour is asserted in
+/// `tests/configure.rs`; that it is what the session uses is asserted here.
+///
+/// Sabotage: put the raw `value` back into that `write_where` call and this fails
+/// on the first needle.
+#[test]
+fn f1_the_session_door_spells_a_config_value_through_the_one_speller() {
+    let driver = std::fs::read_to_string("src/main.rs").expect("this crate's driver is readable");
+    let code = code_of(&driver.replace("\r\n", "\n"));
+
+    for needle in ["configure::source_for(", "configure::composer_words("] {
+        assert!(
+            code.contains(needle),
+            "`{needle}` has no call site in src/main.rs, so the session writes a \
+             configuration value the shell door would have spelled differently — \
+             two doors and two spellings, which is the defect 0.38.1 exists to \
+             remove.",
+        );
+    }
+
+    // And the raw pass-through is gone. `write_where` takes TOML source; handing
+    // it the operator's own text is the pre-0.38.1 shape, and it is spelled here
+    // exactly as it was so the sabotage arm has something to restore.
+    assert!(
+        !code.contains("write_where(session.root(), key, value)"),
+        "the session still hands `write_where` the operator's raw text as TOML \
+         source; that is what wrote `allow` as a bare word TOML cannot parse",
+    );
+}

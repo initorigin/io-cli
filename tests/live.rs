@@ -4276,3 +4276,106 @@ fn live_an_acp_client_that_denies_a_write_stops_it() {
          not reach the run",
     );
 }
+
+/// **0.38.1 O3 — a gated run that cannot pass ends, and says `6`.**
+///
+/// The defect this proves closed was found by running the released binary, not by
+/// the suite, and it could only be found that way: every offline assertion about
+/// the gate passed while a real `io exec` ran for nine minutes and was killed
+/// without ever printing an exit code. So the evidence has to be a real turn.
+///
+/// **The gate is a command that cannot succeed**, so the run's criterion can
+/// never be met however well the model does the work. What is being measured is
+/// therefore the *bound* rather than the model: before this release io-harness
+/// kept handing the failure back and the agent kept stepping toward
+/// `contract::MAX_STEPS`, a thousand.
+///
+/// Three assertions, and the wall clock is the one that matters. An exit code
+/// alone would have been produced eventually by the old build too — at a
+/// thousand steps, which is what "never ends" means in practice. Bounding the
+/// elapsed time is what distinguishes a run that ended because the gate bound it
+/// from one that ended because the model gave up.
+///
+/// `[run]` carries no budget on purpose: any of `max_steps`, `max_duration_secs`
+/// or `max_tokens` would bound the run by itself and the arm would pass without
+/// `GATED_MAX_STEPS` existing.
+#[test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+fn live_o3_a_gated_run_that_cannot_pass_exits_six() {
+    use std::process::Command;
+
+    let config = tempfile::tempdir().expect("a config directory");
+    let workspace = tempfile::tempdir().expect("a workspace");
+
+    // `false` is on every unix host and exits 1 whatever happens. No `[run]`
+    // section at all — see the doc comment.
+    std::fs::write(
+        config.path().join("io.toml"),
+        format!(
+            "[[provider]]\nkind = \"openrouter\"\nmodel = {:?}\n\n\
+             [policy.defaults]\nread = \"allow\"\nwrite = \"allow\"\n\
+             exec = \"allow\"\nnet = \"deny\"\n\n\
+             [app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n",
+            model()
+        ),
+    )
+    .expect("the configuration is written");
+
+    let run = Command::new(env!("CARGO_BIN_EXE_io"))
+        .arg("-C")
+        .arg(workspace.path())
+        .arg("exec")
+        .arg("--json")
+        .arg("Create gate.txt containing the word ok.")
+        .env("IO_CONFIG", config.path().join("io.toml"))
+        .env("OPENROUTER_API_KEY", key())
+        .output()
+        .expect("the built binary runs");
+
+    let code = run.status.code();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+
+    // **The step count is the instrument, and a wall clock is not.** The first
+    // draft of this arm timed the run and asserted it finished inside ten
+    // minutes. `tests/timing.rs`'s N1 refused it — no test in this repository
+    // measures elapsed time — and N1 was right for a better reason than the one
+    // it states: elapsed time is a proxy for the bound, and a slow host or a
+    // chatty model moves it. The step count IS the bound. If `GATED_MAX_STEPS`
+    // fired, the run stopped at or under forty steps; before this release the
+    // same run walked toward `MAX_STEPS`, a thousand.
+    let steps = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|frame| frame.get("step").and_then(serde_json::Value::as_u64))
+        .max()
+        .unwrap_or(0);
+    println!(
+        "exit {code:?} after {steps} steps\n--- stderr ---\n{}",
+        stderr.trim()
+    );
+
+    assert_eq!(
+        code,
+        Some(6),
+        "a run whose criterion cannot pass must report UNVERIFIED; stderr was:\n{stderr}",
+    );
+    assert!(
+        steps > 0,
+        "no step was reported at all, so this arm is asserting nothing about a \
+         run that happened; stdout was:\n{stdout}",
+    );
+    assert!(
+        steps <= u64::from(io_cli::contract::GATED_MAX_STEPS),
+        "the run reached step {steps}, past the gated bound of {}. An exit code \
+         eventually produced at a thousand steps is not the gate bounding \
+         anything — it is the old behaviour with a slower ending",
+        io_cli::contract::GATED_MAX_STEPS,
+    );
+    // The gate is reported rather than silently deciding the exit code. A `6`
+    // with nothing said about why is a CI failure nobody can act on.
+    assert!(
+        stderr.contains("gate"),
+        "stderr must say the gate is what ended this: {stderr}",
+    );
+}

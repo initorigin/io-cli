@@ -5852,8 +5852,30 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         ),
                     );
                 }
+                // **The value is spelled by the library, not passed through
+                // (0.38.1).** Until this release the operator's raw text went to
+                // `write_where` as TOML source, so `/config k 4` wrote the
+                // integer `4` while `io config set k 4` wrote the string `"4"`
+                // for the same key, and `/config policy.defaults.net allow` was
+                // refused because a bare `allow` is not a TOML value at all.
+                // `configure::source_for` is the one speller both doors call, and
+                // `composer_words` is the only thing that differs between them:
+                // a shell already split and unquoted the argv form, and nothing
+                // has done either to a composer line.
                 Action::Config(Some((key, value))) => {
-                    picker = Some(write_where(session.root(), key, value));
+                    match io_cli::configure::source_for(
+                        &key,
+                        &io_cli::configure::composer_words(&value),
+                    ) {
+                        Ok(source) => {
+                            picker = Some(write_where(session.root(), key, source));
+                        }
+                        // The refusal io-harness or the catalogue would have given
+                        // at the far end, given here instead — before a picker
+                        // asks which file to write a value into that will not be
+                        // written.
+                        Err(refusal) => app.record(Tone::Refused, refusal),
+                    }
                 }
                 // A line typed with nothing after the word. Answered with what to
                 // type rather than by opening a picker over three files it would

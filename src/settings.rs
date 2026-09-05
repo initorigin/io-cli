@@ -337,6 +337,58 @@ pub fn deprecated_max_steps(config: &io_harness::Config) -> Option<String> {
     ))
 }
 
+/// The refusal a headless run earns when `[app.io-cli]` will not parse **and it
+/// names a gate**.
+///
+/// **A gate that cannot be read is a gate that is not in force, and headless is
+/// the one surface with nobody to notice (0.38.1).** `[app.io-cli]` has no
+/// `deny_unknown_fields`, but it is still one section: a single mistyped value
+/// anywhere in it — `max_total_agents = "4"`, which the 2026-09-05 field test
+/// produced with `io config set` — fails the whole `Config::app` call, and
+/// [`stored`] then answers `None` for every key including the gate. A session
+/// prints the notice to a person who is looking at it. `io exec` did not call
+/// [`stored`] at all, so the run proceeded with no criterion, no gate row and
+/// exit `0`: a verification the operator configured, silently not applied, on the
+/// surface whose whole purpose is to be trusted unattended.
+///
+/// So the raw section is read for a gate key, by exactly the shape
+/// [`deprecated_max_steps`] uses and for the same reason — the typed struct is
+/// unavailable precisely when this question needs answering.
+///
+/// **It refuses rather than warns**, and only here. A warning is the behaviour
+/// that produced the finding; and the same broken section in a session is a
+/// person reading a line, which is why this is `io exec`'s alone.
+pub fn ungated_by_a_broken_section(config: &io_harness::Config) -> Option<String> {
+    /// The gate table alone, and deliberately never constructed.
+    ///
+    /// `IgnoredAny` accepts any shape and keeps none of it, so this parse
+    /// succeeds on exactly the values that fail `CliSettings` — which is the
+    /// whole point: it answers "was a gate asked for", never "is the gate
+    /// valid". It is also the reason this file still names no configuration
+    /// type and parses no TOML, which `tests/dependencies.rs` holds it to;
+    /// `src/import.rs` reads a credential-shaped field the same way and for the
+    /// same reason.
+    #[derive(Deserialize)]
+    struct Gated {
+        #[serde(default)]
+        gates: Option<serde::de::IgnoredAny>,
+    }
+
+    // Nothing to say when the section parses: `stored` returns the real settings
+    // and the gate is in force or genuinely absent.
+    if config.app::<CliSettings>(APP_KEY).is_ok() {
+        return None;
+    }
+    config.app::<Gated>(APP_KEY).ok()??.gates?;
+    Some(
+        "`[app.io-cli]` names a gate but the section could not be read, so no criterion is in \
+         force and this run would report success without verifying anything. `io config get \
+         app.io-cli` shows the section; a value written as a string where a number is expected \
+         is the usual cause. Nothing was run."
+            .to_string(),
+    )
+}
+
 /// Whether this session runs in plain mode: `--plain`, or `[app.io-cli] plain`.
 ///
 /// **A pure function, and it lives here rather than in `src/main.rs` on purpose.**
