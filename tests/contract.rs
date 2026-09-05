@@ -1829,7 +1829,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
 /// **F7 — a tilde is a home directory, never a directory named `~`.**
 ///
 /// io-harness substitutes `${env:…}` and `${file:…}` and nothing else — there is
-/// no tilde branch anywhere in `io-harness-0.78.0/src/config.rs` — so a `~` an
+/// no tilde branch anywhere in `io-harness-0.79.0/src/config.rs` — so a `~` an
 /// operator writes in `[run] skills` reaches `Skills::discover` verbatim and the
 /// harness looks inside a directory whose name is one character long. The
 /// operator's skills sit exactly where they said they would, and the session

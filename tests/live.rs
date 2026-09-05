@@ -4321,22 +4321,37 @@ fn live_o3_a_gated_run_that_cannot_pass_exits_six() {
     )
     .expect("the configuration is written");
 
-    let began = std::time::Instant::now();
     let run = Command::new(env!("CARGO_BIN_EXE_io"))
         .arg("-C")
         .arg(workspace.path())
         .arg("exec")
+        .arg("--json")
         .arg("Create gate.txt containing the word ok.")
         .env("IO_CONFIG", config.path().join("io.toml"))
         .env("OPENROUTER_API_KEY", key())
         .output()
         .expect("the built binary runs");
-    let elapsed = began.elapsed();
 
     let code = run.status.code();
+    let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
+
+    // **The step count is the instrument, and a wall clock is not.** The first
+    // draft of this arm timed the run and asserted it finished inside ten
+    // minutes. `tests/timing.rs`'s N1 refused it — no test in this repository
+    // measures elapsed time — and N1 was right for a better reason than the one
+    // it states: elapsed time is a proxy for the bound, and a slow host or a
+    // chatty model moves it. The step count IS the bound. If `GATED_MAX_STEPS`
+    // fired, the run stopped at or under forty steps; before this release the
+    // same run walked toward `MAX_STEPS`, a thousand.
+    let steps = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|frame| frame.get("step").and_then(serde_json::Value::as_u64))
+        .max()
+        .unwrap_or(0);
     println!(
-        "exit {code:?} after {elapsed:?}\n--- stderr ---\n{}",
+        "exit {code:?} after {steps} steps\n--- stderr ---\n{}",
         stderr.trim()
     );
 
@@ -4346,11 +4361,16 @@ fn live_o3_a_gated_run_that_cannot_pass_exits_six() {
         "a run whose criterion cannot pass must report UNVERIFIED; stderr was:\n{stderr}",
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(600),
-        "the run took {elapsed:?}. The field test killed the old build at nine \
-         minutes and it was still going, so an unbounded run is exactly what this \
-         asserts against — an exit code reached at a thousand steps is not the \
-         gate bounding anything",
+        steps > 0,
+        "no step was reported at all, so this arm is asserting nothing about a \
+         run that happened; stdout was:\n{stdout}",
+    );
+    assert!(
+        steps <= u64::from(io_cli::contract::GATED_MAX_STEPS),
+        "the run reached step {steps}, past the gated bound of {}. An exit code \
+         eventually produced at a thousand steps is not the gate bounding \
+         anything — it is the old behaviour with a slower ending",
+        io_cli::contract::GATED_MAX_STEPS,
     );
     // The gate is reported rather than silently deciding the exit code. A `6`
     // with nothing said about why is a CI failure nobody can act on.
