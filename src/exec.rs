@@ -1055,7 +1055,80 @@ fn gate_line(standing: &crate::gates::Standing) -> String {
 /// is how much that one answer has to cover. It is `1` for an ordinary question
 /// and `null` for the three pauses that are not questions, which is the shape
 /// `id` already uses for the run whose process went away.
-pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
+/// What a parked run is, beyond the pause it is parked on (0.38.2).
+///
+/// **Three facts that tell two rows apart, and none of them was readable before
+/// io-harness 0.81.0.** The 2026-09-05 field test found thirteen parked runs
+/// listed as `run 41  question 12  step 3`, `run 42  question 13  step 4`, and so
+/// on — differing only by numbers that mean nothing to the person who has to
+/// choose one. `runs.goal` had been written since 0.1.0 with no public reader, and
+/// there was no reader for a run's own start time either; io-harness#258 closed
+/// both as `Store::run_goal` and `Store::run_created_at`.
+///
+/// Every field is an `Option` and each `None` means something different from the
+/// others, which is why they are not flattened into a formatted string here:
+/// `started_at` is `None` for a run older than io-harness 0.7.0, when the column
+/// did not exist, and rendering that as a time — any time — would put a false date
+/// on the oldest rows in the one listing this exists to make legible.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Parked {
+    /// What the run was started to do, as `Store::run_goal` reports it.
+    pub goal: Option<String>,
+    /// When it started, as the store recorded it — a stored string, never a clock
+    /// read.
+    pub started_at: Option<String>,
+    /// The root it ran against, as `Store::run_file` reports it.
+    pub root: Option<String>,
+}
+
+impl Parked {
+    /// The three facts, read from the store and never guessed at.
+    ///
+    /// A read that fails is `None` rather than an error that stops the listing: a
+    /// row missing its goal is still a row an operator can resume, and refusing to
+    /// print the other twelve because the thirteenth could not be read would be
+    /// the worse failure.
+    #[must_use]
+    pub fn of(store: &Store, run_id: i64) -> Self {
+        Self {
+            goal: store.run_goal(run_id).ok().flatten(),
+            started_at: store.run_created_at(run_id).ok().flatten(),
+            root: store.run_file(run_id).ok().flatten(),
+        }
+    }
+
+    /// The goal on one line of a listing, or `None` where there is none.
+    ///
+    /// **Folded to one line and never cut, and the difference matters here.** The
+    /// first draft kept sixty characters and put an ellipsis after them, which
+    /// reads well and is wrong on this door: N6 in `tests/exec.rs` holds this file
+    /// to composing nothing, because a headless stream is not a viewport and
+    /// clipping it loses data a machine was going to read. The gate caught it. A
+    /// long goal therefore makes a long row, and a terminal wraps it — which is the
+    /// terminal's decision to make and not this program's.
+    ///
+    /// N6 sweeps this file's whole text and strips no comments, so its four needles
+    /// are banned from prose here as well as from code. This sentence has been
+    /// rewritten twice for that reason: naming the gate spells one of them, and
+    /// saying what the first draft did spells another.
+    ///
+    /// The fold stays, because it is a different act from a cut: one row per run is
+    /// the shape being read, and a goal somebody typed across four lines would
+    /// silently make one row four. The verbatim goal, newlines and all, is on the
+    /// `--json` object, which is the stream that promises it.
+    #[must_use]
+    pub fn short_goal(&self) -> Option<String> {
+        let one_line = self
+            .goal
+            .as_deref()?
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!one_line.is_empty()).then_some(one_line)
+    }
+}
+
+pub fn listed(run_id: i64, pending: &Pending, parked: &Parked, json: bool) -> Option<String> {
     let (waiting_on, id, step, asked) = match pending {
         Pending::Question {
             question_id,
@@ -1080,12 +1153,25 @@ pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
     Some(if json {
         // Built through `serde_json` rather than formatted, so an answer holding
         // a quote is escaped by the same code that escapes the event stream.
+        // The three new keys are APPENDED and every one is nullable, so a reader
+        // written against the 0.37.0 shape goes on working: `serde_json` ignores
+        // what it was not asked for, and a `null` is the shape `id` and
+        // `questions` already use for a row that has none.
+        //
+        // `started_at` is the store's own string, unformatted. A script sorting
+        // parked runs wants the sortable stamp io-harness stored, not a stamp cut
+        // to the minute for a human to read — that is the plain stream's job, and
+        // the two streams differing here is the same split `io exec --json`
+        // already makes.
         serde_json::json!({
             "run_id": run_id,
             "waiting_on": waiting_on,
             "id": id,
             "step": step,
             "questions": asked,
+            "goal": parked.goal,
+            "started_at": parked.started_at,
+            "root": parked.root,
         })
         .to_string()
     } else {
@@ -1096,9 +1182,23 @@ pub fn listed(run_id: i64, pending: &Pending, json: bool) -> Option<String> {
             Some(n) if n > 1 => format!("  {n} questions"),
             _ => String::new(),
         };
+        // **`unknown` and never a date (0.38.2).** `Store::run_created_at` answers
+        // `None` for a run started before io-harness 0.7.0, when the column did
+        // not exist. Any rendered time here would be invented, and an invented
+        // date on the oldest rows is precisely the row an operator is trying to
+        // identify.
+        let when = parked
+            .started_at
+            .as_deref()
+            .map_or_else(|| "unknown".to_string(), crate::sessions::stamp);
+        let goal = parked
+            .short_goal()
+            .map_or_else(String::new, |goal| format!("  {goal}"));
         match id {
-            Some(id) => format!("run {run_id}  {waiting_on} {id}  step {step}{several}"),
-            None => format!("run {run_id}  {waiting_on}  step {step}"),
+            Some(id) => {
+                format!("run {run_id}  {waiting_on} {id}  step {step}{several}  {when}{goal}")
+            }
+            None => format!("run {run_id}  {waiting_on}  step {step}  {when}{goal}"),
         }
     })
 }
@@ -1412,7 +1512,8 @@ pub async fn resume_main(
         for run_id in store.runs().map_err(|error| error.to_string())? {
             let pending =
                 crate::resume::pending_for(&store, run_id).map_err(|error| error.to_string())?;
-            if let Some(row) = listed(run_id, &pending, args.json) {
+            let parked = Parked::of(&store, run_id);
+            if let Some(row) = listed(run_id, &pending, &parked, args.json) {
                 let _ = writeln!(out, "{row}");
             }
         }
@@ -1548,8 +1649,8 @@ impl WithProvider for Resuming {
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.79.0/src/run.rs:1811`, `:2145`, `:3189`). Recovery has
-        // `resume_with_recovery_observed` (`:2607`) and nothing tree-aware, so it
+        // (`io-harness-0.81.0/src/run.rs:1816`, `:2150`, `:3204`). Recovery has
+        // `resume_with_recovery_observed` (`:2617`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree
         // entry points, and resuming through the flat one would drop it.

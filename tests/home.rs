@@ -434,12 +434,18 @@ fn f9_running_twice_moves_nothing_the_second_time() {
         second.kept.is_empty(),
         "and nothing to keep, because the source is gone"
     );
-    assert_eq!(
-        second.lines().len(),
-        1,
-        "a run that moved nothing reports the home and nothing else"
+    // **And says nothing at all (0.38.2).** This asserted the opposite — one line,
+    // naming the home — which is the line the field test met on every single
+    // invocation of every subcommand, for a directory that had existed since the
+    // operator's first run. A report is owed for work that happened; a second
+    // adoption does no work. The line is now drawn only where something was
+    // created or moved, which the F8 arm in this file holds directly and this arm
+    // holds on the idempotent path.
+    assert!(
+        second.lines().is_empty(),
+        "a run that moved nothing has nothing to report: {:?}",
+        second.lines(),
     );
-    assert!(second.lines()[0].contains(".io-cli"));
 }
 
 /// **N3.** The home belongs to the operator alone. A credential sits in the file
@@ -533,8 +539,11 @@ fn f8_the_home_line_is_drawn_only_when_this_run_created_or_moved_something() {
         blocked: None,
         created,
     };
-    let says_home =
-        |r: &home::Report| r.lines().iter().any(|line| line.contains("keeps its files in"));
+    let says_home = |r: &home::Report| {
+        r.lines()
+            .iter()
+            .any(|line| line.contains("keeps its files in"))
+    };
 
     assert!(
         says_home(&report(true, false)),

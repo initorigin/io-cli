@@ -1974,7 +1974,15 @@ fn the_surface_where_consent_happens_never_shortens_a_hook_s_command() {
 #[test]
 fn f12_writing_enabled_says_what_it_costs_an_older_binary() {
     let said = io_cli::pluginview::OLDER_BINARY;
-    for named in ["enabled", "[[plugin]]", "0.70.0", "0.69.0", "whole"] {
+    // **The version named is io-cli's, not io-harness's (0.38.2).** This required
+    // `0.70.0` and `0.69.0` — the harness release the key arrived in and the one
+    // before it — which was true and was the wrong frame: an operator knows which
+    // `io` they installed and cannot check which harness it was built against. It
+    // also rotted, because the pin moved eleven times and the sentence could not
+    // follow. io-cli 0.29.0 is the release that first understood the key and it
+    // does not move; `f4_no_compatibility_note_names_an_io_harness_version` holds
+    // the other half, that no harness version comes back.
+    for named in ["enabled", "[[plugin]]", "io-cli", "0.29.0", "whole"] {
         assert!(
             said.contains(named),
             "the disclosure does not name `{named}`: {said}",

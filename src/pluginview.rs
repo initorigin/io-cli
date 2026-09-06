@@ -1067,16 +1067,20 @@ pub fn add(dir: &Path) -> crate::edit::Edit {
 
 /// What writing an `enabled` key into a `[[plugin]]` costs an older binary.
 ///
-/// **`enabled` on a `[[plugin]]` is io-harness 0.70.0's, and 0.69.0 does not
-/// ignore it — it refuses the whole file.** The `[[mcp]]` case is the opposite and
-/// that is exactly why this has to be said out loud: an operator who has seen a
-/// forward-compatible key before will assume this one is too. A shared `io.toml`
-/// or a second machine on the older binary loses every setting in the file, not
-/// the bundle.
+/// **`enabled` on a `[[plugin]]` is understood from io-cli 0.29.0, and an older
+/// binary does not ignore it — it refuses the whole file.** The `[[mcp]]` case is
+/// the opposite and that is exactly why this has to be said out loud: an operator
+/// who has seen a forward-compatible key before will assume this one is too. A
+/// shared `io.toml` or a second machine on the older binary loses every setting in
+/// the file, not the bundle.
+///
+/// **Named as an io-cli release rather than an io-harness one (0.38.2)** — see
+/// [`crate::servers::OLDER_BINARY`] for the reasoning, which is the same on both
+/// halves of the pair.
 pub const OLDER_BINARY: &str =
-    "this writes an `enabled` key into a `[[plugin]]` entry, which is io-harness 0.70.0's: an \
-     io-cli built against 0.69.0 refuses the whole configuration file rather than ignoring the \
-     key";
+    "this writes an `enabled` key into a `[[plugin]]` entry, which io-cli understands from 0.29.0: \
+     an older io-cli sharing this file refuses the whole configuration file rather than ignoring \
+     the key";
 
 // **`add_off` and `declared_off` were deleted in 0.30.0.**
 //

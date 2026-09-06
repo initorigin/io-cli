@@ -6,6 +6,71 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-09-06
+
+The rest of what the 2026-09-05 field test found, and the io-harness pin that turned out to carry
+two of its answers.
+
+`io resume --list` showed thirteen parked runs as thirteen rows differing only by a run id and a
+step number, which is a listing nobody can choose from. It carries each run's start time and its
+goal now. io-harness published a reader for neither until 0.81.0; both arrived there, which is why
+this was named as carried when 0.38.2 was outlined and is delivered here instead.
+
+`io plugin search` for something that is not there printed nothing at all, which reads exactly like
+a broken command. `io mcp disable` warned about io-harness versions the operator never installed
+and could not check. `io setup` over an existing 36 KB configuration announced a first run — and
+the comment beside that fix named a test holding the driver to it that had never been written, so
+the feature was one deleted line from reverting in silence.
+
+The pin moves 0.79 → 0.81.0. Its two additions to the `Provider` trait default to `None`, so every
+wrapper in this crate compiled clean, passed every test, and answered for itself instead of for the
+provider it wraps — leaving every run on the 24,000-token fallback that harness release exists to
+end. Nothing reported it and nothing could have; there is a gate now that reads the method list out
+of the locked harness rather than out of a list somebody wrote down.
+
+### Added
+
+- `io resume --list` carries each run's start time and goal on the plain row, and `goal`,
+  `started_at` and `root` on the `--json` object. A run started before io-harness 0.7.0 has no
+  stamp in the store and renders `unknown` rather than a date.
+- `io plugin search <term>` with no match says so — in the session, and on **stderr** from the argv
+  door, so a pipeline still reads exactly the hits and nothing else.
+
+### Changed
+
+- **Behaviour change for operators.** A run's context ceiling now follows the model where the
+  provider knows its window, so `ctx N%` and the `/context` page divide by a real number instead of
+  a flat 24,000. On a large-window model the percentage will read much lower than it did for the
+  same conversation, and that is the correction: the old figure began reporting pressure at roughly
+  a fifth of the window actually available. A `[run.context] max_tokens` you set still wins over
+  both.
+- **Behaviour change for scripts.** The plain rows of `io resume --list` are wider — a script
+  slicing them by column position sees new fields at the end. The `--json` shape is the one this
+  product asks scripts to parse, and its three new keys are appended and nullable, so an existing
+  reader is unaffected.
+- The two "older binary" warnings on `[[mcp]]` and `[[plugin]]` `enabled` keys name io-cli 0.29.0 —
+  the release that first understood the key — instead of io-harness 0.69.0 and 0.70.0. Same
+  boundary, stated in the version an operator can actually check, and it no longer goes stale every
+  time the pin moves.
+
+### Fixed
+
+- All four of this crate's `Provider` wrappers delegate `context_window` and `max_output_tokens`.
+  Both are new in io-harness 0.81.0 with `None` defaults, so without this the whole tree compiled
+  and tested green while discarding the window the provider catalogue already held.
+- `io setup` over an existing configuration names the file it is about to write over, and the
+  driver's call is now held to it by a test — the one `src/wizard.rs` had been citing by name.
+- A guide page said io-harness emits no event of any kind when the agent is handed an image. Since
+  io-harness 0.81.0 it emits one; the page said otherwise the moment the pin moved.
+- A session row's timestamp carries its UTC marker without breaking the assertion that the stored
+  `T` separator was replaced by a space — `UTC` contains a `T`, and the check was being made over
+  the whole string.
+- Finished sessions' lock files are swept at startup, a fenced block draws no bare language line, a
+  thought is committed above the prose it produced, a spawned child's outcome is drawn as words
+  rather than as a Rust `Debug`, the home line is drawn only on a run that created or moved
+  something, and no `--help` page narrates release history or shares one example across four
+  subcommands.
+
 ## [0.38.1] - 2026-09-05
 
 Two defects that switched a feature off without saying so, found by driving the released 0.38.0
@@ -3515,6 +3580,7 @@ client, tool, sandbox, policy engine or session store of its own.
 - No test in this release asserts on wall-clock time.
 
 [Unreleased]: https://github.com/initorigin/io-cli/compare/v0.38.0...HEAD
+[0.38.2]: https://github.com/initorigin/io-cli/compare/v0.38.1...v0.38.2
 [0.38.1]: https://github.com/initorigin/io-cli/compare/v0.38.0...v0.38.1
 [0.38.0]: https://github.com/initorigin/io-cli/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/initorigin/io-cli/compare/v0.36.0...v0.37.0

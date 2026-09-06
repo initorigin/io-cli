@@ -139,8 +139,13 @@ fn a_bullet_becomes_the_themes_bullet_at_its_own_depth() {
 #[test]
 fn a_fenced_block_is_left_exactly_as_the_model_wrote_it() {
     let lines = render("```rust\nlet x = *p; // **not bold**\n```\nafter **bold**");
-    // The opening fence draws the language and the closing one draws nothing.
-    assert_eq!(text(&lines[0]), "rust");
+    // **Neither fence draws a word (0.38.2).** This asserted `"rust"` on the
+    // opening line, which is the defect the field test reported rather than the
+    // behaviour: a bare `rust` in the scrollback reads as something the model
+    // said. See `f8_a_fence_draws_no_bare_language_line` for the property; this
+    // arm holds the line still being *there*, because a fence that drew nothing at
+    // all would close the block up against the prose above it.
+    assert_eq!(text(&lines[0]), "");
     assert_eq!(text(&lines[1]), "let x = *p; // **not bold**");
     assert!(carrying(&lines[1], Modifier::BOLD).is_empty());
     assert_eq!(text(&lines[2]), "");
@@ -199,7 +204,10 @@ fn f8_a_fence_draws_no_bare_language_line() {
     let inside = md.line("print('hi')", &DARK);
     assert_eq!(text(&inside), "print('hi')");
     assert!(
-        inside.spans.iter().any(|span| span.style != DARK.style(io_cli::theme::Tone::Normal)),
+        inside
+            .spans
+            .iter()
+            .any(|span| span.style != DARK.style(io_cli::theme::Tone::Normal)),
         "code inside a fence must not be styled as ordinary prose, or nothing \
          marks where the block is",
     );

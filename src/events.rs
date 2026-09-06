@@ -2440,7 +2440,10 @@ fn said_plainly(decision: &str) -> String {
 fn words_of_debug(text: &str) -> String {
     let text = text.trim();
     let (name, fields) = match text.find(['{', '(']) {
-        Some(at) => (text[..at].trim(), text[at + 1..].trim_end_matches(['}', ')']).trim()),
+        Some(at) => (
+            text[..at].trim(),
+            text[at + 1..].trim_end_matches(['}', ')']).trim(),
+        ),
         None => (text, ""),
     };
 

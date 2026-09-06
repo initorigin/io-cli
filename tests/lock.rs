@@ -556,7 +556,12 @@ fn n3_the_lock_and_its_record_are_readable_by_their_owner_alone() {
 fn f7_the_sweep_takes_finished_locks_and_leaves_held_ones() {
     let home = tempfile::tempdir().expect("a temporary home");
     let root = home.path().join("workspace");
-    let now = SystemTime::now();
+    // A fixed instant, never a real clock read: N1 bans one in a test, and this
+    // one has no need of a real instant — the sweep decides on the owner record
+    // and `try_lock`, never on how old a stamp is. (N1's sweep does not strip
+    // comments, so naming the banned call even to say it is not used fails the
+    // gate. That is the right trade for a gate this cheap.)
+    let now = started();
 
     // 1. A session that finished: its guard is dropped, so the owner record is
     //    gone and nothing holds the lock.
@@ -603,4 +608,35 @@ fn f7_the_sweep_takes_finished_locks_and_leaves_held_ones() {
     );
 
     drop(held);
+}
+
+/// **F7's other half — the driver actually calls the sweep.**
+///
+/// `lock::sweep` being correct is not evidence that anything runs it, and nothing
+/// under `tests/` links `src/main.rs`, so the call has no gate but this one. The
+/// arm above passes in full with the call deleted, and the symptom of deleting it
+/// is a directory quietly filling with empty lock files again — the exact
+/// 2026-09-05 field-test finding, reverted, under a green suite.
+///
+/// A source-text gate, and it says so. The same instrument the wizard's and the
+/// plugin search's driver calls are held by, for the same reason.
+///
+/// Sabotage: delete the `lock::sweep` call in `src/main.rs`, or move it below
+/// `acquire`, where this process's own lock is already held.
+#[test]
+fn f7_the_driver_sweeps_before_it_takes_a_lock() {
+    let main = std::fs::read_to_string("src/main.rs").expect("the driver is readable");
+
+    let sweep = main
+        .find("lock::sweep")
+        .expect("the driver never calls `lock::sweep`, so finished locks leak forever");
+    let acquire = main
+        .find("lock::acquire")
+        .expect("the driver takes a session lock somewhere");
+    assert!(
+        sweep < acquire,
+        "the sweep must run before this session takes its own lock — after it, the \
+         file this process is about to hold is one of the candidates, and the \
+         ordering is the whole of why the sweep is safe",
+    );
 }

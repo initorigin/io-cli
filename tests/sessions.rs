@@ -283,20 +283,38 @@ fn f1_a_row_carries_the_root_the_turn_count_and_the_first_prompt() {
          nothing on its own",
     );
 
-    // The stamp is the store's string, sliced to the minute — not a relative
-    // age. "two minutes ago" would need the current time, and this module is not
-    // allowed to ask for it.
+    // The stamp is the store's string, sliced to the minute and marked — not a
+    // relative age. "two minutes ago" would need the current time, and this module
+    // is not allowed to ask for it.
+    //
+    // **The marker is the assertion, not the length (0.38.2).** io-harness stores
+    // UTC and hands the string over unformatted; io-cli drew it beside a local
+    // wall clock with nothing saying which, so a session started at 07:13 UTC read
+    // as 07:13 to somebody at 12:43. `sessions::ZONE` is what fixes it, and a bare
+    // length check is what let it ship unnoticed — the count moved from 16 to 20
+    // and said nothing about why.
+    assert!(
+        row.at.ends_with(io_cli::sessions::ZONE),
+        "a stamp with no zone is read as the reader's own clock: {row:?}",
+    );
     assert_eq!(
         row.at.chars().count(),
-        16,
-        "a stamp cut to the minute: {row:?}"
+        "2026-09-06 07:13".chars().count() + io_cli::sessions::ZONE.chars().count(),
+        "a stamp cut to the minute, plus the marker: {row:?}",
     );
     assert!(
         !row.at.contains("ago"),
         "a relative age would mean a clock read: {row:?}",
     );
+    // **Over the stamp and not over the whole string (0.38.2).** This read
+    // `!row.at.contains('T')`, which the marker `ZONE` falsifies all by itself —
+    // `UTC` has a `T` in it. The claim being made is about the ISO separator at
+    // index 10, so it is made about the stamp, and the marker is asserted
+    // separately above. The length arm failed first, which is the only reason this
+    // did not ship as a green test asserting something that could not be true.
+    let stamp: String = row.at.chars().take(16).collect();
     assert!(
-        row.at.chars().nth(10) == Some(' ') && !row.at.contains('T'),
+        stamp.chars().nth(10) == Some(' ') && !stamp.contains('T'),
         "the stored `T` separator is replaced by a space for reading: {row:?}",
     );
 }

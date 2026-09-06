@@ -106,6 +106,14 @@ no cache entry. Use it to bound what the agent may do, and use `/context` and
 `/plugin` to see what your extensions cost — those are two different questions
 and only the second one is about money.
 
+That is a statement about the mask, and io-harness 0.81.0 added a different lever
+that *is* about the catalogue's size: tiered tool exposure, which offers the core
+tools and names the rest in one line until the model asks for a family. It makes
+exactly the trade described above — a smaller catalogue against a rewritten cache
+prefix — and the harness measures it as worth 23% of the description tokens.
+**io does not turn it on**, and this page will say so until io does: a lever
+nothing here reaches is not a feature this product has.
+
 **A mask does not reach a spawned child.** With `[app.io-cli.containment]`
 configured, a contained turn's children get contracts io-harness builds fresh,
 and it carries no mask into them deliberately — the mask is a request about your
@@ -114,8 +122,12 @@ called inside the fleet. See [The fleet](fleet.md).
 
 **An image the agent was *given* rather than asked for is not shown.** A picture
 returned by an MCP tool, and a browser screenshot, both become images inside
-io-harness — but through private plumbing and with no event of any kind, so
-nothing reaches this program to draw.
+io-harness. Until 0.81.0 that happened through private plumbing with no event of
+any kind, so nothing reached this program at all; since 0.81.0 there is an event
+carrying the media type, the size, the digest and where the picture came from.
+What is missing now is the drawing rather than the fact — io does not render a
+picture it was not handed itself, and `src/picture.rs` draws only what you
+attached with `/attach`.
 
 **A skill is listed by name and never pasted.** A template is expanded by io-cli
 into prompt text, so nothing but this program is involved; a skill is read by the

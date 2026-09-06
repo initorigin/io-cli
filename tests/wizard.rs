@@ -965,7 +965,8 @@ fn f8_the_welcome_screen_names_the_configuration_already_in_force() {
         other => panic!("the welcome screen commits its lines: {other:?}"),
     };
 
-    let mut told = Wizard::new(DARK).over(Some(std::path::PathBuf::from("/home/me/.io-cli/io.toml")));
+    let mut told =
+        Wizard::new(DARK).over(Some(std::path::PathBuf::from("/home/me/.io-cli/io.toml")));
     let said = commit(&mut told);
     assert!(
         said.contains("/home/me/.io-cli/io.toml"),
@@ -981,5 +982,53 @@ fn f8_the_welcome_screen_names_the_configuration_already_in_force() {
     assert!(
         said.contains("first run"),
         "an operator with no configuration is genuinely on their first run: {said}",
+    );
+}
+
+/// **F8 — the driver tells the wizard what it is about to write over.**
+///
+/// This gate is written because `src/wizard.rs` already claimed it existed. Its
+/// doc comment on `existing` said
+/// "`f8_the_wizard_is_told_what_configuration_is_already_in_force` holds it to
+/// that, because nothing under `tests/` links the driver" — and no such test was
+/// ever written. Everything else about the feature was covered: `Wizard::over`
+/// has arms, the wording has arms, and all of them pass with the one call in the
+/// driver deleted, because `existing` defaults to `None` and `None` is the
+/// first-run wording. So the whole feature was one line away from reverting to the
+/// exact defect it fixes, in silence, with a comment asserting otherwise.
+///
+/// A sentence claiming a guarantee that nothing enforces is worse than no
+/// sentence: it is the reason nobody goes looking. That is the class of claim
+/// 0.38.2 exists to delete, and the honest deletion here is to make the claim
+/// true rather than to remove it.
+///
+/// A source-text gate, and it says so. Nothing under `tests/` links
+/// `src/main.rs`, so this reads the driver as text — the same instrument
+/// `f9_plugin_search_with_no_match_says_nothing_matched` uses, for the same
+/// reason.
+///
+/// Sabotage: delete the `.over(...)` call in `src/main.rs`, or narrow it to
+/// `user_path()` without the `is_file` filter.
+#[test]
+fn f8_the_wizard_is_told_what_configuration_is_already_in_force() {
+    let main = std::fs::read_to_string("src/main.rs").expect("the driver is readable");
+
+    assert!(
+        main.contains("Wizard::new(theme).over("),
+        "the driver builds a wizard without telling it what is already in force, \
+         so `io setup` claims a first run over an operator's existing file — which \
+         is the 2026-09-05 field-test finding, reverted",
+    );
+    assert!(
+        main.contains("io_harness::config::user_path()"),
+        "the file named must be the one the wizard actually writes, which is the \
+         user scope's — naming a discovered project file would point at something \
+         this run is not about to touch",
+    );
+    assert!(
+        main.contains(".filter(|path| path.is_file())"),
+        "a path that does not exist is not configuration in force. Without the \
+         filter every operator is told their user file is at stake, which is the \
+         same lie in the other direction",
     );
 }

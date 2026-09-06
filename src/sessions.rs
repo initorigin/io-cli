@@ -244,7 +244,10 @@ pub fn resume(store: &Store, id: i64) -> Result<io_harness::Session, io_harness:
 /// ago*.
 pub const ZONE: &str = " UTC";
 
-fn stamp(created_at: &str) -> String {
+/// `pub` from 0.38.2, because `io resume --list` draws the same kind of stamp and
+/// two spellings of a timestamp on two listings of the same store is exactly the
+/// disagreement `ZONE` exists to end.
+pub fn stamp(created_at: &str) -> String {
     let cut: String = created_at.chars().take(16).collect();
     format!("{}{ZONE}", cut.replace('T', " "))
 }
