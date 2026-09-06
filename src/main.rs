@@ -8493,8 +8493,30 @@ async fn turn<P: Provider>(
         // Abandoned. The run's own record is whatever io-harness had written by
         // the time the future was dropped, and saying so is the honest line: the
         // work above is real and the turn did not finish.
+        // Taken back whole: no step, nothing streamed, nothing on screen but the
+        // echo — and the echo has been rewound too, so there is nothing left to
+        // annotate. This is the operator pressing the key a moment after `Enter`.
         None if undone => {}
-        None => app.say(Tone::Muted, "stopped"),
+        // **Committed, not said, and 0.38.2 said it (0.39.0).** `App::say` writes
+        // the footer, which is gone at the next keystroke; `App::record` writes
+        // the transcript. This line is what a turn *ended as*, which `App::say`'s
+        // own documentation names as `record`'s half — and it was the one ending
+        // that went to the wrong one. The 2026-09-05 field test stopped a turn
+        // and found "no record in the scrollback that it had ever started": the
+        // prompt echo was above it, the work was above that, and the only thing
+        // tying them to an ending vanished on the next key pressed.
+        //
+        // It says what was kept as well as that it stopped, because "stopped" on
+        // its own leaves an operator looking at a half-finished transcript with
+        // no way to tell a turn that was interrupted from one that failed
+        // silently.
+        None => app.record(
+            Tone::Muted,
+            format!(
+                "stopped {} what the turn had already done is above, and is kept",
+                app.theme.glyphs.dash
+            ),
+        ),
         // **A turn that ended parked said nothing at all until 0.23.0.** The
         // harness returns `AwaitingAnswer`, `AwaitingPlan` or `AwaitingRecovery`
         // as an ordinary `Ok`, so this arm matched and dropped it — and the
