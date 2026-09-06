@@ -602,6 +602,16 @@ fn every_event_this_release_renders_draws_in_ascii() {
             used: 1,
             discarded: 2,
         },
+        // 0.39.0 — a picture the agent was handed rather than one the operator
+        // attached. Four separators and the muted leader, all of which differ
+        // between the sets; the picture itself is never drawn from this arm, so
+        // what is swept here is the whole of what it renders.
+        EventKind::ImageAttached {
+            media_type: "image/png".into(),
+            bytes: 391_790,
+            digest: "sha256:not-a-real-digest".into(),
+            source: "browser".into(),
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is

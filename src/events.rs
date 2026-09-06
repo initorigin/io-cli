@@ -1796,6 +1796,55 @@ impl Events {
                 });
                 lines
             }
+            // **A picture the agent was handed, named but not drawn (0.39.0).**
+            //
+            // The operator's own attachments are drawn where they are attached, by
+            // `crate::picture`. This event is for the other four ways an image
+            // reaches a run — an MCP tool's reply, a browser screenshot, the
+            // agent's own `view_image`, and the contract's own images — and until
+            // io-harness 0.81.0 there was no event for any of them at all.
+            //
+            // The row says where it came from, what it is and how big, and stops
+            // there. Showing it is not on: the bytes are not on the event (by
+            // design — `ImageAttached` carries a digest and never the image), and
+            // a surface that fetched them to draw a screenshot the operator did
+            // not ask for would spend a terminal's whole viewport on it.
+            //
+            // What makes the row worth a line rather than a silence is that this
+            // is something that **entered the model's context**. An operator whose
+            // window filled with a screenshot could otherwise read `/context`, see
+            // the conversation swollen and find nothing anywhere saying a picture
+            // had arrived.
+            EventKind::ImageAttached {
+                media_type,
+                bytes,
+                source,
+                ..
+            } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled("Image".to_string(), theme.style(Tone::Normal)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    // io-harness's own word for the door it came through, not a
+                    // sentence of io-cli's about it: `mcp`, `browser`,
+                    // `view_image` or `caller`. A fifth one it grows reads as
+                    // itself rather than as "unknown".
+                    Span::styled(source.clone(), theme.style(Tone::Muted)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(media_type.clone(), theme.style(Tone::Muted)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    // `crate::picture::bytes`, which is what every other size an
+                    // operator reads in this product is spelled with. A second
+                    // formatter here would report one image two ways depending on
+                    // which door it came through.
+                    Span::styled(
+                        crate::picture::bytes(usize::try_from(*bytes).unwrap_or(usize::MAX)),
+                        theme.style(Tone::Muted),
+                    ),
+                ]));
+                lines
+            }
             // Guarded on the items rather than only on the tag, because io-harness
             // accepts a write of none: `parse_todo_items` validates each item it is
             // given and never rejects an empty list, so `{"items": []}` dispatches

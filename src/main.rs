@@ -8684,6 +8684,23 @@ fn note_context(
     {
         app.status.note_ceiling(*max_tokens, source);
     }
+    // **How much of the prompt the provider read from its cache (0.39.0).** Here
+    // for the ceiling's reason exactly — this is the one function every door
+    // already calls per event, so an arm written beside one of the three call
+    // sites would leave the headless path or the resume path reporting a bill
+    // that looks entirely fresh.
+    //
+    // `cache_read_tokens` alone. `fresh_prompt_tokens` is the remainder and would
+    // be a second number saying the same thing; `cache_write_tokens` is charged
+    // differently and its `None` means *not reported* rather than *none written*,
+    // which is not a thing to fold into a total. Both stay on
+    // `io exec --json` and in the durable trace.
+    if let io_harness::EventKind::StepUsage {
+        cache_read_tokens, ..
+    } = &event.kind
+    {
+        app.status.note_step_usage(*cache_read_tokens);
+    }
     if let Some(request) = seen.latest() {
         // **What is LEFT of the run budget, not all of it.** io-harness assembles
         // against the unspent remainder — a run low on budget gets a smaller

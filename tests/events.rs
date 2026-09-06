@@ -3291,6 +3291,55 @@ fn f8_a_thought_is_committed_above_the_prose_it_produced() {
 ///
 /// Sabotage: drop the `said_plainly` rebinding in the `Step` arm and every row
 /// with a brace in it fails.
+/// **F18 — a picture the agent was handed is named, and not drawn.**
+///
+/// `src/picture.rs` draws every image the *operator* attached, where they attach
+/// it. This event is the other four doors — an MCP tool's reply, a browser
+/// screenshot, the agent's own `view_image`, and the contract's own images — and
+/// before io-harness 0.81.0 there was no event for any of them.
+///
+/// The row's job is to say that something entered the model's context. Without
+/// it an operator whose window filled with a screenshot they never asked for
+/// could read `/context`, see the conversation swollen, and find nothing anywhere
+/// saying a picture had arrived.
+///
+/// The `source` word is io-harness's, passed through rather than translated: a
+/// fifth door it grows reads as itself rather than as "unknown".
+#[test]
+fn f18_an_image_the_agent_was_handed_is_named_with_its_door_and_its_size() {
+    for source in ["mcp", "browser", "view_image", "caller"] {
+        let mut events = Events::new(DARK);
+        let line = rendered(
+            &mut events,
+            EventKind::ImageAttached {
+                media_type: "image/png".into(),
+                bytes: 391_790,
+                digest: "sha256:not-a-real-digest".into(),
+                source: source.into(),
+            },
+        );
+
+        assert!(
+            line.contains(source),
+            "the row has to say which door the picture came through, because that \
+             is the difference between one the operator sent and one the agent \
+             fetched: {line}",
+        );
+        assert!(line.contains("image/png"), "{line}");
+        assert!(
+            line.contains("382.6 KB"),
+            "the size is spelled with `picture::bytes`, like every other size in \
+             the product — a second formatter would report one image two ways \
+             depending on which door it came through: {line}",
+        );
+        assert!(
+            !line.contains("sha256"),
+            "the digest is io-harness's bookkeeping and means nothing to a reader \
+             of a transcript: {line}",
+        );
+    }
+}
+
 #[test]
 fn f8_a_spawned_childs_outcome_is_drawn_as_words() {
     for debug in [

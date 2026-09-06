@@ -349,34 +349,45 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         "the `ctx` field's denominator, and the `/context` page's total, which are one expression \
          so that they cannot disagree",
     ),
-    // **`step_usage` is silent for exactly `step_attributed`'s reason**, and it is
-    // the same shape of fact: a breakdown emitted beside every committed step,
-    // whose numbers no surface in this release renders. The cached-versus-fresh
-    // split it carries is the answer to a real complaint — the running `tok`
-    // figure reads as though every re-sent catalogue were paid in full — and
-    // answering it is a footer this release does not build. Recorded as a close
-    // call, like its sibling, rather than as an obvious silence.
+    // **`step_usage` was the close call 0.38.2 recorded, and 0.39.0 is the release
+    // it said would answer it.** The note here read "the fresh-versus-cached split
+    // it carries is what the footer's `tok` figure does not yet separate, and
+    // separating it is a release rather than a row". This is that release: the
+    // cache read accumulates onto `Status::cached` and the footer draws
+    // `52k tok · 44k cached`.
+    //
+    // A field and not a line, because it arrives beside **every** committed step —
+    // a row per step would be a breakdown nobody asked for scrolling past the work
+    // it describes. The other three numbers it carries stay unrendered and stay
+    // available on `io exec --json`.
     (
         "step_usage",
-        Disposition::Silent,
-        "`io exec --json`, which forwards it verbatim, and the durable trace; the fresh-versus-\
-         cached split it carries is what the footer's `tok` figure does not yet separate, and \
-         separating it is a release rather than a row",
+        Disposition::Status,
+        "the footer's `tok` field, which draws how much of the running total the provider read \
+         from its cache; `io exec --json` forwards all four numbers verbatim, and the durable \
+         trace keeps them",
     ),
-    // **`image_attached` is silent because the picture it announces is one this
-    // crate did not hand over.** `src/picture.rs` already draws every image the
-    // operator attached, at the moment they attach it; this event fires for one
-    // that reached the run through an MCP reply, a browser screenshot or
-    // `view_image`, which is plumbing inside io-harness that emitted nothing at
-    // all before 0.81.0. Drawing it is a renderer, and a renderer is the roadmap's
-    // work rather than a patch's. A line naming a picture without showing it would
-    // be the class of sentence this release exists to delete.
+    // **`image_attached` is a line as of 0.39.0, and the objection the old note
+    // raised is answered rather than overruled.** That note said "a line naming a
+    // picture without showing it would be the class of sentence this release
+    // exists to delete", and it was right about the sentence it was refusing. What
+    // it did not weigh is that the alternative was **silence about a thing that
+    // entered the model's context** — an operator whose window filled up with a
+    // browser screenshot they never asked for could read `/context`, see the
+    // conversation swollen, and find nothing anywhere saying a picture had
+    // arrived.
+    //
+    // So the row names where it came from, what it is and how big — `mcp`,
+    // `browser`, `view_image` or `caller`, from io-harness's own `source` field —
+    // and does not pretend to show it. The picture itself is still only drawn for
+    // an image the operator handed over, through `src/picture.rs`, on a terminal
+    // that can draw one.
     (
         "image_attached",
-        Disposition::Silent,
-        "`io exec --json`, which forwards it verbatim, and the durable trace; the image reached \
-         the run inside io-harness rather than through the operator's own attachment command, \
-         and no surface in this release draws one this crate did not hand over",
+        Disposition::Line,
+        "a row naming where the picture came from, its media type and its size; the image itself \
+         is drawn only for one the operator attached, and `io exec --json` forwards the event \
+         verbatim either way",
     ),
     (
         "finished",
