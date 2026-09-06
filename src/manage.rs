@@ -105,7 +105,12 @@ pub enum Request {
 /// chosen and one that is typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillVerb {
-    /// Copy the file at `source` into this home's skills directory.
+    /// Copy the skill at `source` into this home's skills directory.
+    ///
+    /// A markdown file, or — since 0.39.0 — a directory holding a `SKILL.md`
+    /// beside whatever files it references. The second shape is the one
+    /// `Skills::discover` has always walked and the one `skillview::disable`
+    /// parks; this verb simply refused it.
     Add { source: std::path::PathBuf },
     /// Every skill, whose it is, and whether it is on.
     List,
@@ -403,7 +408,7 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
             args.only("skill add", &[])?;
             Ok(Request::Skill(SkillVerb::Add {
                 source: std::path::PathBuf::from(
-                    args.one_word("skill add", "the path of a skill file")?,
+                    args.one_word("skill add", "the path of a skill file or folder")?,
                 ),
             }))
         }
