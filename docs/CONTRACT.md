@@ -27,7 +27,7 @@ With no subcommand, `io` opens an interactive session.
 | `io setup` | The first-run wizard: provider, credential, model, permission posture, theme |
 | `io exec "<goal>"` | Runs one goal to completion with no terminal interaction |
 | `io resume` | Carries on a run that stopped for a question, a plan or an interrupted call; `--list` shows what is waiting |
-| `io mcp …` | Manage MCP servers without opening a session |
+| `io mcp …` | Manage MCP servers without opening a session; `io mcp serve` makes io one, over stdio |
 | `io plugin …` | Manage capability bundles and marketplaces — the verbs are `add`, `install`, `list`, `search`, `remove` and `marketplace`. `io plugin marketplace add <owner>/<repo>` clones an index, `io plugin marketplace list` and `remove` are its other two, and `io plugin add <name>` installs a bundle out of one |
 | `io config …` | Read and write configuration keys |
 | `io skill …` | Add, list and remove skills |
@@ -47,6 +47,15 @@ It is not run by hand: an ACP client spawns it and speaks newline-delimited JSON
 stdin. **stdout is the protocol**, so nothing else is written there and diagnostics go to stderr.
 It always exits `0` when the client closes the pipe, because the protocol reports a run's outcome
 in its own `stopReason` and a process exit code would be a second, disagreeing answer.
+
+`io mcp serve` (0.39.0) is the mirror of that door: it makes io an **MCP server**, offering this
+install's own tools to another agent over newline-delimited JSON-RPC on stdio, under the policy
+this install resolved. It takes no arguments — the workspace is `-C`'s and the policy is the
+configuration's, because either as an argument would be a way to serve a workspace under a posture
+the operator's own file does not grant. **stdout is the protocol** on this door too: what it serves,
+what it does not, and under which posture are written to stderr before the loop starts. It ends
+when the client closes stdin, and exits `0`. Eleven of io-harness's tools are deliberately not
+served, and it names them.
 
 ## Exit codes
 
