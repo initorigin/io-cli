@@ -583,7 +583,26 @@ async fn drive(
     // `Drop`, and it must outlive every turn this process takes. `let _ = …`
     // would release it on the next line, and a plain name would be a warning
     // about the one thing that is deliberate here.
-    let _session_lock = match io_cli::home::path() {
+    // **The lock lives beside the store it names a session in, not beside the
+    // crate's own home (0.39.0).** `lock::paths` keys a file on the session id,
+    // and a session id is only unique *within one `runs.db`* — `Session::open`
+    // numbers from 1 in a fresh store. Taking the lock in `home::path()` put
+    // every store's session 1 on one `session-1.lock`, so two `io` processes
+    // pointed at different `IO_CONFIG_HOME`s refused each other for a collision
+    // that means nothing: different conversations, in different stores, sharing a
+    // number. The product said so itself — the refusal below is worded "that
+    // should not be possible for a session just created" — and printed it anyway.
+    //
+    // `home::in_force` is the directory the user-scope configuration is in, which
+    // is exactly where `settings::store_path` puts `runs.db`. For an operator who
+    // has set neither variable it is the same directory as before, so nothing
+    // moves for the common case; what changes is that a moved store takes its
+    // locks with it.
+    //
+    // Found by `tests/pty.rs`, which runs several sessions at once with a home
+    // apiece, on the first day this repository could start the binary at a
+    // terminal at all.
+    let _session_lock = match io_cli::home::in_force().map(|(dir, _)| dir) {
         Some(home) => {
             // The only clock read on this path, and it is here because
             // `src/main.rs` is the one file `tests/timing.rs` permits one in.

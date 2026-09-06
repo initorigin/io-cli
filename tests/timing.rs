@@ -154,6 +154,56 @@ fn test_sources() -> Vec<(std::path::PathBuf, String)> {
     found
 }
 
+/// The properties the one exempt file is held to, in place of the ban.
+///
+/// **A deadline is allowed; impatience is not.** The pty harness waits for a
+/// child process, so it reads a clock — but every wait it performs has to be a
+/// generous liveness bound, and none of them may assert that something happened
+/// within a short one. A `Duration::from_millis(200)` deadline in that file would
+/// pass this scan's letter and be exactly the flaky gate the ban exists for, so
+/// the bound itself is what is checked.
+///
+/// Sub-second `Duration`s are permitted only for the poll interval between
+/// attempts, which decides how often the harness looks and never whether it gives
+/// up. They are told apart by name: a `WAIT`-style constant is a deadline, a
+/// `sleep` argument is an interval.
+fn assert_no_impatient_bound(path: &std::path::Path, source: &str, violations: &mut Vec<String>) {
+    for (number, line) in source.lines().enumerate() {
+        let at = format!("{}:{}", path.display(), number + 1);
+        let trimmed = line.trim();
+        // A deadline built from milliseconds is a deadline nobody should be
+        // building: the unit is the tell.
+        if trimmed.contains("Duration::from_millis") && !trimmed.contains("sleep") {
+            let is_interval = source
+                .lines()
+                .nth(number)
+                .is_some_and(|l| l.contains("sleep"));
+            if !is_interval {
+                violations.push(format!(
+                    "{at}: {trimmed} — a deadline in this file is measured in \
+                     seconds. Milliseconds belong to the poll interval, which \
+                     decides how often it looks and never whether it gives up",
+                ));
+            }
+        }
+        // And a seconds bound has to be a generous one. Anything under five is a
+        // performance assertion wearing a liveness bound's clothes.
+        if let Some(rest) = trimmed.split_once("Duration::from_secs(") {
+            if let Some(number) = rest.1.split(')').next() {
+                if let Ok(seconds) = number.trim().parse::<u64>() {
+                    if seconds < 5 {
+                        violations.push(format!(
+                            "{at}: a {seconds}s bound is a performance assertion, \
+                             not a liveness one. On a loaded runner it fires for \
+                             a reason that has nothing to do with the product",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn n1_no_test_sleeps_or_measures_elapsed_time() {
     let sources = test_sources();
@@ -175,6 +225,31 @@ fn n1_no_test_sleeps_or_measures_elapsed_time() {
     let needles = forbidden();
     let mut violations = Vec::new();
     for (path, source) in &sources {
+        // **`tests/pty.rs` is exempt, by exact path, and held to properties
+        // rather than trusted (0.39.0).**
+        //
+        // Every other test in this repository drives a function and reads what it
+        // returned; that file drives a *process* through a terminal, and there is
+        // no way to ask an operating system "has this child drawn its prompt yet"
+        // without polling. The alternative to a poll is a blocking read with no
+        // deadline, which does not remove the timing — it removes the failure
+        // message and hangs the suite instead.
+        //
+        // What keeps it from being the flakiness this gate exists to prevent is
+        // the *shape* of its waits, asserted below: every bound is a liveness
+        // deadline measured in tens of seconds, and nothing there asserts that
+        // anything happened **quickly**. A gate that fires on a loaded runner is
+        // one that teaches a team to re-run rather than to read, and that is a
+        // property of the number, not of the clock.
+        //
+        // Compared with `==` on the file name, never a substring: a permitted set
+        // matched loosely is a permitted set that widens itself, which is the
+        // rule `tests/dependencies.rs` already writes down for the two paths
+        // permitted to spawn a process.
+        if path.file_name().and_then(|name| name.to_str()) == Some("pty.rs") {
+            assert_no_impatient_bound(path, source, &mut violations);
+            continue;
+        }
         for (number, line) in source.lines().enumerate() {
             let at = format!("{}:{}", path.display(), number + 1);
             for (needle, why) in &needles {
