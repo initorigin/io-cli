@@ -417,6 +417,45 @@ mod unix {
         io.wait_for("no turn to undo");
     }
 
+    /// **F10 — `/setup` runs the wizard here, rather than sending the operator
+    /// away.**
+    ///
+    /// The arm said "run `io setup` from the shell to change the configuration",
+    /// which is a command telling somebody to leave the program in order to
+    /// change the program. It now calls the same `wizard` function `io setup`
+    /// calls — one driver, so the two cannot drift apart, and the one that
+    /// drifted would have been the one nobody runs from a fresh install.
+    ///
+    /// This is entirely driver wiring in `src/main.rs`, which nothing under
+    /// `tests/` links, so a pty arm is the only instrument that can see it. `Esc`
+    /// backs out, and the session has to still be there afterwards — a wizard
+    /// that took the screen and did not give it back would be worse than the
+    /// sentence it replaced.
+    #[test]
+    fn f10_setup_opens_the_wizard_in_the_session_and_gives_the_screen_back() {
+        let mut io = Session::start(24, 100);
+        io.wait_for(">");
+
+        // Two `Enter`s, and that is the palette's standing behaviour rather than
+        // something this release changed: `/setup` matches a palette row, so the
+        // first `Enter` chooses it into the prompt — where an operator may still
+        // add an argument — and the second submits. F5's one-`Enter` case is a
+        // line that matches *no* row, which is the arm below this one.
+        io.type_in("/setup\r");
+        io.wait_for("/setup");
+        io.type_in("\r");
+        // The wizard's own welcome, which is what `io setup` draws first — the
+        // point being that it is *this* wizard and not a second one written for
+        // the session.
+        io.wait_for("Four questions and you have a working agent");
+
+        // Backed out, changing nothing — and the session is still running.
+        io.type_in("\u{1b}");
+        io.wait_for("left the configuration alone");
+        io.type_in("still here");
+        io.wait_for("still here");
+    }
+
     /// **F8 — `io exec` without `--json` narrates, and stdout stays clean.**
     ///
     /// The source gate in `tests/exec.rs` holds `Narrating` to never naming

@@ -4751,11 +4751,51 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     "/commit is rewritten into a submit before the match and cannot arrive here"
                 ),
                 Action::Quit => return Ok(()),
+                // **`/setup` runs the wizard here rather than sending the
+                // operator away (0.39.0).** This arm said "run `io setup` from
+                // the shell", which is a command telling somebody to leave the
+                // program to change the program.
+                //
+                // **The same `wizard` function `io setup` calls, and that is the
+                // whole implementation.** It already owns a screen and an input
+                // stream, drives its own loop, and handles the credential check,
+                // the catalogue read and the write; this loop has both of those
+                // to lend it. A second driver would be a second wizard to keep in
+                // step, and the one that drifted would be the one nobody runs
+                // from a fresh install.
                 Action::Setup => {
-                    app.say(
-                        Tone::Muted,
-                        "run `io setup` from the shell to change the configuration",
-                    );
+                    let chosen = wizard(screen, inputs, app.theme).await?;
+                    match chosen {
+                        Some(theme) => {
+                            // Live now: the theme is this process's, and the file
+                            // is re-discovered at the next turn boundary by
+                            // `reload::Configuration`, so everything it carries
+                            // arrives with the next message.
+                            app.theme = theme;
+                            app.events.set_theme(theme);
+                            // **And what is not live, said rather than left to be
+                            // discovered.** The session runs inside the closure
+                            // that built the provider chain, and that closure
+                            // takes a model name and nothing else — so a changed
+                            // provider or credential cannot reach this session.
+                            // An operator who has just retyped an API key and
+                            // watches the next turn fail with the old one has
+                            // been told nothing by a wizard that said it was
+                            // done.
+                            app.record(
+                                Tone::Muted,
+                                "configuration written. The theme is live and the rest arrives \
+                                 with your next message — a changed provider or key needs `io` \
+                                 restarted, because this session is running inside the one it \
+                                 started with.",
+                            );
+                        }
+                        None => app.say(Tone::Muted, "setup left the configuration alone"),
+                    }
+                    // The wizard drew over the viewport and this puts the session
+                    // back, exactly as every other surface that takes the screen
+                    // does on the way out.
+                    paint(screen, &mut app)?;
                 }
                 // **The same parse, the same plan, the same write as `io mcp …`.**
                 // Nothing is decided here: the tokens, the refusals and the scope
