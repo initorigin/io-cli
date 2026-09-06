@@ -41,6 +41,17 @@ use io_harness::{
     Observer, Policy, Provider, RunEvent, RunOutcome, Session, Store,
 };
 
+/// A parked run the store can say nothing about (0.38.2).
+///
+/// The shape every row in this module had before `exec::Parked` existed, and
+/// still the honest one for a run older than io-harness 0.7.0 — no goal, no
+/// stamp, no root. The rows built from it are what an operator sees when the
+/// three readers answer nothing, which is the case worth holding still: it must
+/// render `unknown` and never a date.
+fn unknown() -> exec::Parked {
+    exec::Parked::default()
+}
+
 /// A workspace and a store, with no configuration file anywhere near the
 /// developer's own.
 ///
@@ -1647,10 +1658,10 @@ fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
         questions: vec![],
         step: 12,
     };
-    let plain = exec::listed(41, &question, false).expect("a question is a row");
+    let plain = exec::listed(41, &question, &unknown(), false).expect("a question is a row");
     assert!(plain.contains("41") && plain.contains("219"), "{plain}");
 
-    let row = exec::listed(41, &question, true).expect("a question is a row");
+    let row = exec::listed(41, &question, &unknown(), true).expect("a question is a row");
     let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
     assert_eq!(value["run_id"], 41);
     assert_eq!(value["waiting_on"], "question");
@@ -1664,6 +1675,7 @@ fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
             steps: vec![],
             step: 5,
         },
+        &unknown(),
         true,
     )
     .expect("a plan is a row");
@@ -1678,6 +1690,7 @@ fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
             tool: "charge".into(),
             step: 4,
         },
+        &unknown(),
         true,
     )
     .expect("an interrupted call is a row");
@@ -1687,8 +1700,8 @@ fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
 
     // A run whose process went away has no second id, and says so with a null
     // rather than with a number it made up.
-    let died =
-        exec::listed(41, &Pending::Died { last_step: 6 }, true).expect("a died run is a row");
+    let died = exec::listed(41, &Pending::Died { last_step: 6 }, &unknown(), true)
+        .expect("a died run is a row");
     let value: serde_json::Value = serde_json::from_str(&died).expect("one JSON object");
     assert_eq!(value["waiting_on"], "died");
     assert!(value["id"].is_null(), "{died}");
@@ -1697,9 +1710,119 @@ fn the_listing_names_the_handle_each_parked_run_is_answered_through() {
     // Under `--json` every row is one object and nothing else, the same split
     // `io exec --json` makes.
     for pending in [&question, &Pending::Died { last_step: 6 }] {
-        let row = exec::listed(41, pending, true).expect("a row");
+        let row = exec::listed(41, pending, &unknown(), true).expect("a row");
         assert!(row.starts_with('{') && row.ends_with('}'), "{row}");
     }
+}
+
+/// **F3 — a parked row says when it started and what it was for.**
+///
+/// The 2026-09-05 field test met thirteen rows reading `run 41  question 219
+/// step 12` and differing only by numbers, and could not tell which of them was
+/// the work it wanted. `runs.goal` had been written since io-harness 0.1.0 with no
+/// public reader; there was no reader for a run's own start time either. Both
+/// arrived in io-harness 0.81.0 as `Store::run_goal` and `Store::run_created_at`,
+/// closing io-harness#258, which is what makes this criterion possible at all —
+/// it was named as carried rather than promised when 0.38.2 was outlined.
+///
+/// **The `unknown` arm is the one that matters and it is not the empty case.**
+/// `Store::run_created_at` answers `None` for a run started before io-harness
+/// 0.7.0, when the column did not exist — so `None` here means *either* no such
+/// run *or* a run too old to have been stamped, and the oldest rows in a long-
+/// lived store are exactly the ones somebody is trying to identify. Any rendered
+/// time would be invented.
+///
+/// Sabotage: render `started_at` with a fallback of the epoch, or `unwrap_or_
+/// default()` the goal, and the first two arms hold while the third fails.
+#[test]
+fn f3_a_parked_row_carries_the_runs_stamp_and_its_goal() {
+    use io_cli::resume::Pending;
+
+    let question = Pending::Question {
+        question_id: 219,
+        question: "which environment?".into(),
+        context: None,
+        choices: vec![],
+        questions: vec![],
+        step: 12,
+    };
+    let known = exec::Parked {
+        goal: Some("fix the tokenizer".into()),
+        started_at: Some("2026-09-06T07:13:44".into()),
+        root: Some("/work/parser".into()),
+    };
+
+    let plain = exec::listed(41, &question, &known, false).expect("a question is a row");
+    assert!(
+        plain.contains("2026-09-06 07:13 UTC"),
+        "the stamp is the store's own string, cut to the minute and marked — the \
+         same spelling `/resume` uses, because two listings of one store must not \
+         spell a timestamp two ways: {plain}",
+    );
+    assert!(
+        plain.contains("fix the tokenizer"),
+        "the goal is what tells two parked runs apart: {plain}",
+    );
+
+    // The JSON keys are appended and nullable, so a reader written against the
+    // 0.37.0 shape goes on working — and `started_at` is the store's raw sortable
+    // string there rather than the cut one, which is the same stdout/stderr split
+    // of audiences `io exec --json` already makes.
+    let row = exec::listed(41, &question, &known, true).expect("a question is a row");
+    let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
+    assert_eq!(value["goal"], "fix the tokenizer");
+    assert_eq!(value["started_at"], "2026-09-06T07:13:44");
+    assert_eq!(value["root"], "/work/parser");
+    assert_eq!(value["run_id"], 41, "and the old keys are untouched");
+    assert_eq!(value["waiting_on"], "question");
+
+    // A run the store cannot stamp says so in a word, and the word is not a time.
+    let old = exec::Parked {
+        goal: Some("something from before the column existed".into()),
+        started_at: None,
+        root: None,
+    };
+    let plain = exec::listed(41, &question, &old, false).expect("a question is a row");
+    assert!(
+        plain.contains("unknown"),
+        "a run older than io-harness 0.7.0 has no stamp: {plain}",
+    );
+    assert!(
+        !plain.contains("1970"),
+        "and the epoch is a date, which is the one thing this must never be: \
+         {plain}",
+    );
+    let row = exec::listed(41, &question, &old, true).expect("a question is a row");
+    let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
+    assert!(
+        value["started_at"].is_null(),
+        "null, the shape `id` already uses for a row that has none: {row}",
+    );
+
+    // A multi-line goal is folded to one line, because one row per run is the
+    // shape being read — and it is NOT cut. `n6_the_plain_output_is_never_
+    // composed_to_a_width` holds this file to composing nothing: a headless stream
+    // is not a viewport, and clipping it loses data a machine was going to read.
+    // The first draft of this truncated to sixty characters and that gate caught
+    // it, which is the arm below.
+    let long = exec::Parked {
+        goal: Some(format!("{}\nand a second line", "w".repeat(200))),
+        ..exec::Parked::default()
+    };
+    let one_line = long.short_goal().expect("a goal that is there is rendered");
+    assert!(!one_line.contains('\n'), "one row per run: {one_line:?}");
+    assert!(
+        one_line.contains(&"w".repeat(200)),
+        "the goal is folded and never clipped: a row this door writes is read by \
+         machines as well as people, and the `--json` object carries it verbatim \
+         because that is the stream which promises it",
+    );
+
+    assert_eq!(
+        unknown().short_goal(),
+        None,
+        "no goal renders nothing rather than an empty pair of spaces",
+    );
 }
 
 /// 0.23.0 F8 — the two runs nobody is waiting on are not offered as work.
@@ -1712,8 +1835,16 @@ fn a_run_that_cannot_be_carried_on_is_not_a_row_in_the_listing() {
         io_cli::resume::Pending::Interrupted,
         io_cli::resume::Pending::Finished,
     ] {
-        assert_eq!(exec::listed(41, &pending, false), None, "{pending:?}");
-        assert_eq!(exec::listed(41, &pending, true), None, "{pending:?}");
+        assert_eq!(
+            exec::listed(41, &pending, &unknown(), false),
+            None,
+            "{pending:?}"
+        );
+        assert_eq!(
+            exec::listed(41, &pending, &unknown(), true),
+            None,
+            "{pending:?}"
+        );
     }
 }
 
@@ -1977,7 +2108,7 @@ fn a_parked_batch_is_listed_and_refused_as_the_several_questions_it_is() {
     // The listing keeps naming what the run is waiting on. Renaming `question`
     // would describe a difference the resume door does not have and break every
     // script written against this stream.
-    let row = exec::listed(41, &batch, true).expect("a batch is a row");
+    let row = exec::listed(41, &batch, &unknown(), true).expect("a batch is a row");
     let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
     assert_eq!(value["waiting_on"], "question");
     assert_eq!(
@@ -2000,7 +2131,7 @@ fn a_parked_batch_is_listed_and_refused_as_the_several_questions_it_is() {
         questions: vec![],
         step: 12,
     };
-    let row = exec::listed(41, &single, true).expect("a question is a row");
+    let row = exec::listed(41, &single, &unknown(), true).expect("a question is a row");
     let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
     assert_eq!(value["questions"], 1);
     // And the three pauses that are not questions say null rather than a count of
@@ -2013,20 +2144,22 @@ fn a_parked_batch_is_listed_and_refused_as_the_several_questions_it_is() {
         },
         Pending::Died { last_step: 6 },
     ] {
-        let row = exec::listed(41, &pending, true).expect("a row");
+        let row = exec::listed(41, &pending, &unknown(), true).expect("a row");
         let value: serde_json::Value = serde_json::from_str(&row).expect("one JSON object");
         assert!(value["questions"].is_null(), "{row}");
     }
 
     // The plain stream says it too, and only when there is more than one: a
     // `1 question` on every row is the mark nobody reads.
-    let plain = exec::listed(41, &batch, false).expect("a batch is a row");
+    let plain = exec::listed(41, &batch, &unknown(), false).expect("a batch is a row");
     assert!(plain.contains("3 questions"), "{plain}");
     assert_eq!(
-        exec::listed(41, &single, false).expect("a question is a row"),
-        "run 41  question 219  step 12",
-        "a single question's plain row is byte for byte what it was, so nothing new \
-         appears on the rows an operator already reads",
+        exec::listed(41, &single, &unknown(), false).expect("a question is a row"),
+        "run 41  question 219  step 12  unknown",
+        "a single question's plain row carries the four fields it always did, plus \
+         the stamp 0.38.2 added — `unknown` here because this fixture's store \
+         answers nothing, which is also what a run started before io-harness \
+         0.7.0 gets. The one thing it must never be is a date",
     );
 
     // The refusal an operator gets when they type no `--answer`.

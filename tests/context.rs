@@ -338,17 +338,83 @@ fn f7_the_sections_sum_to_the_total_and_the_total_is_stated_against_the_window()
 
     // The denominator is the contract's own budget, not `ContextBudget::default`:
     // an operator who tightened `[context]` must see the ceiling they set.
-    assert_eq!(context::window(&contract, None), 24_000);
+    assert_eq!(context::window(&contract, None, None), 24_000);
     let tightened =
         TaskContract::workspace("g", "/repo").with_context_budget(io_harness::ContextBudget {
             max_tokens: 8_000,
             share: 0.25,
         });
-    assert_eq!(context::window(&tightened, None), 8_000);
+    assert_eq!(context::window(&tightened, None, None), 8_000);
     assert_eq!(
-        context::window(&tightened, Some(20_000)),
+        context::window(&tightened, Some(20_000), None),
         5_000,
         "with a run budget the window is a share of what is left",
+    );
+}
+
+/// **F1 — the ceiling the run announced is the denominator, and it wins.**
+///
+/// Before io-harness 0.81.0 the contract was the only thing that knew the window,
+/// so the two could not disagree and this assertion had nothing to say. They
+/// disagree now: the harness derives the ceiling from the model's own window and
+/// announces it, while the `TaskContract` this crate built still carries the
+/// budget it was built with. Dividing by the contract after that reports `ctx
+/// 100%` on a run a fifth of the way into a large window — a number five times
+/// too small at exactly the moment an operator uses it to decide whether to fold.
+///
+/// The three arms are the three things that can be wrong: the announcement
+/// ignored, the announcement taken when the operator set a budget of their own
+/// (it is not — io-harness announces an explicit budget as `source: "contract"`,
+/// so taking the announcement *is* taking their answer), and a zero stored as a
+/// denominator.
+///
+/// Sabotage: drop the `announced` parameter from `context::window` and read the
+/// contract unconditionally, which is the pre-0.38.2 body.
+#[test]
+fn f1_an_announced_ceiling_is_the_window_the_share_is_taken_against() {
+    let contract = contract();
+
+    assert_eq!(
+        context::window(&contract, None, Some(128_000)),
+        128_000,
+        "the run said it assembles inside 128,000 and the contract's 24,000 is \
+         the guess it replaces",
+    );
+
+    // A run that has not announced — every run against a harness older than
+    // 0.81.0, and every moment before the first event of one that is not — is the
+    // pre-0.38.2 expression byte for byte.
+    assert_eq!(
+        context::window(&contract, None, None),
+        24_000,
+        "with nothing announced the contract is still the answer, unchanged",
+    );
+
+    // Zero is refused rather than divided by. A window that divides is a number
+    // somebody eventually divides by.
+    assert_eq!(
+        context::window(&contract, None, Some(0)),
+        24_000,
+        "a zero ceiling falls back rather than becoming a denominator",
+    );
+
+    // And the same value reaches `ctx N%`, through `Status`, rather than being a
+    // second reader of the event.
+    let mut status = io_cli::status::Status::new("a-model");
+    status.note_ceiling(128_000);
+    assert_eq!(status.ceiling, Some(128_000));
+    status.note_ceiling(0);
+    assert_eq!(
+        status.ceiling,
+        Some(128_000),
+        "a zero announcement does not erase the ceiling already in force",
+    );
+    status.forget_run();
+    assert_eq!(
+        status.ceiling, None,
+        "a ceiling belongs to the run that announced it: the next run may be a \
+         different model, and dividing its pressure by this window would be a \
+         wrong percentage that looks exactly like a right one",
     );
 }
 
@@ -374,6 +440,7 @@ fn f7_the_catalogue_names_a_tool_only_the_request_knew_about() {
     let page = drawn(&context::committed(
         Some(&Request::of(&request())),
         &contract(),
+        None,
         None,
         &ToolMask::none(),
         &ascii(),
@@ -432,6 +499,7 @@ fn f7_the_system_block_is_tokens_of_its_own_text_and_not_a_byte_count() {
         Some(&seen),
         &contract,
         None,
+        None,
         &ToolMask::none(),
         &ascii(),
         80,
@@ -466,6 +534,7 @@ fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
         None,
         &contract(),
         None,
+        None,
         &ToolMask::none(),
         &ascii(),
         80,
@@ -481,6 +550,7 @@ fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
     let page = drawn(&context::committed(
         Some(&Request::of(&request())),
         &contract(),
+        None,
         None,
         &ToolMask::none(),
         &ascii(),
@@ -525,7 +595,7 @@ fn f10_the_status_share_is_the_page_total_over_the_page_window() {
 
     let sections = context::sections(&seen, &contract);
     let total = context::total(&sections);
-    let window = context::window(&contract, contract.max_tokens);
+    let window = context::window(&contract, contract.max_tokens, None);
     assert!(
         total > 0 && window > 0,
         "the fixture has to put something in a window for this to mean anything",
@@ -548,6 +618,51 @@ fn f10_the_status_share_is_the_page_total_over_the_page_window() {
     assert!(
         expected > 0,
         "a fixture where both read zero would pass this test and prove nothing",
+    );
+
+    // **The same agreement once a ceiling has been announced (0.38.2), which is
+    // the arm this test was missing.** Everything above runs with nothing
+    // announced, so it agreed for the old reason and would have gone on agreeing
+    // while three other surfaces divided by the contract. An adversarial review
+    // found `/status`'s label and `Status::note_context` both still reading
+    // `budgets.window`; this is the arm that would have caught them.
+    const ANNOUNCED: u64 = 103_424;
+    let mut status = io_cli::status::Status::new("a-model");
+    status.budgets = io_cli::status::Budgets::in_force(&contract);
+    status.note_ceiling(ANNOUNCED);
+    status.note_context_request(&seen, &contract, contract.max_tokens);
+
+    let announced_window = context::window(&contract, contract.max_tokens, Some(ANNOUNCED));
+    assert_eq!(
+        announced_window, ANNOUNCED,
+        "the announced ceiling is the page's denominator",
+    );
+    let expected = (total as f64 / ANNOUNCED as f64 * 100.0).round() as u8;
+    assert_eq!(
+        status.context,
+        Some(expected),
+        "the share follows the announced ceiling, not the contract's budget",
+    );
+
+    // `note_context` is the OTHER writer of the same field — a fold arrives on
+    // `EventKind::Compacted` and goes straight through it — and it divided by
+    // `budgets.window` alone, so one screen carried two denominators for one word.
+    let mut folded = io_cli::status::Status::new("a-model");
+    folded.budgets = io_cli::status::Budgets::in_force(&contract);
+    folded.note_ceiling(ANNOUNCED);
+    folded.note_context(30_000);
+    assert_eq!(
+        folded.context,
+        Some((30_000f64 / ANNOUNCED as f64 * 100.0).round() as u8),
+        "a fold's share is taken against the run's ceiling too — against the \
+         contract's 24,000 this reads 100%, which is the pressure it is reporting \
+         wrongly",
+    );
+    assert_ne!(
+        folded.context,
+        Some(100),
+        "and 100% is what the contract's budget would have produced, so this is \
+         the arm that tells the two apart",
     );
 }
 
@@ -844,6 +959,7 @@ fn f9_the_withheld_row_is_absent_until_there_is_one_and_then_states_its_cost() {
         Some(&Request::of(&request())),
         &contract(),
         None,
+        None,
         &mask,
         &ascii(),
         80,
@@ -890,7 +1006,7 @@ fn f9_allow_reports_a_no_op_and_a_clear_names_what_returned() {
 /// **The defect this replaces was the safety lever being silently inert.**
 /// io-harness keeps an unknown mask name rather than rejecting it, deliberately,
 /// so a mask stays portable across builds with different cargo features
-/// (`io-harness-0.79.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
+/// (`io-harness-0.81.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
 /// the exact string and a misspelling withholds nothing — while the operator was
 /// told "calling it will be refused before anything starts" and `/context` drew it
 /// on the withheld row. `/context withhold Docx_Write` and the file gets written.

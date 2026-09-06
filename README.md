@@ -47,6 +47,7 @@ posture on the next.](assets/screenshot.png)
 | **A session you can read** | Every finished line in the terminal's own scrollback, designed rather than defaulted: a tool call as a verb and a path, a thought as a thought, an answer that ends the turn |
 | **A working view** | Two sticky rows while a turn runs — a word for the turn with its clock and spend, and a line under it saying what is happening *now* |
 | **The boundary, visible** | The posture on the footer, a refusal that names the act, the target, the rule and the layer, and `Shift+Tab` to change it from the next turn |
+| **A tool held back** | `/context withhold <tool>` builds the session's tool mask and keeps that tool refused until `/context allow`; io-harness sends a byte-identical catalogue either way, so the request grows by the one sentence naming what is withheld |
 | **Approvals in place** | A write stops the run and shows the diff it proposes; `y`, `a` or `n`, answered where it was asked |
 | **A fan-out you can watch** | Contained turns spawn children under one shared ceiling; `Ctrl+F` shows the tree and what it is costing |
 | **Your file, in force** | Every section of `io.toml` bounds a session turn as it bounds `io exec`; the budgets in force are on the status line with what is left of them, and `/status` commits the whole state — policy layers, sandbox backend, caps, budgets, connections — into the scrollback |
@@ -54,7 +55,9 @@ posture on the next.](assets/screenshot.png)
 | **Conversations that survive** | `/resume` reopens an earlier session and answers whatever its last run stopped on, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
 | **A paused run, answered** | A question, a plan or an interrupted call is decided where it was left and the run carries on from the step it stopped at — from a session, or from a script with `io resume` |
 | **Everything it asks, in one place** | Several questions asked at once arrive as one overlay, answered one at a time and sent together; an offer may explain itself and preview what taking it would do; `Space` marks where a question takes more than one answer |
-| **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json`, and `io resume` carries a parked one on |
+| **Headless** | `io exec` runs one goal to completion with documented exit codes and `--json`, and `io resume` carries a parked one on. Exit `6` is a run that was judged and did not hold up: a verification gate that failed, or io-harness's `RunOutcome::SchemaUnsatisfied` — the schema contract, a run that never produced the shape `[run] output_schema` asked for |
+| **From your editor** | `io acp` serves the Agent Client Protocol (ACP) as newline-delimited JSON-RPC 2.0 over stdio, so Zed or a JetBrains IDE runs io against this machine's own configuration; an action in the grey tier arrives as a `session/request_permission` you answer in the editor |
+| **Bundles from a marketplace you named** | `/plugin marketplace add <owner>/<repo>` clones an index into your own home and `/plugin add <name>` installs a bundle out of it — the same words from a shell, as `io plugin marketplace add` and `io plugin add` — and what a bundle is allowed to do is shown before it may do it |
 | **Readable without seeing it** | `--plain` animates nothing and commits every state change as text, for a screen reader, a braille display or a log |
 | **Markdown, rendered** | Headings, bullets, code and emphasis drawn as themselves rather than printed as notation |
 | **Documents, read and written** | Spreadsheets, Word, slide decks, PDFs and barcodes through io-harness's own tools — twelve of them, six of which write, every one under the same gate as any other read or write |
@@ -109,9 +112,11 @@ scoop bucket add io-cli https://github.com/initorigin/io-cli
 scoop install io
 ```
 
-The tap and the bucket live in this repository rather than in two of their own,
-which is why `brew tap` and `scoop bucket add` name a URL. They install the same
-checksum-verified artifacts the scripts do.
+The tap and the bucket live in this repository rather than in two of their own —
+[`Formula/io.rb`](Formula/io.rb) and [`bucket/io.json`](bucket/io.json) — which is
+why `brew tap` and `scoop bucket add` name a URL: this repository is not named
+`homebrew-io-cli`, so neither tool can derive the URL from the name. They install
+the same checksum-verified artifacts the scripts do.
 
 Both scripts pick the right build for your machine, **verify it against the
 published `SHA256SUMS` before unpacking it**, and install into a directory you

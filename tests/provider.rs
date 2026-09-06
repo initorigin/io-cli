@@ -16,6 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod support;
+
 /// The four constructors that turn a credential into a provider.
 const CONSTRUCTORS: &[&str] = &[
     "OpenRouter::new",
@@ -570,4 +572,222 @@ fn f5_an_image_is_refused_unless_every_link_accepts_one() {
         "a chain whose links all accept images accepts them — without this arm the \
          assertion above is satisfied by a function that always answers false",
     );
+}
+
+/// A link that declares a window and an answer limit, and nothing else.
+///
+/// Separate from [`Fake`] rather than a field on it: every one of `Fake`'s callers
+/// would have to be given two more arguments to test a property none of them are
+/// about, and the trait's `None` default is exactly what this fixture exists to
+/// override.
+struct Declaring {
+    window: Option<u64>,
+    output: Option<u64>,
+}
+
+impl io_harness::Provider for Declaring {
+    async fn complete(
+        &self,
+        _request: io_harness::CompletionRequest,
+    ) -> io_harness::Result<io_harness::CompletionResponse> {
+        Ok(io_harness::CompletionResponse::default())
+    }
+
+    fn context_window(&self) -> Option<u64> {
+        self.window
+    }
+
+    fn max_output_tokens(&self) -> Option<u64> {
+        self.output
+    }
+}
+
+/// **F2's behavioural half — a chain's two window answers go opposite ways.**
+///
+/// The text gate below proves the methods are written. It cannot prove either one
+/// returns the right thing, and an adversarial review found `max_output_tokens`
+/// returning the wrong one: it took the minimum "for the same reason" as the
+/// window, and the reason inverts.
+///
+/// `ContextBudget::for_window` computes `max_tokens = window - (max_output +
+/// floor)`. The window is *divided into*, so the smallest is safe. The reserve is
+/// *subtracted*, so the smallest leaves the most room and overflows on the link
+/// that answers most — the same failure the window's minimum prevents, reached by
+/// the arithmetic running the other way, and at the same moment: after the head
+/// has already failed.
+///
+/// The numbers are deliberately not symmetric, so an implementation that took the
+/// same direction for both would fail one arm rather than passing both.
+///
+/// Sabotage: swap either `min` for `max`.
+#[test]
+fn f2_a_chain_takes_the_smallest_window_and_the_largest_reserve() {
+    let chain = Chain::of(vec![
+        Declaring {
+            window: Some(200_000),
+            output: Some(4_096),
+        },
+        Declaring {
+            window: Some(32_000),
+            output: Some(32_768),
+        },
+    ])
+    .expect("a chain");
+
+    assert_eq!(
+        chain.context_window(),
+        Some(32_000),
+        "the smallest window: a run assembles its context once, and sizing to the \
+         head then falling through to a smaller link overflows on the call that \
+         matters",
+    );
+    assert_eq!(
+        chain.max_output_tokens(),
+        Some(32_768),
+        "the largest reserve, which is the opposite direction and is why this arm \
+         exists: the reserve is subtracted from the window, so the smallest one \
+         leaves the most room and the fall-through's longer answer runs off the end",
+    );
+
+    // A link that says nothing is skipped rather than counted as zero, and a chain
+    // where nobody says anything is `None` — which is the pre-0.38.2 fallback, not
+    // a window of zero.
+    let quiet = Chain::of(vec![
+        Declaring {
+            window: None,
+            output: None,
+        },
+        Declaring {
+            window: Some(64_000),
+            output: None,
+        },
+    ])
+    .expect("a chain");
+    assert_eq!(quiet.context_window(), Some(64_000), "silence is not zero");
+    assert_eq!(quiet.max_output_tokens(), None);
+
+    let silent = Chain::of(vec![Declaring {
+        window: None,
+        output: None,
+    }])
+    .expect("a chain");
+    assert_eq!(
+        silent.context_window(),
+        None,
+        "a chain nobody sized answers `None`, which sends the run to io-harness's \
+         own fallback exactly as before",
+    );
+}
+
+/// The text between a declaration's opening brace and the first `}` in column
+/// zero, which is where every item in the harness's source ends.
+fn body_after<'a>(source: &'a str, marker: &str) -> &'a str {
+    let start = source
+        .find(marker)
+        .unwrap_or_else(|| panic!("the locked source declares `{marker}`"));
+    let rest = &source[start + marker.len()..];
+    let end = rest
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("`{marker}` is closed"));
+    &rest[..end]
+}
+
+/// **F2 — every method io-harness's `Provider` declares is delegated by every
+/// wrapper in this crate, and both lists are derived rather than written.**
+///
+/// The defect this exists to catch neither fails to compile nor fails any other
+/// test. `Provider`'s methods carry default bodies, deliberately, so that an
+/// implementation written before a method existed keeps building — and a
+/// *wrapper* that inherits one of those defaults answers for itself instead of
+/// for the provider it wraps, which is the one place the default is never right.
+///
+/// io-harness 0.81.0 added `context_window` and `max_output_tokens`, both
+/// defaulting to `None`. With the pin moved to it and nothing else changed, this
+/// crate's four wrappers compiled with no error and no warning, every existing
+/// test passed, and every run went on assembling under
+/// `io_harness::context::FALLBACK_MAX_TOKENS` on a model whose window the
+/// provider catalogue already held — which is precisely the behaviour that
+/// harness release exists to end.
+///
+/// **The method list is read out of the locked harness, never written here.** A
+/// literal list is a gate that goes stale at the next pin and is then repaired by
+/// editing the literal, which is the failure this repository has already paid
+/// for. Parsed from the trait declaration, a method the harness adds is in force
+/// the moment the pin moves.
+///
+/// **The wrapper list is derived from `src/provider.rs` itself**, so a fifth
+/// wrapper is covered by existing rather than by being remembered.
+#[test]
+fn f2_every_provider_method_is_delegated_by_every_wrapper() {
+    let harness = support::harness_source_at(&["provider", "mod.rs"]);
+    let declared: Vec<&str> = body_after(&harness, "pub trait Provider {")
+        .lines()
+        .filter_map(|line| line.strip_prefix("    fn "))
+        .filter_map(|rest| rest.split(['(', '<']).next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+
+    // Not a count — an anchor. A parse that silently returned nothing would make
+    // every assertion below vacuously true, which is the one way this gate can
+    // fail open.
+    assert!(
+        declared.contains(&"complete") && declared.contains(&"context_window"),
+        "the trait parse found {declared:?}, which does not look like \
+         `Provider` — the declaration moved and this gate is reading the wrong \
+         thing rather than passing",
+    );
+
+    // **Newlines normalised, because CI checks this repository out with CRLF on
+    // Windows.** The needle below is `"\n}\n"` and a Windows checkout has
+    // `"\r\n}\r\n"`, so the impl sweep found no closing brace at all and the gate
+    // panicked with "the impl is closed" — green on macOS and Linux, red on the
+    // one platform nobody can reproduce locally. `support::harness_source` carries
+    // this exact reasoning for the registry source and says it is the third
+    // instance of the class in this repository; this is the fourth, and the first
+    // to hit a file in the crate's own tree rather than a dependency's.
+    let ours = std::fs::read_to_string("src/provider.rs")
+        .expect("this crate's provider module")
+        .replace("\r\n", "\n");
+    let mut wrappers: Vec<(&str, &str)> = Vec::new();
+    for (at, _) in ours.match_indices("Provider for ") {
+        let line = ours[..at].rfind('\n').map_or(0, |n| n + 1);
+        if !ours[line..].starts_with("impl") {
+            continue;
+        }
+        let named = ours[at + "Provider for ".len()..]
+            .split(['<', ' ', '{'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let rest = &ours[line..];
+        let end = rest.find("\n}\n").expect("the impl is closed");
+        wrappers.push((named, &rest[..end]));
+    }
+
+    // Derived against derived: an independent count of the impl headers, so a
+    // parse that dropped one narrows the gate loudly instead of quietly.
+    let headers = ours
+        .lines()
+        .filter(|l| l.starts_with("impl") && l.contains("Provider for "))
+        .count();
+    assert_eq!(
+        wrappers.len(),
+        headers,
+        "the impl sweep found {} of {headers} `impl … Provider for …` headers, so \
+         some wrapper is not being checked at all",
+        wrappers.len(),
+    );
+
+    for (name, body) in &wrappers {
+        for method in &declared {
+            assert!(
+                body.contains(&format!("fn {method}(")),
+                "`{name}` does not delegate `Provider::{method}`, so it answers the \
+                 trait's own default on behalf of the provider it wraps. The method \
+                 list comes from the locked io-harness, so this is the pin having \
+                 moved rather than a test to update",
+            );
+        }
+    }
 }

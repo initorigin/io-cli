@@ -84,8 +84,8 @@
 //!
 //! **What writing it costs an older binary is not what the plugin key costs, and
 //! the two sentences are deliberately different.** See [`OLDER_BINARY`] beside
-//! [`crate::pluginview::OLDER_BINARY`]: a 0.69.0 binary *refuses the whole file*
-//! over `enabled` in a `[[plugin]]`, and *silently ignores it* in an `[[mcp]]` —
+//! [`crate::pluginview::OLDER_BINARY`]: an io-cli older than 0.29.0 *refuses the
+//! whole file* over `enabled` in a `[[plugin]]`, and *silently ignores it* in an `[[mcp]]` —
 //! running a server the operator switched off. One is loud and total, the other is
 //! quiet and exactly the failure mode this module exists to close.
 //!
@@ -609,19 +609,28 @@ pub const KEYS: &[&str] = &[
 /// What writing an `enabled` key into an `[[mcp]]` entry costs an older binary.
 ///
 /// **The mirror image of [`crate::pluginview::OLDER_BINARY`], and the dangerous
-/// half of the pair.** `enabled` on a `[[plugin]]` makes an io-cli built against
-/// io-harness 0.69.0 refuse the whole configuration file: loud, total, and
-/// impossible to miss. `[[mcp]]` is one of the two sections that binary exempts
-/// from `deny_unknown_fields`, so the same key there is **read, accepted and
-/// ignored** — and the server the operator switched off starts and runs, on that
-/// machine, with nothing on any surface saying so.
+/// half of the pair.** `enabled` on a `[[plugin]]` makes an older io-cli refuse
+/// the whole configuration file: loud, total, and impossible to miss. `[[mcp]]`
+/// is one of the two sections that binary exempts from `deny_unknown_fields`, so
+/// the same key there is **read, accepted and ignored** — and the server the
+/// operator switched off starts and runs, on that machine, with nothing on any
+/// surface saying so.
 ///
 /// So the two sentences are two constants. One string used for both would be
 /// telling an operator on the quiet path that they will notice.
+///
+/// **The sentence names an io-cli release and never an io-harness one (0.38.2).**
+/// The key is io-harness 0.70.0's and io-cli first pinned that in its own 0.29.0,
+/// so both facts describe the same boundary — but an operator knows which `io`
+/// they installed and has no reason to know which harness it was built against.
+/// The field test read the old spelling as a stale note about a dependency and
+/// not as a warning about their own second machine, which is the whole failure.
+/// It also stops the sentence rotting at every pin, which is what
+/// `f4_no_compatibility_note_names_an_io_harness_version` now holds it to.
 pub const OLDER_BINARY: &str =
-    "this writes an `enabled` key into an `[[mcp]]` entry, which is io-harness 0.70.0's: an io-cli \
-     built against 0.69.0 does not refuse it — it ignores the key and starts the server anyway, \
-     with nothing said";
+    "this writes an `enabled` key into an `[[mcp]]` entry, which io-cli understands from 0.29.0: \
+     an older io-cli sharing this file does not refuse the key — it ignores it and starts the \
+     server anyway, with nothing said";
 
 /// The edit that switches the server at `at` on or off.
 ///

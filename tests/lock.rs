@@ -536,3 +536,126 @@ fn n3_the_lock_and_its_record_are_readable_by_their_owner_alone() {
 
     drop(held);
 }
+
+/// **F7 — the sweep removes a finished session's lock and never a live one.**
+///
+/// Asserted in both directions, because a sweep that removes a live lock is
+/// worse than the leak it replaces: the leak is thirty-one empty files, and the
+/// bug would be two `io` processes believing they are alone in one session.
+///
+/// The live case is the one a naive implementation gets wrong. "No owner record"
+/// is not on its own evidence that a session is over — it is also true for the
+/// window before `acquire` writes the record, and true forever on a disk too full
+/// to write one, which `acquire` deliberately treats as non-fatal. So the sweep
+/// requires `try_lock` to succeed as well, and that is what this asserts by
+/// holding the guard across the call.
+///
+/// Sabotage: drop the `owner.exists()` check and the third row fails; drop the
+/// `try_lock` check and the second fails.
+#[test]
+fn f7_the_sweep_takes_finished_locks_and_leaves_held_ones() {
+    let home = tempfile::tempdir().expect("a temporary home");
+    let root = home.path().join("workspace");
+    // A fixed instant, never a real clock read: N1 bans one in a test, and this
+    // one has no need of a real instant — the sweep decides on the owner record
+    // and `try_lock`, never on how old a stamp is. (N1's sweep does not strip
+    // comments, so naming the banned call even to say it is not used fails the
+    // gate. That is the right trade for a gate this cheap.)
+    let now = started();
+
+    // 1. A session that finished: its guard is dropped, so the owner record is
+    //    gone and nothing holds the lock.
+    let (finished_lock, finished_owner) = lock::paths(home.path(), 11);
+    match lock::acquire(home.path(), 11, &root, now).expect("the lock is takeable") {
+        Taken::Held(guard) => drop(guard),
+        Taken::Refused(_) => panic!("a fresh id cannot be refused"),
+    }
+    assert!(
+        finished_lock.exists(),
+        "the lock file outlives the guard, which is the leak this sweeps",
+    );
+    assert!(
+        !finished_owner.exists(),
+        "the owner record is what `Guard::drop` already removes",
+    );
+
+    // 2. A session that is running: guard held across the sweep.
+    let (live_lock, live_owner) = lock::paths(home.path(), 22);
+    let held = match lock::acquire(home.path(), 22, &root, now).expect("the lock is takeable") {
+        Taken::Held(guard) => guard,
+        Taken::Refused(_) => panic!("a fresh id cannot be refused"),
+    };
+
+    // 3. A file under the stem that is not a session lock at all.
+    let stranger = home.path().join("session-notanumber.lock");
+    std::fs::write(&stranger, b"").expect("the stranger is written");
+
+    let gone = lock::sweep(home.path());
+
+    assert_eq!(gone, 1, "exactly the finished session's lock was removed");
+    assert!(
+        !finished_lock.exists(),
+        "the finished session's lock is what the sweep exists to take",
+    );
+    assert!(
+        live_lock.exists() && live_owner.exists(),
+        "a lock a live process holds must survive the sweep — removing it splits \
+         the inode and gives two processes two locks on one session",
+    );
+    assert!(
+        stranger.exists(),
+        "a file this module did not name is not this module's to delete",
+    );
+
+    drop(held);
+}
+
+/// **F7's other half — the driver actually calls the sweep.**
+///
+/// `lock::sweep` being correct is not evidence that anything runs it, and nothing
+/// under `tests/` links `src/main.rs`, so the call has no gate but this one. The
+/// arm above passes in full with the call deleted, and the symptom of deleting it
+/// is a directory quietly filling with empty lock files again — the exact
+/// 2026-09-05 field-test finding, reverted, under a green suite.
+///
+/// A source-text gate, and it says so. The same instrument the wizard's and the
+/// plugin search's driver calls are held by, for the same reason.
+///
+/// Sabotage: delete the `lock::sweep` call in `src/main.rs`, or move it below
+/// `acquire`, where this process's own lock is already held.
+#[test]
+fn f7_the_driver_sweeps_before_it_takes_a_lock() {
+    // **Comments stripped, and parens required. Both were found by sabotage, one
+    // arm at a time.**
+    //
+    // The first draft searched for `lock::sweep`, and the arm that renames the
+    // call to `lock::sweep_DELETED` *contains* that string, so it survived. Adding
+    // the paren killed that arm and not the next one: commenting the call out
+    // leaves `lock::sweep(` in the file verbatim, and a gate reading raw text
+    // cannot tell a call from a mention of one.
+    //
+    // So the sweep runs over code with the comment lines removed, which is what
+    // `tests/dependencies.rs` already does for its own needles and for the same
+    // reason. Three separate gates in this release have now been fooled by their
+    // own prose; a source-text gate that does not strip comments is checking the
+    // documentation rather than the program.
+    let main: String = std::fs::read_to_string("src/main.rs")
+        .expect("the driver is readable")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let sweep = main
+        .find("lock::sweep(")
+        .expect("the driver never calls `lock::sweep(`, so finished locks leak forever");
+    let acquire = main
+        .find("lock::acquire(")
+        .expect("the driver takes a session lock somewhere");
+    assert!(
+        sweep < acquire,
+        "the sweep must run before this session takes its own lock — after it, the \
+         file this process is about to hold is one of the candidates, and the \
+         ordering is the whole of why the sweep is safe",
+    );
+}

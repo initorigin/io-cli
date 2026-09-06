@@ -331,6 +331,27 @@ pub struct Status {
     /// number never measured. The window beside it is not cleared, because the
     /// file did not change.
     pub context: Option<u8>,
+    /// The ceiling this run announced it would assemble under, in tokens (0.38.2).
+    ///
+    /// **The denominator, taken from the run rather than guessed from the
+    /// contract.** io-harness 0.81.0 emits `EventKind::ContextCeiling` once per
+    /// run, beside `Started`, carrying the number and one word for what decided
+    /// it. Before that release the contract was the only thing that knew and it
+    /// was always right; now the harness derives the ceiling from the model's own
+    /// window, and a `TaskContract` this crate built with io-harness's default
+    /// budget says `24_000` about a run assembling inside 128,000.
+    ///
+    /// It is a **run** fact and is cleared by [`Status::forget_run`] with the
+    /// others: a resumed or cleared conversation may run on a different model
+    /// entirely, and carrying the old ceiling forward would divide the new run's
+    /// pressure by the previous model's window — a wrong percentage that looks
+    /// exactly like a right one.
+    ///
+    /// `None` is "this run has not said", which is every run against a harness
+    /// older than 0.81.0 and every moment before the first event of one that is
+    /// not. [`crate::context::window`] falls back to the contract there, which is
+    /// the pre-0.38.2 expression byte for byte.
+    pub ceiling: Option<u64>,
     /// How this run's commands are contained: the mode asked for and the backend
     /// that actually answered on this host.
     ///
@@ -635,6 +656,7 @@ impl Status {
             run_tokens: None,
             cost: None,
             context: None,
+            ceiling: None,
             containment: None,
             boundary: None,
             branch: None,
@@ -715,6 +737,9 @@ impl Status {
         self.provider = None;
         self.steps = None;
         self.context = None;
+        // Beside the share it is the denominator of. A ceiling belongs to the run
+        // that announced it, and the next run may be a different model.
+        self.ceiling = None;
         self.containment = None;
         // Beside the containment word it qualifies, and for the same reason: a
         // measurement belongs to the run that took it, and carrying it onto the
@@ -977,8 +1002,38 @@ impl Status {
     /// is what enforces it, so a section briefly over its window is ordinary.
     /// `ctx 137%` would read as a bug in this line rather than as the pressure it
     /// actually is.
+    /// The ceiling this run announced, from `EventKind::ContextCeiling` (0.38.2).
+    ///
+    /// **One setter, called once per run, and it overwrites rather than fills.**
+    /// A resume announces again; so does the next turn of a session whose model
+    /// changed under `/model`. Taking the first answer and keeping it would be the
+    /// same class of defect as the field this replaces — a denominator that was
+    /// true when it was written and is not now.
+    ///
+    /// A zero is refused rather than stored. `crate::context::window` filters it
+    /// too, and both are deliberate: a window that divides is a number somebody
+    /// eventually divides by, and this crate has already spent two releases on
+    /// exactly that.
+    pub fn note_ceiling(&mut self, max_tokens: u64) {
+        if max_tokens > 0 {
+            self.ceiling = Some(max_tokens);
+        }
+    }
+
     pub fn note_context(&mut self, est_tokens: u64) {
-        let Some(window) = self.budgets.window.filter(|window| *window > 0) else {
+        // **The announced ceiling first, and the contract only where nothing was
+        // announced (0.38.2).** This divided by `budgets.window` alone, which is
+        // the contract's own budget — so a fold arriving through
+        // `EventKind::Compacted` computed its share against 24,000 while the
+        // `/context` page one keystroke away used the run's real ceiling. Two
+        // denominators for one word on one screen is the failure this field has
+        // already been fixed for once; a third reader of the same question is how
+        // it came back.
+        let Some(window) = self
+            .ceiling
+            .or(self.budgets.window)
+            .filter(|window| *window > 0)
+        else {
             return;
         };
         let share = (est_tokens as f64 / window as f64 * 100.0).round();
@@ -1040,7 +1095,7 @@ impl Status {
         contract: &io_harness::TaskContract,
         remaining: Option<u64>,
     ) {
-        let window = crate::context::window(contract, remaining);
+        let window = crate::context::window(contract, remaining, self.ceiling);
         if window == 0 {
             return;
         }
@@ -2335,7 +2390,13 @@ pub fn committed(
     // every contract declares one. The arm below is that type's `None` spelled out
     // rather than an `unwrap` — a committed page is not worth a panic — and it is
     // unreachable from here.
-    let window = match Budgets::in_force(contract).window {
+    // The same denominator the share was taken against, and not the contract's
+    // (0.38.2). `status.context` is a percentage of the announced ceiling; drawing
+    // it beside the contract's number would print a fill and a window that do not
+    // multiply out — `39% of a 24,000 window` on a run assembling inside 103,424.
+    // The page and the line were made one expression for exactly this reason and
+    // this is the third surface asking the same question.
+    let window = match status.ceiling.or(Budgets::in_force(contract).window) {
         Some(tokens) => format_tokens(tokens),
         None => "unknown".to_string(),
     };
