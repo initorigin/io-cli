@@ -4710,7 +4710,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 if hits.is_empty() {
                                     app.record(
                                         Tone::Muted,
-                                        format!("no bundle in any marketplace matches `{text}`"),
+                                        io_cli::marketplace::nothing_matched(&text),
                                     );
                                 }
                                 for hit in hits {
@@ -6563,6 +6563,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         seen.latest().as_ref(),
                         &reading,
                         reading.max_tokens,
+                        app.status.ceiling,
                         &mask,
                         &app.theme,
                         screen.width(),
@@ -8095,6 +8096,7 @@ async fn turn<P: Provider>(
                                             seen.latest().as_ref(),
                                             &contract,
                                             contract.max_tokens,
+                                            app.status.ceiling,
                                             mask,
                                             &app.theme,
                                             screen.width(),
@@ -8573,6 +8575,15 @@ fn note_context(
     seen: &io_cli::context::Seen,
     contract: &io_harness::TaskContract,
 ) {
+    // **The run's own ceiling, taken before anything divides by it.** Inside this
+    // function rather than beside its three call sites, for the reason the
+    // function exists at all: `note_context` is what every door already calls per
+    // event, and a fourth arm at one of the three is how the headless path or the
+    // resume path silently keeps the contract's number. The event arrives once,
+    // beside `Started`, so this runs before the first share is computed.
+    if let io_harness::EventKind::ContextCeiling { max_tokens, .. } = &event.kind {
+        app.status.note_ceiling(*max_tokens);
+    }
     if let Some(request) = seen.latest() {
         // **What is LEFT of the run budget, not all of it.** io-harness assembles
         // against the unspent remainder — a run low on budget gets a smaller
@@ -9274,9 +9285,8 @@ async fn wizard(
     // theirs was involved — and then wrote that file. The user scope is the one
     // the wizard writes, so it is the one worth naming, and it is reported as in
     // force only when it is actually there.
-    let mut wizard = Wizard::new(theme).over(
-        io_harness::config::user_path().filter(|path| path.is_file()),
-    );
+    let mut wizard =
+        Wizard::new(theme).over(io_harness::config::user_path().filter(|path| path.is_file()));
     // **What the catalogue read already returned, kept instead of thrown away.**
     // The wizard reads the provider's catalogue to offer a model list, and until
     // 0.22.0 mapped every row down to its id and dropped the price on it. Holding
@@ -9968,13 +9978,25 @@ async fn manage_main(
         // `marketplace::matching`'s, so the two doors cannot describe a hit
         // differently, and its first field is the qualified spelling `plugin add`
         // takes — a script piping this has the thing to install, not a name it has
-        // to go and disambiguate. Nothing at all is printed for no hits: a listing
-        // verb that wrote prose to stdout would put a sentence in the middle of
-        // somebody's pipeline.
+        // to go and disambiguate.
+        //
+        // **No hits says so, and says it on stderr.** The older reading — print
+        // nothing, because a listing verb writing prose to stdout puts a sentence
+        // in the middle of somebody's pipeline — was right about the stream and
+        // wrong about the silence: a search that printed nothing is
+        // indistinguishable from a search that did not run, which the field test
+        // found and reported as a broken command. Both halves hold at once by
+        // splitting the streams the way `io exec --json` and `io resume --list`
+        // already do — hits on stdout, everything else on stderr — so a pipeline
+        // reads exactly the hits and a person reads the answer.
         io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::Search { text }) => {
             let markets = io_cli::marketplace::installed()
                 .ok_or_else(|| io_cli::marketplace::NOWHERE.to_string())?;
-            for hit in io_cli::marketplace::matching(&markets, text) {
+            let hits = io_cli::marketplace::matching(&markets, text);
+            if hits.is_empty() {
+                eprintln!("{}", io_cli::marketplace::nothing_matched(text));
+            }
+            for hit in hits {
                 println!("{hit}");
             }
         }

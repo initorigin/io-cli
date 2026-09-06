@@ -173,6 +173,35 @@ impl Provider for Vendor {
         }
     }
 
+    // **The two window answers, and the reason they are written out rather than
+    // left to the trait.** io-harness 0.81.0 added `context_window` and
+    // `max_output_tokens` with `None` defaults, so every wrapper in this file
+    // compiles without them and answers "this provider is not saying" — which
+    // sends the run back to `context::FALLBACK_MAX_TOKENS`, the 24,000 the
+    // harness release exists to stop being universal. `Compatible` and
+    // `OpenRouter` both answer from a catalogue they have already fetched, so
+    // the answer is here and this crate was throwing it away. There is no
+    // compiler error and no test failure for a defaulted method: the only gate
+    // is `f2_every_provider_method_is_delegated_by_every_wrapper`, which reads
+    // the method list out of the locked harness rather than a literal.
+    fn context_window(&self) -> Option<u64> {
+        match self {
+            Self::OpenRouter(p) => p.context_window(),
+            Self::Anthropic(p) => p.context_window(),
+            Self::OpenAi(p) => p.context_window(),
+            Self::Compatible(p) => p.context_window(),
+        }
+    }
+
+    fn max_output_tokens(&self) -> Option<u64> {
+        match self {
+            Self::OpenRouter(p) => p.max_output_tokens(),
+            Self::Anthropic(p) => p.max_output_tokens(),
+            Self::OpenAi(p) => p.max_output_tokens(),
+            Self::Compatible(p) => p.max_output_tokens(),
+        }
+    }
+
     fn name(&self) -> &str {
         match self {
             Self::OpenRouter(p) => p.name(),
@@ -368,6 +397,29 @@ impl<P: Provider + Sync> Provider for Chain<P> {
 
     fn model_hint(&self) -> Option<&str> {
         self.head().model_hint()
+    }
+
+    /// **The smallest window any link declares, for `accepts_images`'s reason.**
+    ///
+    /// The head's window is the wrong answer for the same reason the head's image
+    /// support is: a run assembles its context once, and the call that matters is
+    /// the fall-through. Sizing to a 200,000-token head and falling through to a
+    /// 32,000-token link overflows the request precisely when the first link has
+    /// already failed, which is the worst moment to discover it.
+    ///
+    /// A link that says nothing is not a link that says zero — it is skipped, and
+    /// `None` here means no link in the chain declared a window at all, which
+    /// sends the run to io-harness's own fallback exactly as before.
+    fn context_window(&self) -> Option<u64> {
+        self.links.iter().filter_map(Provider::context_window).min()
+    }
+
+    /// The smallest reserved answer any link declares, for the same reason.
+    fn max_output_tokens(&self) -> Option<u64> {
+        self.links
+            .iter()
+            .filter_map(Provider::max_output_tokens)
+            .min()
     }
 
     fn name(&self) -> &str {
@@ -623,6 +675,14 @@ impl<P: Provider> Provider for Watched<P> {
         self.inner.model_hint()
     }
 
+    fn context_window(&self) -> Option<u64> {
+        self.inner.context_window()
+    }
+
+    fn max_output_tokens(&self) -> Option<u64> {
+        self.inner.max_output_tokens()
+    }
+
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -727,6 +787,14 @@ impl<P: Provider> Provider for Printable<P> {
 
     fn model_hint(&self) -> Option<&str> {
         self.inner.model_hint()
+    }
+
+    fn context_window(&self) -> Option<u64> {
+        self.inner.context_window()
+    }
+
+    fn max_output_tokens(&self) -> Option<u64> {
+        self.inner.max_output_tokens()
     }
 
     fn name(&self) -> &str {
