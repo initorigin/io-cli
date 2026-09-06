@@ -255,20 +255,52 @@ pub fn cell_styled(edit: &Edit, theme: &Theme, width: u16, style: DiffStyle) -> 
     lines
 }
 
+/// The `+`/`-` counts for an edit, measured from the diff that is drawn under
+/// them.
+///
+/// **`Edit::lines_added` and `Edit::lines_removed` do not describe the hunk, and
+/// io-harness says so in its own documentation.** `Edit::measure` is handed the
+/// *fragment* an `edit_file` replaced — its counts have meant "the size of the
+/// replacement" since io-harness 0.18.0 — while `Edit::with_hunk` is computed
+/// from the file's two whole texts, because a hunk needs the file's own line
+/// numbers. The harness keeps them apart deliberately: folding them together
+/// would silently change every number in every trace it has ever written.
+///
+/// That is correct for a library and wrong for a header sitting directly on top
+/// of the diff it claims to count. The 2026-09-05 field test met it as `+3 -9` on
+/// an approval for an edit the transcript then recorded as `-9 +10`, and there is
+/// no reading of that pair from which an operator learns what they approved.
+///
+/// So the surfaces count what they draw. A hunk body carries no `---`/`+++`
+/// headers — io-harness writes those only in `Store::patch`, the one caller that
+/// knows the path — so a leading `+` or `-` is a changed line and nothing else,
+/// and `@@` begins with neither.
+///
+/// **With no hunk the recorded counts are used unchanged**, because then there is
+/// nothing drawn for them to disagree with, and the row beside them already says
+/// `no diff stored`. An absent hunk is reported as absent rather than as an empty
+/// patch — three things cause it and none of them is "nothing happened".
+pub fn counted(edit: &Edit) -> (u64, u64) {
+    let Some(hunk) = edit.hunk.as_deref() else {
+        return (edit.lines_added, edit.lines_removed);
+    };
+    let added = hunk.lines().filter(|line| line.starts_with('+')).count();
+    let removed = hunk.lines().filter(|line| line.starts_with('-')).count();
+    (added as u64, removed as u64)
+}
+
 /// `  src/theme.rs · +1 -1 · edit_file`, and `· no diff stored` when there is
 /// no hunk to draw under it.
 fn header(edit: &Edit, theme: &Theme) -> Line<'static> {
     let separator = theme.glyphs.separator;
+    let (added, removed) = counted(edit);
     let mut spans = vec![
         Span::styled(INDENT.to_string(), theme.style(Tone::Muted)),
         Span::styled(edit.path.clone(), theme.style(Tone::Accent)),
         Span::styled(separator.to_string(), theme.style(Tone::Muted)),
-        Span::styled(format!("+{}", edit.lines_added), theme.style(Tone::Added)),
+        Span::styled(format!("+{added}"), theme.style(Tone::Added)),
         Span::styled(" ".to_string(), theme.style(Tone::Muted)),
-        Span::styled(
-            format!("-{}", edit.lines_removed),
-            theme.style(Tone::Removed),
-        ),
+        Span::styled(format!("-{removed}"), theme.style(Tone::Removed)),
         Span::styled(
             format!("{separator}{}", edit.tool),
             theme.style(Tone::Muted),
