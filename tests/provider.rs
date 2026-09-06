@@ -738,7 +738,17 @@ fn f2_every_provider_method_is_delegated_by_every_wrapper() {
          thing rather than passing",
     );
 
-    let ours = std::fs::read_to_string("src/provider.rs").expect("this crate's provider module");
+    // **Newlines normalised, because CI checks this repository out with CRLF on
+    // Windows.** The needle below is `"\n}\n"` and a Windows checkout has
+    // `"\r\n}\r\n"`, so the impl sweep found no closing brace at all and the gate
+    // panicked with "the impl is closed" — green on macOS and Linux, red on the
+    // one platform nobody can reproduce locally. `support::harness_source` carries
+    // this exact reasoning for the registry source and says it is the third
+    // instance of the class in this repository; this is the fourth, and the first
+    // to hit a file in the crate's own tree rather than a dependency's.
+    let ours = std::fs::read_to_string("src/provider.rs")
+        .expect("this crate's provider module")
+        .replace("\r\n", "\n");
     let mut wrappers: Vec<(&str, &str)> = Vec::new();
     for (at, _) in ours.match_indices("Provider for ") {
         let line = ours[..at].rfind('\n').map_or(0, |n| n + 1);
