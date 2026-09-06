@@ -1721,10 +1721,36 @@ impl Events {
                 // that a kind cannot be given a line here and a weight somewhere
                 // else that disagrees with it.
                 let (said, tone) = match kind.as_str() {
-                    "create" => ("a sandbox was created", Tone::Muted),
-                    "exec" => ("a command ran in the sandbox", Tone::Muted),
+                    // **`create`, `exec` and `destroy` draw nothing as of
+                    // 0.39.0.** They were three muted rows saying a sandbox was
+                    // made, a command ran in it, and it was torn down — around
+                    // one command whose own row sits directly beneath them and
+                    // says what ran and how it ended. Four rows for one act, and
+                    // the three that were dropped are the three that carry no
+                    // fact the operator does not already have: *that* the command
+                    // was contained is a standing property of the session and is
+                    // on the status line, and *how* it was contained is the
+                    // backend named there beside it.
+                    //
+                    // The two that survive are the two that are news. A limit
+                    // being reached changed what the command did; a gate that ran
+                    // and did not pass decided whether the turn was finished. A
+                    // row is worth a line when it changes something, and the
+                    // lifecycle of a sandbox around a command that has its own
+                    // row does not.
+                    //
+                    // **This is what F6 delivers of "the three lines fold into
+                    // the one", and it is not all of it.** The rest — the argv
+                    // beside the binary, and the first lines of output indented
+                    // under the row — is not reachable from the event stream:
+                    // `EventKind::ToolCall` is emitted *before* the call runs and
+                    // carries nothing about what came back, and its `target` is
+                    // picked from a fixed list of argument names that an exec call
+                    // does not use, so the event has the binary and never the
+                    // arguments. Both would need a store read per completed call.
+                    // `US-IO-CLI-0.39.0-I03` records that.
+                    "create" | "exec" | "destroy" => return Vec::new(),
                     "cap_hit" => ("the sandbox reached a limit it was given", Tone::Warning),
-                    "destroy" => ("the sandbox was torn down", Tone::Muted),
                     // `ran and` is load-bearing: it is the whole of what
                     // separates a criterion that judged the work from one that
                     // never got to.

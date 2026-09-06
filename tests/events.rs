@@ -2084,18 +2084,27 @@ fn f7_a_dial_carries_the_host_as_asked_the_port_and_the_verdict() {
     );
 }
 
-/// 0.14.0 F8 — a sandbox says what happened and what isolated it.
+/// 0.14.0 F8, amended by 0.39.0's F6 — a sandbox draws only what is news.
+///
+/// **`create`, `exec` and `destroy` draw nothing since 0.39.0**, and this arm is
+/// the one that says so. They were three muted rows around one command whose own
+/// row sits directly beneath them and says what ran and how it ended — four rows
+/// for one act. That the command was contained is a standing property of the
+/// session and is on the status line; how it was contained is the backend named
+/// there beside it. Neither is news at the moment a command runs.
+///
+/// The two that survive are the two that changed something: a limit reached
+/// changed what the command did, and a gate that ran and did not pass decided
+/// whether the turn was finished.
 ///
 /// Sabotage: draw `cap_hit` through the error path — `Tone::Error` in place of
 /// the warning — under which only F8 fails, on a run whose cap held exactly as
 /// its operator configured it being reported to them as a run that broke.
 #[test]
-fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists() {
+fn f8_a_sandbox_draws_only_the_kinds_that_are_news() {
     let mut events = Events::new(DARK);
 
-    // `create` and `exec` are the two io-harness sets a backend on, so the line
-    // carries what isolated the work.
-    for (kind, expected) in [("create", "created"), ("exec", "ran")] {
+    for kind in ["create", "exec", "destroy"] {
         let line = rendered(
             &mut events,
             EventKind::Sandbox {
@@ -2103,27 +2112,28 @@ fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists
                 backend: Some("macos-sandbox-exec".into()),
             },
         );
-        assert!(line.contains(expected), "{kind}: {line:?}");
-        assert!(line.contains("macos-sandbox-exec"), "{kind}: {line:?}");
+        assert!(
+            line.trim().is_empty(),
+            "`{kind}` drew a row. It is the lifecycle of a sandbox around a \
+             command that has its own row, and it costs the operator a line to \
+             tell them something the status line already carries: {line:?}",
+        );
     }
 
-    // `cap_hit` and `destroy` carry `None` always, so there is no backend to
-    // draw — and none is worked out here and printed as though the event had
-    // said it.
-    for kind in ["cap_hit", "destroy"] {
-        let line = rendered(
-            &mut events,
-            EventKind::Sandbox {
-                kind: kind.into(),
-                backend: None,
-            },
-        );
-        assert!(!line.trim().is_empty(), "{kind} drew nothing: {line:?}");
-        assert!(
-            !line.contains("sandbox-exec") && !line.contains("none"),
-            "{kind} has no backend and this line invented one: {line:?}",
-        );
-    }
+    // `cap_hit` carries `None` always, so there is no backend to draw — and none
+    // is worked out here and printed as though the event had said it.
+    let line = rendered(
+        &mut events,
+        EventKind::Sandbox {
+            kind: "cap_hit".into(),
+            backend: None,
+        },
+    );
+    assert!(!line.trim().is_empty(), "cap_hit drew nothing: {line:?}");
+    assert!(
+        !line.contains("sandbox-exec") && !line.contains("none"),
+        "cap_hit has no backend and this line invented one: {line:?}",
+    );
 
     // **A limit reached, and not a failure.** The sandbox did what it was
     // configured to do, and the error path would say the opposite of that to the

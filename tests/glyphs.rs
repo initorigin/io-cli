@@ -588,9 +588,20 @@ fn every_event_this_release_renders_draws_in_ascii() {
             port: 443,
             allowed: false,
         },
+        // **`cap_hit` and not `create` since 0.39.0.** `create`, `exec` and
+        // `destroy` draw nothing now, so a fixture using one of them would sweep
+        // an empty render and pass without looking at anything — the coverage
+        // check below asserts the *name* is covered and cannot tell the
+        // difference. `cap_hit` is one of the two kinds that still draws, and it
+        // takes the toned-notice path where `gate_output` takes the muted-leader
+        // one, so between them the two shapes are covered.
         EventKind::Sandbox {
-            kind: "create".into(),
-            backend: Some("macos-sandbox-exec".into()),
+            kind: "cap_hit".into(),
+            backend: None,
+        },
+        EventKind::Sandbox {
+            kind: "gate_output".into(),
+            backend: None,
         },
         EventKind::Stalled,
         // 0.27.0 — the one silence that gained a line, and it carries the muted
