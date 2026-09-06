@@ -627,11 +627,18 @@ fn f7_the_sweep_takes_finished_locks_and_leaves_held_ones() {
 fn f7_the_driver_sweeps_before_it_takes_a_lock() {
     let main = std::fs::read_to_string("src/main.rs").expect("the driver is readable");
 
+    // **The parens are the assertion, and their absence was a real defect.** This
+    // searched for `lock::sweep`, and the sabotage arm that renames the call to
+    // `lock::sweep_DELETED` *contains* that string — so the arm survived and the
+    // gate would have passed over a driver that no longer sweeps anything. Same
+    // family as the permitted-spawn set being compared with `==` rather than by
+    // substring: a needle that matches a longer name is a check that widens
+    // itself.
     let sweep = main
-        .find("lock::sweep")
-        .expect("the driver never calls `lock::sweep`, so finished locks leak forever");
+        .find("lock::sweep(")
+        .expect("the driver never calls `lock::sweep(`, so finished locks leak forever");
     let acquire = main
-        .find("lock::acquire")
+        .find("lock::acquire(")
         .expect("the driver takes a session lock somewhere");
     assert!(
         sweep < acquire,
