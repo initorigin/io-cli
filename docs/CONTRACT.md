@@ -127,7 +127,7 @@ the directory; otherwise the platform default. io-cli's only contribution is to 
 `$IO_CONFIG_HOME` to its own home when the operator has set neither.
 
 `[app.io-cli]` is the one section io-harness deliberately does not validate, so it is this
-crate's own and this page is its contract. It carries **seventeen** keys:
+crate's own and this page is its contract. It carries **eighteen** keys:
 
 | Key | Shape |
 | --- | --- |
@@ -148,6 +148,7 @@ crate's own and this page is its contract. It carries **seventeen** keys:
 | `gates` | the verification criterion |
 | `conversational` | bool |
 | `routing` | which model answers, and what happens when a provider stops |
+| `reference_catalogue` | bool — absent is `true`, and `false` stops `io` reading a model catalogue before the first step |
 
 **A sub-table's fields are optional and refused by name, never required.** A required field is a
 *deserialization* failure that takes the whole `[app.io-cli]` section down with it — the theme,

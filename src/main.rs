@@ -476,6 +476,12 @@ async fn drive(
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
+    // The catalogue the two vendor providers may size themselves from, read from
+    // the same settings and in the same place as the caps above. On by default,
+    // and `[app.io-cli] reference_catalogue = false` is what turns it off — see
+    // `settings::reference_catalogue`, which owns both halves of that decision so
+    // that no door has to reconstruct it.
+    let catalogue = settings::reference_catalogue(stored.as_ref());
     let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
     // The agent's own skills, walked once beside the templates and for the same
     // reasons — the palette filters on every character typed, and a directory
@@ -634,6 +640,7 @@ async fn drive(
     provider::build(
         provider::chain_of(&config),
         model_override,
+        catalogue,
         Interactive {
             screen,
             inputs,
@@ -6563,7 +6570,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         seen.latest().as_ref(),
                         &reading,
                         reading.max_tokens,
-                        app.status.ceiling,
+                        io_cli::context::Ceiling {
+                            max_tokens: app.status.ceiling,
+                            source: app.status.ceiling_source.as_deref(),
+                        },
                         &mask,
                         &app.theme,
                         screen.width(),
@@ -8096,7 +8106,10 @@ async fn turn<P: Provider>(
                                             seen.latest().as_ref(),
                                             &contract,
                                             contract.max_tokens,
-                                            app.status.ceiling,
+                                            io_cli::context::Ceiling {
+                                                max_tokens: app.status.ceiling,
+                                                source: app.status.ceiling_source.as_deref(),
+                                            },
                                             mask,
                                             &app.theme,
                                             screen.width(),
@@ -8581,8 +8594,15 @@ fn note_context(
     // event, and a fourth arm at one of the three is how the headless path or the
     // resume path silently keeps the contract's number. The event arrives once,
     // beside `Started`, so this runs before the first share is computed.
-    if let io_harness::EventKind::ContextCeiling { max_tokens, .. } = &event.kind {
-        app.status.note_ceiling(*max_tokens);
+    // **`source` is taken as well as the number, and 0.38.2 threw it away.** The
+    // rest is still `..` because the variant is `#[non_exhaustive]`; the two
+    // fields it has today are both wanted, and a rung an operator cannot read is
+    // a number they have to guess the provenance of.
+    if let io_harness::EventKind::ContextCeiling {
+        max_tokens, source, ..
+    } = &event.kind
+    {
+        app.status.note_ceiling(*max_tokens, source);
     }
     if let Some(request) = seen.latest() {
         // **What is LEFT of the run budget, not all of it.** io-harness assembles

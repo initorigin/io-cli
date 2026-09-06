@@ -6,6 +6,58 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-06
+
+### Changed
+
+- **The context ceiling is the model's real window, and reading it contacts one
+  more host.** Every release before this one assembled inside a flat 24,000
+  tokens on every provider `io` could build, whatever model was configured —
+  io-harness had the whole sizing path but nothing answered it
+  (initorigin/io-cli#105, io-harness#266). The pin moves to io-harness 0.82.0,
+  which gives each provider a source, and **io-cli turns the reference catalogue
+  on by default for the Anthropic and OpenAI providers**. OpenRouter needs no
+  opt-in — its catalogue is its own endpoint.
+
+  Read this if you upgrade and nothing else. Three consequences, all real:
+
+  - **A run costs more per step.** It stops throwing history away at 24,000 and
+    sends what the model holds. That is the point, and it is not free.
+  - **One more host is contacted, once per process, before the first step** — and
+    because io-harness authorises every endpoint a provider declares, an egress
+    policy that denies it **refuses the run** rather than skipping the lookup. The
+    refusal names the key that turns it off.
+  - **A local endpoint now reports a much smaller ceiling than a hosted one.**
+    That is io-harness being careful about a runtime that publishes nothing, not
+    `io` shrinking.
+
+  `[app.io-cli] reference_catalogue = false` restores the previous behaviour for
+  those two providers. `[run.context] max_tokens` still sets the ceiling yourself
+  and still wins over everything. Which catalogue is read is
+  `[app.io-cli.prices] source_url`'s question, unchanged since 0.24.0.
+
+- **`source: "fallback"` no longer means 24,000.** io-harness 0.82.0 splits it
+  into one default for a remote endpoint and a much smaller one for a loopback
+  endpoint. Nothing io-cli ships quotes a number for that rung any more, and a
+  gate keeps it that way.
+
+### Added
+
+- **`/context` says which rung decided the ceiling**, as a sentence rather than
+  as io-harness's bare word: what set the number, and what to do if it is an
+  assumption. `EventKind::ContextCeiling` has carried this since io-harness
+  0.81.0 and io-cli discarded it.
+
+- **`[app.io-cli] reference_catalogue`**, documented in `docs/CONTRACT.md` and in
+  the configuration guide. Absent is `true`.
+
+- **`otel`, `mcp-server` and `codeact` are enabled on the io-harness
+  dependency.** Each adds no crate — `cargo tree --depth 1` is still exactly ten
+  names — and **enabling `codeact` hands the agent no tool**: `run_program` is
+  advertised only where a `[codeact]` section configures it, so a session with
+  none sends the catalogue 0.38.2 sent, byte for byte. That is worth saying
+  because `media` behaved differently in 0.9.0.
+
 ## [0.38.2] - 2026-09-06
 
 The rest of what the 2026-09-05 field test found, and the io-harness pin that turned out to carry
@@ -3590,6 +3642,7 @@ client, tool, sandbox, policy engine or session store of its own.
 - No test in this release asserts on wall-clock time.
 
 [Unreleased]: https://github.com/initorigin/io-cli/compare/v0.38.0...HEAD
+[0.39.0]: https://github.com/initorigin/io-cli/compare/v0.38.2...v0.39.0
 [0.38.2]: https://github.com/initorigin/io-cli/compare/v0.38.1...v0.38.2
 [0.38.1]: https://github.com/initorigin/io-cli/compare/v0.38.0...v0.38.1
 [0.38.0]: https://github.com/initorigin/io-cli/compare/v0.37.0...v0.38.0

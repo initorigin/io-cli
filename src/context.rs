@@ -128,7 +128,7 @@ pub const SKILLS_HEAD: &str = "Skills available to you";
 /// **The directive is glued to the last catalogue line with no newline between
 /// them, so a line scan cannot see the boundary.** `compose` builds the prompt as
 /// `with_skill_catalog(..)` and then `out.push_str(&directive)`
-/// (io-harness-0.81.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
+/// (io-harness-0.82.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
 /// last `- name: description` line carrying **no trailing newline**
 /// (src/skills.rs:554-565); and `planning_directive` returns a string beginning
 /// with a space (src/run/gate.rs:322-326). So with a plan gate registered — which
@@ -817,6 +817,76 @@ pub fn window(contract: &TaskContract, remaining: Option<u64>, announced: Option
         .unwrap_or_else(|| contract.context.effective_tokens(remaining))
 }
 
+/// What a `source` word from `EventKind::ContextCeiling` means, in a sentence.
+///
+/// **The word alone is not readable and that is why this exists.** io-harness
+/// names one of three rungs — `contract`, `model`, `fallback` — and drawing the
+/// bare word would tell an operator which enum arm fired rather than what
+/// happened to their run. Each sentence says what decided the number and, where
+/// there is one, what to do about it.
+///
+/// **`fallback` no longer means 24,000, and this sentence is where io-cli stops
+/// saying it does.** Through io-harness 0.81.0 the fallback was one constant for
+/// every case; 0.82.0 splits it into 128,000 for a remote endpoint and 24,000 for
+/// a loopback one, sized down to 7,616. So the honest sentence names an
+/// assumption rather than a number, and points at the two things that turn an
+/// assumption into a reading — the reference catalogue for a vendor provider, and
+/// `[run.context]` for anybody who would rather state it themselves.
+///
+/// **A local ceiling is not a regression and the sentence says so**, because it
+/// looks exactly like one: an operator moving from a hosted model to Ollama or
+/// llama.cpp sees the number fall, and nothing else on the page explains that the
+/// harness is being careful rather than that this crate is wrong.
+///
+/// An unrecognised word is passed through rather than swallowed. `source` is a
+/// `String` on a `#[non_exhaustive]` variant, so io-harness may grow a fourth
+/// rung, and a surface that silently drew nothing for it would hide exactly the
+/// case somebody needs to see.
+/// What a run announced about the window it assembles inside.
+///
+/// **One value rather than two parameters, because they are one fact.** The
+/// number and the word that says where the number came from are set together by
+/// [`crate::status::Status::note_ceiling`] and cleared together by
+/// `forget_run`; passing them separately through the page would give a caller a
+/// way to draw a `model` rung over a contract's number, which is the exact class
+/// of disagreement this page has already been fixed for twice.
+///
+/// Both halves are `Option` and they are not the same question. A run against a
+/// harness older than io-harness 0.81.0 announces nothing at all and gets
+/// `Ceiling::default()`; the source may be absent on its own for the moment
+/// between a run starting and its first event.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Ceiling<'a> {
+    /// The ceiling in tokens, or `None` for a run that has not announced one —
+    /// in which case the page falls back to the contract, exactly as it did
+    /// before 0.38.2.
+    pub max_tokens: Option<u64>,
+    /// Which rung decided it: `contract`, `model` or `fallback`, io-harness's
+    /// own word. Rendered through [`rung`], never drawn bare.
+    pub source: Option<&'a str>,
+}
+
+/// `dash` is the glyph set's own, so the sentence degrades with every other one
+/// under `--plain` and the ASCII set rather than putting an em dash on a terminal
+/// that cannot draw it.
+pub fn rung(source: &str, dash: &str) -> String {
+    match source {
+        "contract" => "sized by `[run.context]` in your configuration, which wins over \
+                       everything the provider knows"
+            .to_string(),
+        "model" => "sized from the model's own context window, read from a catalogue".to_string(),
+        "fallback" => format!(
+            "an assumption {dash} nothing sized this provider, so io-harness used a default \
+             for its kind (a local endpoint assumes far less than a hosted one, which is \
+             the harness being careful rather than a smaller model). \
+             `{}` reads the real window for Anthropic and OpenAI; `[run.context] max_tokens` \
+             states it yourself",
+            crate::settings::REFERENCE_CATALOGUE_KEY,
+        ),
+        other => format!("announced as `{other}`, which this release has no sentence for"),
+    }
+}
+
 /// The page, committed into the scrollback.
 ///
 /// A page and never a modal: the viewport does not grow, and the
@@ -834,7 +904,7 @@ pub fn committed(
     // they disagreed once already — the page totalled 4,363 of 24,000 while the
     // line said `ctx 0%` — and the fix then was to make them one expression. A
     // second reader of the announcement would undo that.
-    announced: Option<u64>,
+    announced: Ceiling<'_>,
     // What the next turn may not call. Drawn on this page because this is where
     // the tools are named, and an operator who withheld one an hour ago should
     // not have to remember it — but drawn only when there is one, so the row is
@@ -880,13 +950,22 @@ pub fn committed(
                 );
             }
             let total = total(&sections);
-            let window = window(contract, remaining, announced);
+            let window = window(contract, remaining, announced.max_tokens);
             push(
                 format!(
                     "total: {total} tokens of {window} {dash} the window this run assembles inside"
                 ),
                 Tone::Normal,
             );
+            // **Which rung decided that number, in io-harness's own word.** Drawn
+            // under the total rather than beside it: the number is what an
+            // operator reads first and the provenance is what they read when the
+            // number surprises them. Absent for a run that announced nothing,
+            // which is every run against a harness older than 0.81.0 — a row
+            // reading "unknown" would be furniture.
+            if let Some(source) = announced.source {
+                push(rung(source, dash), Tone::Muted);
+            }
 
             // The catalogue itself, named. The counts above say how much it
             // costs; this says what the model was actually handed, which is the

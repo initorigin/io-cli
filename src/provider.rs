@@ -19,11 +19,28 @@
 
 use io_harness::{
     Anthropic, Auth, Compatible, CompletionRequest, CompletionResponse, ModelInfo, OpenAi,
-    OpenRouter, PromptFamily, Provider, ProviderSpec, ToolCall,
+    OpenRouter, PromptFamily, Provider, ProviderSpec, Reference, ToolCall,
 };
 
 use crate::cli::FromEnv;
 use crate::context::Seen;
+
+/// The host this process reads a model catalogue from, once one is built.
+///
+/// See [`build`], which is the only writer, and [`catalogue_host`], which is the
+/// only reader.
+static CATALOGUE_HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The catalogue host in force, or `None` when the operator turned it off or no
+/// provider has been built yet.
+///
+/// Read by [`crate::failure::advice`] so that a run refused over this host says
+/// which key turns it off. It is deliberately not read anywhere that decides
+/// behaviour — a `OnceLock` is fine for a sentence and wrong for a rule, because
+/// nothing clears it.
+pub fn catalogue_host() -> Option<&'static str> {
+    CATALOGUE_HOST.get().map(String::as_str)
+}
 
 /// What a caller does once there is a provider to build.
 ///
@@ -177,22 +194,35 @@ impl Provider for Vendor {
     // left to the trait.** io-harness 0.81.0 added `context_window` and
     // `max_output_tokens` with `None` defaults, so every wrapper in this file
     // compiles without them and answers "this provider is not saying" — which
-    // sends the run back to `context::FALLBACK_MAX_TOKENS`, the 24,000 the
-    // harness release exists to stop being universal.
+    // sends the run to the fallback rung.
     //
-    // **What this does NOT do today, stated because the first draft of this
-    // comment claimed otherwise.** In io-harness 0.81.0 exactly one shipped
-    // provider implements either method — `Compatible`, at
-    // `io-harness-0.81.0/src/provider/compatible.rs:512` — and it answers only
-    // from a catalogue `models()` has already fetched *on that instance*.
-    // `OpenRouter`, `Anthropic` and `OpenAi` declare neither and take the trait's
-    // `None`, and this crate never awaits `models()` on the provider it hands a
-    // run. So on every configuration io-cli builds today the chain answers `None`,
-    // the harness emits `source: "fallback"`, and the ceiling is the same 24,000
-    // it was before. Delegating is still right and still necessary — it is the
-    // wrapper's whole job, and a wrapper that answers for itself is wrong whatever
-    // the inner provider says — but the operator-visible change waits on
-    // io-harness, and `US-IO-CLI-0.38.2-I01` records that.
+    // **That rung is `context::FALLBACK_WINDOW` since 0.82.0, not
+    // `FALLBACK_MAX_TOKENS`, and the distinction is the release.**
+    // `FALLBACK_MAX_TOKENS` still exists and is still 24,000, but it is now only
+    // `ContextBudget::default`'s ceiling; what an unanswered provider gets is
+    // `assumed_window` — 128,000 for a remote endpoint and 24,000 for a loopback
+    // one, which sizes down to far less. A sentence here naming 24,000 as *the*
+    // fallback would be describing the harness this crate stopped pinning.
+    //
+    // **It answers for real as of 0.39.0, and the paragraph this replaces said it
+    // did not.** Through io-harness 0.81.0 exactly one shipped provider
+    // implemented either method — `Compatible` — and only from a catalogue
+    // `models()` had already fetched on that instance, so every configuration this
+    // crate could build answered `None`, the harness emitted `source: "fallback"`,
+    // and the ceiling was 24,000 whatever model was configured. That was
+    // initorigin/io-cli#105 and io-harness#266, and `US-IO-CLI-0.38.2-I01` records
+    // it. io-harness 0.82.0 closes it: `warm_sizing` is a real call before step 0,
+    // `OpenRouter` reads its own `/models`, and `Anthropic` and `OpenAi` read a
+    // reference catalogue this crate now turns on by default — see
+    // [`crate::settings::reference_catalogue`].
+    //
+    // **`warm_sizing` and `assumed_window` are 0.82.0's, and they are delegated
+    // here for the reason every other method is**: both are defaulted, so a
+    // wrapper that forgets one substitutes the default silently. The cost of
+    // forgetting is not academic — io-harness's own 0.82.0 review found `Record`,
+    // `Fallback` and `eval::Capture` doing exactly that, flipping a wrapped local
+    // provider's ceiling from 7,616 to 111,616 with no compiler error, no warning
+    // and no failing test.
     //
     // There is no compiler error and no test failure for a defaulted method: the
     // only gate is `f2_every_provider_method_is_delegated_by_every_wrapper`, which
@@ -214,6 +244,27 @@ impl Provider for Vendor {
             Self::Anthropic(p) => p.max_output_tokens(),
             Self::OpenAi(p) => p.max_output_tokens(),
             Self::Compatible(p) => p.max_output_tokens(),
+        }
+    }
+
+    /// An `async` block rather than a returned future, because the four arms have
+    /// four future types and a `match` cannot be the body of an `impl Future`
+    /// return. It is the same shape every other async method on this enum takes.
+    async fn warm_sizing(&self) -> io_harness::Result<()> {
+        match self {
+            Self::OpenRouter(p) => p.warm_sizing().await,
+            Self::Anthropic(p) => p.warm_sizing().await,
+            Self::OpenAi(p) => p.warm_sizing().await,
+            Self::Compatible(p) => p.warm_sizing().await,
+        }
+    }
+
+    fn assumed_window(&self) -> u64 {
+        match self {
+            Self::OpenRouter(p) => p.assumed_window(),
+            Self::Anthropic(p) => p.assumed_window(),
+            Self::OpenAi(p) => p.assumed_window(),
+            Self::Compatible(p) => p.assumed_window(),
         }
     }
 
@@ -452,6 +503,52 @@ impl<P: Provider + Sync> Provider for Chain<P> {
             .max()
     }
 
+    /// **Every link, not the head, and for the same reason the window is the
+    /// minimum.** The number the run sizes with is the minimum over the links, so
+    /// a link that never warmed contributes nothing to it and the chain sizes as
+    /// though it did not exist — which is precisely the fall-through case
+    /// `context_window` above exists to be conservative about.
+    ///
+    /// **It costs one fetch, not one per link**, because `provider::build` clones
+    /// a single [`Reference`] into every vendor that takes one and that type's
+    /// cache is an `Arc<OnceLock>`. Warming each link in turn is therefore the
+    /// cheap option as well as the correct one.
+    ///
+    /// A failure is swallowed by io-harness at the call site and swallowed here
+    /// too: a chain whose second link could not be sized is a chain that sizes
+    /// from its first, not a run that refuses to start. The one failure that is
+    /// **not** swallowed is an egress policy denying the reference host, which
+    /// io-harness raises before this is ever reached — see
+    /// [`crate::failure::reference_refusal`].
+    async fn warm_sizing(&self) -> io_harness::Result<()> {
+        // The one loop this module is permitted, over `self.links` and nothing
+        // else — the shape `tests/dependencies.rs` holds this file to by exact
+        // path. Spelled `self.links.iter()` rather than `&self.links` because
+        // that gate matches the spelling, not the meaning: it is a text sweep
+        // over a file it cannot execute, and a needle loose enough to accept both
+        // spellings would accept a loop over something else whose name merely
+        // began the same way.
+        for link in self.links.iter() {
+            let _ = link.warm_sizing().await;
+        }
+        Ok(())
+    }
+
+    /// The smallest assumption any link makes, for `context_window`'s reason
+    /// exactly: this is the number that is divided into, and a chain that assumed
+    /// its largest link's window would overflow on its smallest.
+    ///
+    /// It cannot be empty — `Chain::of` refuses an empty list — but `min` returns
+    /// an `Option` regardless, and the trait's own default is the honest answer if
+    /// one ever did.
+    fn assumed_window(&self) -> u64 {
+        self.links
+            .iter()
+            .map(Provider::assumed_window)
+            .min()
+            .unwrap_or(io_harness::context::FALLBACK_WINDOW)
+    }
+
     fn name(&self) -> &str {
         self.head().name()
     }
@@ -507,12 +604,19 @@ impl<P: Provider + Sync> Provider for Chain<P> {
 type Maker = Box<dyn Fn(&str) -> Result<Vendor, String> + Send + Sync>;
 
 /// The maker for one spec, and the model that spec names.
-fn maker_for(spec: ProviderSpec) -> Result<(Maker, String), String> {
+fn maker_for(spec: ProviderSpec, catalogue: Option<Reference>) -> Result<(Maker, String), String> {
     match spec {
         ProviderSpec::OpenRouter { model, api_key } => {
             let key = key_for(api_key, "OPENROUTER_API_KEY")?;
             Ok((
                 Box::new(move |name: &str| {
+                    // **No opt-in here, and its absence is not an oversight.**
+                    // OpenRouter derives its catalogue URL from its own
+                    // completions endpoint, so for this vendor the reference
+                    // catalogue is not a reference at all — it is the provider
+                    // speaking for itself, on a host the run already authorises.
+                    // `src/verify.rs` has drawn the same distinction for prices
+                    // since 0.24.0.
                     Ok(Vendor::OpenRouter(OpenRouter::new(key.clone(), name)))
                 }),
                 model,
@@ -522,7 +626,11 @@ fn maker_for(spec: ProviderSpec) -> Result<(Maker, String), String> {
             let key = key_for(api_key, "ANTHROPIC_API_KEY")?;
             Ok((
                 Box::new(move |name: &str| {
-                    Ok(Vendor::Anthropic(Anthropic::new(key.clone(), name)))
+                    let built = Anthropic::new(key.clone(), name);
+                    Ok(Vendor::Anthropic(match &catalogue {
+                        Some(reference) => built.with_reference_catalogue(reference.clone()),
+                        None => built,
+                    }))
                 }),
                 model,
             ))
@@ -530,7 +638,13 @@ fn maker_for(spec: ProviderSpec) -> Result<(Maker, String), String> {
         ProviderSpec::OpenAi { model, api_key } => {
             let key = key_for(api_key, "OPENAI_API_KEY")?;
             Ok((
-                Box::new(move |name: &str| Ok(Vendor::OpenAi(OpenAi::new(key.clone(), name)))),
+                Box::new(move |name: &str| {
+                    let built = OpenAi::new(key.clone(), name);
+                    Ok(Vendor::OpenAi(match &catalogue {
+                        Some(reference) => built.with_reference_catalogue(reference.clone()),
+                        None => built,
+                    }))
+                }),
                 model,
             ))
         }
@@ -587,11 +701,36 @@ fn maker_for(spec: ProviderSpec) -> Result<(Maker, String), String> {
 /// than by rewriting the spec. A fallback link keeps the model its own entry names —
 /// naming one model for a whole chain would ask a second vendor for a model id only
 /// the first one serves.
+/// `catalogue` is the reference catalogue the two vendor providers may size
+/// themselves from, from [`crate::settings::reference_catalogue`]. `None` is the
+/// operator having turned it off, and it is the only way to get 0.38.2's
+/// behaviour back: with it absent both providers answer `assumed_window` rather
+/// than the model's real one.
+///
+/// **It is threaded rather than constructed here on purpose.** One `Reference`
+/// is cloned into every link that takes it, and the type's cache is an
+/// `Arc<OnceLock>` — so a chain of three vendor providers reads the catalogue
+/// once between them, not three times. Building one per link inside this
+/// function would have been three fetches and three hosts to authorise.
 pub async fn build<W: WithProvider>(
     specs: Vec<ProviderSpec>,
     model_override: Option<String>,
+    catalogue: Option<Reference>,
     with: W,
 ) -> Result<W::Out, String> {
+    // **Recorded here because here is the only place that knows.** A run refused
+    // because the egress policy denies the catalogue's host arrives at the turn
+    // as an ordinary `Error::Refused`, fourteen call sites away in `src/main.rs`,
+    // and telling it apart from a refused `web` fetch means knowing which host
+    // this process is sizing from. Threading that to fourteen sites is thirteen
+    // chances to miss one; a value the builder writes cannot disagree with what
+    // the builder built.
+    //
+    // Set once and never cleared: the provider chain is constructed once per
+    // process, so this is a fact about the process rather than about a turn.
+    if let Some(reference) = catalogue.as_ref().and_then(Reference::host) {
+        let _ = CATALOGUE_HOST.set(reference.to_string());
+    }
     // **Iterators and not a `for`, which is a rule rather than a taste.**
     // `tests/dependencies.rs` refuses a loop in any file that calls a provider,
     // because a loop beside a provider call is the shape of a second agent loop.
@@ -599,7 +738,10 @@ pub async fn build<W: WithProvider>(
     // that gate now names it by path and holds it to iterating nothing else — so
     // turning configuration into closures, which is what this does, has to be
     // written without one.
-    let built: Result<Vec<(Maker, String)>, String> = specs.into_iter().map(maker_for).collect();
+    let built: Result<Vec<(Maker, String)>, String> = specs
+        .into_iter()
+        .map(|spec| maker_for(spec, catalogue.clone()))
+        .collect();
     let (makers, mut models): (Vec<Maker>, Vec<String>) = built?.into_iter().unzip();
     let Some(head) = models.first().cloned() else {
         return Err("no provider is configured; run `io setup`".into());
@@ -711,6 +853,17 @@ impl<P: Provider> Provider for Watched<P> {
 
     fn max_output_tokens(&self) -> Option<u64> {
         self.inner.max_output_tokens()
+    }
+
+    /// Delegated because it is defaulted, which is the whole argument: a decorator
+    /// that does not forward `warm_sizing` never warms the provider it wraps, and
+    /// the run then sizes from an assumption with nothing to say it did.
+    fn warm_sizing(&self) -> impl std::future::Future<Output = io_harness::Result<()>> + Send {
+        self.inner.warm_sizing()
+    }
+
+    fn assumed_window(&self) -> u64 {
+        self.inner.assumed_window()
     }
 
     fn name(&self) -> &str {
@@ -825,6 +978,17 @@ impl<P: Provider> Provider for Printable<P> {
 
     fn max_output_tokens(&self) -> Option<u64> {
         self.inner.max_output_tokens()
+    }
+
+    /// Delegated because it is defaulted, which is the whole argument: a decorator
+    /// that does not forward `warm_sizing` never warms the provider it wraps, and
+    /// the run then sizes from an assumption with nothing to say it did.
+    fn warm_sizing(&self) -> impl std::future::Future<Output = io_harness::Result<()>> + Send {
+        self.inner.warm_sizing()
+    }
+
+    fn assumed_window(&self) -> u64 {
+        self.inner.assumed_window()
     }
 
     fn name(&self) -> &str {

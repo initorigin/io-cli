@@ -278,7 +278,7 @@ path does not: that directory is one you already have.
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.
 
-Nine keys live there, and eight tables:
+Ten keys live there, and eight tables:
 
 | Key | Is |
 | --- | --- |
@@ -299,6 +299,7 @@ Nine keys live there, and eight tables:
 | `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](verification.md#verification-gates). |
 | `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start, on `/config`, and when `/contain on` is typed. A rule that cannot be obeyed — half a rule, a threshold of zero, or an empty model — is refused by name and leaves the run unrouted. See [Which model a run asks](providers.md#which-model-a-run-asks). |
 | `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](accounting.md#where-a-price-comes-from). |
+| `reference_catalogue` | whether `io` may read a model catalogue before the first step, so the context ceiling is the model's real window rather than an assumption. **Absent means yes**, which is a decision this release takes on your behalf: it contacts one more host per process, and an egress policy that denies that host refuses the run rather than skipping the lookup — the refusal names this key. `false` leaves the Anthropic and OpenAI providers assuming, which is what every release before 0.39.0 did. Which catalogue is `[app.io-cli.prices] source_url`'s question, not this one. See [What fills the window](accounting.md#what-fills-the-window). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
 default rather than stopping a session from starting. A section io-harness cannot

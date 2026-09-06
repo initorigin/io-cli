@@ -319,6 +319,7 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
                 model: Some("a-cheaper-model".into()),
             }),
         }),
+        reference_catalogue: Some(false),
     };
     let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");
@@ -2517,9 +2518,9 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
 /// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
 /// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
 /// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.81.0/src/tools/mod.rs:33-42`).
+/// cache *write* on every later turn (`io-harness-0.82.0/src/tools/mod.rs:33-42`).
 /// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`io-harness-0.81.0/src/run/prompts.rs:1381`).
+/// naming what is withheld (`io-harness-0.82.0/src/run/prompts.rs:1381`).
 ///
 /// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
 /// its headline. That framing is what a writer reaches for, because "withhold" means

@@ -958,6 +958,7 @@ pub async fn main(
     crate::provider::build(
         spec,
         model_override,
+        crate::settings::reference_catalogue(crate::settings::stored(&config).0.as_ref()),
         Editor {
             store,
             session,

@@ -3735,6 +3735,10 @@ async fn live_f5_an_unreachable_primary_falls_through_to_the_provider_underneath
     let (reply, served) = io_cli::provider::build(
         specs,
         None,
+        // No catalogue: this arm is about the chain falling through, and a
+        // reference read would put a second host in front of the behaviour it
+        // measures.
+        None,
         Falling {
             session: &mut session,
             store: &store,
@@ -4059,7 +4063,7 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
     // working mask, which is the finding worth keeping: io-harness *announces* the
     // mask in the user prompt — "Unavailable this turn — these tools are listed
     // above but calling one is refused and starts nothing: write_file"
-    // (`io-harness-0.81.0/src/run/prompts.rs:1381`) — so a compliant model never attempts the call and
+    // (`io-harness-0.82.0/src/run/prompts.rs:1381`) — so a compliant model never attempts the call and
     // never produces the refusal. The run above said so in its own reasoning: "the
     // previous turns show write_file was refused, so I used a shell redirect
     // instead". That is the mask working at its best, not evidence of absence.

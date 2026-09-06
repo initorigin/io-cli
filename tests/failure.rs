@@ -203,3 +203,71 @@ fn a_run_another_process_holds_still_says_the_holder_and_the_expiry_it_has() {
         "a held run is not a moved head: {said}",
     );
 }
+
+fn refused_net(target: &str) -> Error {
+    Error::Refused {
+        act: "net".into(),
+        target: target.into(),
+        rule: None,
+        layer: None,
+    }
+}
+
+/// **N6 — a run refused over the catalogue host names the key that turns it off.**
+///
+/// Turning the reference catalogue on by default is this release's decision, and
+/// this is its sharp edge: the catalogue's host joins `Provider::endpoints`,
+/// io-harness authorises every endpoint before the first step, and a policy that
+/// denies this one **refuses the run** rather than skipping the lookup. Without
+/// this arm the operator meets a refusal naming a host they never configured for
+/// a request they never made, with nothing on screen connecting it to a setting.
+///
+/// Sabotage: return the bare refusal — drop the arm from `advice_with`. Only this
+/// fails.
+#[test]
+fn n6_a_refused_catalogue_host_names_the_key_that_turns_it_off() {
+    let refusal = refused_net("openrouter.ai");
+    let advice = io_cli::failure::advice_with(&refusal, Some("openrouter.ai"))
+        .expect("a refusal on the catalogue host is recognised");
+
+    assert!(
+        advice.contains(io_cli::settings::REFERENCE_CATALOGUE_KEY),
+        "the way out has to be in the same message as the refusal, or it is a \
+         message that tells an operator they are stuck: {advice}",
+    );
+    assert!(
+        advice.contains("openrouter.ai"),
+        "and it has to name the host, because the operator's policy is written in \
+         hosts: {advice}",
+    );
+    assert!(
+        advice.contains("context window"),
+        "and say what the host was for, because a run refused for a reason nobody \
+         explained reads as a bug in `io`: {advice}",
+    );
+}
+
+/// **N6 — every other net refusal is left alone.**
+///
+/// The arm above matches a host, not the word `net`. A `web` fetch the policy
+/// denied is a refusal the operator asked for and understands, and dressing it up
+/// with advice about a catalogue key would be worse than saying nothing — it
+/// would name a setting that has no bearing on what they did.
+///
+/// The `None` case is the operator who turned the catalogue off: there is no host
+/// in force, so no refusal can be about it.
+#[test]
+fn n6_a_refusal_on_any_other_host_is_not_dressed_up_as_a_catalogue_refusal() {
+    let elsewhere = refused_net("example.invalid");
+    assert!(
+        io_cli::failure::advice_with(&elsewhere, Some("openrouter.ai")).is_none(),
+        "a denied `web` fetch was explained as a catalogue refusal",
+    );
+
+    let off = refused_net("openrouter.ai");
+    assert!(
+        io_cli::failure::advice_with(&off, None).is_none(),
+        "there is no catalogue host in force, so nothing can have been refused \
+         over one",
+    );
+}

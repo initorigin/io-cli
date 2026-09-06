@@ -352,6 +352,29 @@ pub struct Status {
     /// not. [`crate::context::window`] falls back to the contract there, which is
     /// the pre-0.38.2 expression byte for byte.
     pub ceiling: Option<u64>,
+    /// Which rung decided [`Status::ceiling`], in io-harness's own word (0.39.0).
+    ///
+    /// `EventKind::ContextCeiling` has carried this since io-harness 0.81.0 and
+    /// io-cli discarded it — the arm in `src/main.rs` destructured `max_tokens`
+    /// and matched the rest with `..`. It is one of three words, `contract`,
+    /// `model` or `fallback`, and the whole reason it is worth keeping is that
+    /// they are not interchangeable: `contract` is the operator's own
+    /// `[run.context]` answer, `model` is the real window read from a catalogue,
+    /// and `fallback` is an assumption nothing confirmed. An operator watching a
+    /// large model trim early should be able to read which of the three happened
+    /// rather than infer it from the number.
+    ///
+    /// **Set and cleared in exactly the same two places as `ceiling`**, which is
+    /// what keeps a word and a number that describe one fact from drifting: one
+    /// setter ([`Status::note_ceiling`], called once per run) and one clearer
+    /// ([`Status::forget_run`]). A field with its own setter somewhere else is how
+    /// this crate has twice ended up with two answers to one question.
+    ///
+    /// A `String` rather than an enum of three, deliberately. The event's field is
+    /// a `String` and io-harness may grow a fourth rung; an enum here would turn
+    /// that into either a silent wrong word or a parse this crate has no business
+    /// doing. What io-cli owns is the *sentence* around it, not the vocabulary.
+    pub ceiling_source: Option<String>,
     /// How this run's commands are contained: the mode asked for and the backend
     /// that actually answered on this host.
     ///
@@ -657,6 +680,7 @@ impl Status {
             cost: None,
             context: None,
             ceiling: None,
+            ceiling_source: None,
             containment: None,
             boundary: None,
             branch: None,
@@ -740,6 +764,10 @@ impl Status {
         // Beside the share it is the denominator of. A ceiling belongs to the run
         // that announced it, and the next run may be a different model.
         self.ceiling = None;
+        // And the word beside the number, in the same statement rather than a
+        // line elsewhere in this function: a rung left behind by a cleared
+        // ceiling would describe the previous run's model on this run's page.
+        self.ceiling_source = None;
         self.containment = None;
         // Beside the containment word it qualifies, and for the same reason: a
         // measurement belongs to the run that took it, and carrying it onto the
@@ -1014,9 +1042,12 @@ impl Status {
     /// too, and both are deliberate: a window that divides is a number somebody
     /// eventually divides by, and this crate has already spent two releases on
     /// exactly that.
-    pub fn note_ceiling(&mut self, max_tokens: u64) {
+    pub fn note_ceiling(&mut self, max_tokens: u64, source: &str) {
         if max_tokens > 0 {
             self.ceiling = Some(max_tokens);
+            // Inside the same guard, so a refused zero does not leave a word
+            // describing a number that was never stored.
+            self.ceiling_source = Some(source.to_string());
         }
     }
 

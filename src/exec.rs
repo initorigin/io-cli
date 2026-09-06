@@ -839,6 +839,7 @@ pub async fn main(
     provider::build(
         spec,
         model_override,
+        settings::reference_catalogue(settings::stored(&config).0.as_ref()),
         Headless {
             store,
             session,
@@ -1552,6 +1553,14 @@ pub async fn resume_main(
     provider::build(
         spec,
         model_override,
+        // **The resume door sizes from what the provider already knows.**
+        // io-harness 0.82.0's two decision-resume entry points do not warm, so a
+        // provider built here that has never fetched takes the `fallback` rung
+        // whatever this says. It is passed anyway, and identically to the other
+        // three doors, because `carry_on` reaches an entry point that does warm
+        // and because a door that quietly disagreed with the others about the
+        // operator's setting is the shape of a bug nobody looks for.
+        settings::reference_catalogue(settings::stored(&config).0.as_ref()),
         Resuming {
             store,
             config,
@@ -1656,8 +1665,8 @@ impl WithProvider for Resuming {
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.81.0/src/run.rs:1816`, `:2150`, `:3204`). Recovery has
-        // `resume_with_recovery_observed` (`:2617`) and nothing tree-aware, so it
+        // (`io-harness-0.82.0/src/run.rs:1824`, `:2158`, `:3234`). Recovery has
+        // `resume_with_recovery_observed` (`:2639`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree
         // entry points, and resuming through the flat one would drop it.
