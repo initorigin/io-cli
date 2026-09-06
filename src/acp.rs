@@ -82,6 +82,9 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const SERVED: &[&str] = &[
     "initialize",
     "session/new",
+    // 0.39.0. Gated by `loadSession`, which is now declared — see [`GATED`],
+    // whose whole job is that these two lists cannot disagree.
+    "session/load",
     "session/prompt",
     "session/cancel",
 ];
@@ -469,11 +472,18 @@ pub fn encode(frame: &Outgoing) -> String {
 /// decline a capability is to say `false` or say nothing, which is what the two
 /// excluded families do.
 ///
-/// `loadSession` is `false` because `session/load` is not served. io has `io
-/// resume` and the mapping is plausible, but the correspondence between an ACP
-/// session id and a stored run has to be designed rather than guessed, and
-/// declaring a capability whose method returns "method not found" is the defect
-/// this module's own [`SERVED`]/[`GATED`] agreement exists to prevent.
+/// **`loadSession` is `true` as of 0.39.0.** It was `false` because the
+/// correspondence between an ACP session id and a stored conversation "has to be
+/// designed rather than guessed" — and the design turned out to be the one the id
+/// already carried: this adapter issues `io-<session id>`, so loading is reading
+/// the number back out and reopening that session. What a client gets for it is
+/// the whole point of an editor integration, and its absence was the sharpest
+/// thing missing: an operator who closed their editor yesterday had no way back
+/// into the conversation, while `io resume` in a terminal had one all along.
+///
+/// The [`SERVED`]/[`GATED`] agreement is what keeps this honest in both
+/// directions — a capability declared here with no method behind it fails, and so
+/// does a method served without its capability.
 ///
 /// The filesystem and terminal families are the client's to implement, not the
 /// agent's, and this adapter never calls them — io-harness owns the disk inside
@@ -502,7 +512,7 @@ pub struct PromptCapabilities {
 impl Default for AgentCapabilities {
     fn default() -> Self {
         Self {
-            load_session: false,
+            load_session: true,
             prompt_capabilities: PromptCapabilities {
                 image: false,
                 audio: false,
@@ -981,7 +991,7 @@ impl crate::provider::WithProvider for Editor {
     type Out = Result<u8, String>;
 
     async fn call<P: io_harness::Provider>(
-        mut self,
+        self,
         make: impl Fn(&str) -> Result<P, String>,
         model: String,
     ) -> Self::Out {
@@ -993,12 +1003,17 @@ impl crate::provider::WithProvider for Editor {
         let correlator = std::sync::Arc::new(Correlator::new());
         let mut handler = Editing {
             store: &self.store,
-            session: &mut self.session,
             config: &self.config,
             policy: &self.policy,
             provider: &provider,
             outbound,
-            session_id: None,
+            // **Empty, and the session handed in is not put in it.** `Editor`
+            // opened one before the provider was built, the way every other door
+            // does, and a client that sends `session/new` gets a fresh one
+            // anyway — so seeding the map would leave a conversation in the store
+            // that no client ever addressed. The root is what is kept.
+            sessions: std::collections::BTreeMap::new(),
+            root: self.session.root().to_path_buf(),
             cancel: None,
             correlator: std::sync::Arc::clone(&correlator),
         };
@@ -1014,19 +1029,63 @@ impl crate::provider::WithProvider for Editor {
 /// The live session's state, between frames.
 struct Editing<'a, P: io_harness::Provider> {
     store: &'a io_harness::Store,
-    session: &'a mut io_harness::Session,
     config: &'a io_harness::Config,
     policy: &'a io_harness::Policy,
     provider: &'a P,
     outbound: tokio::sync::mpsc::UnboundedSender<Outgoing>,
-    /// The one session this adapter holds. ACP permits an agent to hold several;
-    /// 0.36.0 holds one and refuses a second rather than multiplexing badly.
-    session_id: Option<String>,
+    /// Every session this adapter holds, by the id the client addresses it with
+    /// (0.39.0).
+    ///
+    /// **0.36.0 held one and refused a second**, which is the honest thing to do
+    /// rather than multiplex badly and was named as a limitation in its own
+    /// release notes. ACP permits several, and an editor with two files open
+    /// wanting two conversations is the ordinary case rather than an exotic one.
+    ///
+    /// A map keyed on the wire id, not a `Vec` and not a counter: the client
+    /// chooses which session a prompt is for by naming it, so the lookup is the
+    /// whole mechanism. `Session::open` creates a new row every call, so two
+    /// sessions here are two conversations in the store — which is the same thing
+    /// two terminals in one repository are, and why the session lock is keyed on
+    /// the session rather than the workspace.
+    sessions: std::collections::BTreeMap<String, io_harness::Session>,
+    /// The workspace every session in the map is opened against.
+    root: std::path::PathBuf,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Where an approval this session raises will be answered. Handed to each
     /// turn's [`Consulting`], and shared with the read task inside
     /// [`serve_with`], which is the only thing that settles it.
     correlator: std::sync::Arc<Correlator>,
+}
+
+/// One stored turn as the `session/update` payloads a client already renders.
+///
+/// **The same two shapes a live turn sends**, `user_message_chunk` for what the
+/// operator said and `agent_message_chunk` for what came back, so a loaded
+/// conversation goes through the client's existing rendering rather than a second
+/// path built for replay. A bespoke transcript in the result would be that second
+/// path, and it would be the one that rots — nobody looks at it until they reopen
+/// an old session, which is exactly when being wrong costs the most.
+///
+/// **A turn with no reply contributes only its prompt.** `Turn::reply` is `None`
+/// while a turn is still running and for one that stopped without a closing
+/// message, and an empty agent chunk would draw the model as having answered with
+/// silence rather than as not having answered.
+///
+/// The tool calls, the reasoning and the steps are not replayed. They are on the
+/// durable trace and not on a `Turn`, and a client asking for a conversation is
+/// asking what was said.
+pub fn replayed(turn: &io_harness::Turn) -> Vec<Value> {
+    let mut out = vec![json!({
+        "sessionUpdate": "user_message_chunk",
+        "content": { "type": "text", "text": turn.prompt },
+    })];
+    if let Some(reply) = &turn.reply {
+        out.push(json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": reply },
+        }));
+    }
+    out
 }
 
 impl<P: io_harness::Provider> Handler for Editing<'_, P> {
@@ -1060,26 +1119,93 @@ impl<P: io_harness::Provider> Editing<'_, P> {
     ) -> Result<Value, (ErrorCode, String)> {
         match method {
             "initialize" => Ok(initialize_result(env!("CARGO_PKG_VERSION"))),
+            // **A new conversation, every time, and as many as the client wants
+            // (0.39.0).** `Session::open` writes a new row per call, so each of
+            // these is its own conversation in the store — the same thing two
+            // terminals in one repository are.
             "session/new" => {
-                if self.session_id.is_some() {
-                    return Err((
-                        ErrorCode::InvalidRequest,
-                        "this agent holds one session per process; start another `io acp` \
-                         for a second"
-                            .into(),
-                    ));
-                }
-                let id = format!("io-{}", self.session.id());
-                self.session_id = Some(id.clone());
+                let opened = io_harness::Session::open(self.store, &self.root)
+                    .map_err(|error| (ErrorCode::Internal, error.to_string()))?;
+                let id = format!("io-{}", opened.id());
+                self.sessions.insert(id.clone(), opened);
                 Ok(json!({ "sessionId": id }))
             }
+            // **`session/load` — a conversation from a previous process (0.39.0).**
+            //
+            // 0.36.0 declared `loadSession: false` and 0.38.0 named it a
+            // limitation. What it costs a client is the whole point of an editor
+            // integration: an operator who closed their editor yesterday and
+            // reopened it today had no way back into the conversation, while
+            // `io resume` in a terminal had one all along.
+            //
+            // **The history is replayed as ordinary `session/update`
+            // notifications**, in the shape a live turn already sends, so a client
+            // renders a loaded conversation with the code that renders a running
+            // one. The alternative — a bespoke result carrying the transcript —
+            // would be a second rendering path for the same content, and the one
+            // that rotted would be the one nobody looks at until they reopen an
+            // old session.
+            //
+            // **`Session::history` and never `Store::session_turns`**, which is
+            // the whole tree rather than one path through it: a rewind moves the
+            // head without deleting the turn, so the tree contains undone turns
+            // and replaying them would show a client work that was taken back.
+            // `src/export.rs` makes the same choice for the same reason.
+            "session/load" => {
+                let id = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .ok_or((
+                        ErrorCode::InvalidParams,
+                        "`session/load` names the session to load".to_string(),
+                    ))?
+                    .to_string();
+                let numeric = id
+                    .strip_prefix("io-")
+                    .and_then(|rest| rest.parse::<i64>().ok())
+                    .ok_or((
+                        ErrorCode::InvalidParams,
+                        format!("`{id}` is not a session this agent issued"),
+                    ))?;
+                let opened = io_harness::Session::reopen(self.store, numeric)
+                    .map_err(|error| (ErrorCode::InvalidParams, error.to_string()))?;
+                let turns = opened
+                    .history(self.store)
+                    .map_err(|error| (ErrorCode::Internal, error.to_string()))?;
+                for turn in &turns {
+                    for update in replayed(turn) {
+                        let _ = self.outbound.send(Outgoing::Notification {
+                            method: "session/update".into(),
+                            params: json!({ "sessionId": id, "update": update }),
+                        });
+                    }
+                }
+                self.sessions.insert(id, opened);
+                Ok(json!({}))
+            }
             "session/prompt" => {
-                let Some(session_id) = self.session_id.clone() else {
+                // **The client names which session, and this stopped being
+                // rhetorical when a second one became possible.** Through 0.38.2
+                // there was one and the parameter could be ignored; now a prompt
+                // that named nothing would go to whichever conversation happened
+                // to be first in a map.
+                let session_id = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .ok_or((
+                        ErrorCode::InvalidParams,
+                        "a prompt names the session it is for".to_string(),
+                    ))?
+                    .to_string();
+                if !self.sessions.contains_key(&session_id) {
                     return Err((
                         ErrorCode::InvalidRequest,
-                        "no session; send `session/new` first".into(),
+                        format!(
+                            "`{session_id}` is not a session this agent holds; \
+                             `session/new` opens one and `session/load` reopens one"
+                        ),
                     ));
-                };
+                }
                 let goal = prompt_text(params).ok_or((
                     ErrorCode::InvalidParams,
                     "a prompt carries at least one text content block".to_string(),
@@ -1110,9 +1236,17 @@ impl<P: io_harness::Provider> Editing<'_, P> {
         let (reporter, shared) = Reporter::new(session_id, self.outbound.clone());
         self.cancel = Some(std::sync::Arc::clone(&shared.cancelled));
 
-        let contract = crate::exec::contract(self.config, self.session, goal, None);
-        let outcome = self
-            .session
+        // **The session the client named, and the caller has already checked it
+        // is here.** Taken out of the map and put back afterwards rather than
+        // borrowed across the turn: `turn_bounded_observed` takes `&mut Session`
+        // for the whole turn, and `self` is borrowed mutably by every other field
+        // this function reads.
+        let Some(mut session) = self.sessions.remove(session_id) else {
+            return "refusal";
+        };
+        let contract = crate::exec::contract(self.config, &session, goal, None);
+        let run_id = session.id();
+        let outcome = session
             .turn_bounded_observed(
                 &contract,
                 self.provider,
@@ -1121,7 +1255,7 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                 &Consulting {
                     session_id: session_id.to_string(),
                     outbound: self.outbound.clone(),
-                    run_id: self.session.id(),
+                    run_id,
                     step: std::sync::Arc::clone(&shared.step),
                     correlator: std::sync::Arc::clone(&self.correlator),
                 },
@@ -1130,6 +1264,12 @@ impl<P: io_harness::Provider> Editing<'_, P> {
             .await;
 
         self.cancel = None;
+        // **Back in the map however the turn ended.** A session removed for the
+        // turn and not returned would be a conversation the client can still name
+        // and this agent can no longer find — and the failure would arrive on the
+        // *next* prompt, which is the worst place for it. The head has moved, so
+        // this is the session as the turn left it.
+        self.sessions.insert(session_id.to_string(), session);
         match outcome {
             Ok(result) => crate::acp_map::stop_reason(&result.outcome),
             // A turn that failed did not refuse anything and did not run out of
