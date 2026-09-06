@@ -1181,3 +1181,108 @@ fn t04_a_wrapped_unfold_reserves_the_measured_height() {
         "the second row opened the first row's height",
     );
 }
+
+fn type_into(picker: &mut Picker, text: &str) {
+    for c in text.chars() {
+        picker.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+/// **F5 — a query that matches no row is still a line worth running, in the one
+/// picker whose rows are a vocabulary.**
+///
+/// `/effort high` matches no palette row for a reason that has nothing to do with
+/// whether `/effort` exists: the row is `/effort` and the argument is not part of
+/// it. Through 0.38.2 `Enter` there returned `Idle` and did nothing at all, so a
+/// line pasted from the guides — or sent into a session by a script — sat behind
+/// `No row matches` with no way forward.
+///
+/// The line comes back through `query()` rather than on the variant, so `Outcome`
+/// stays `Copy`; this asserts both halves, because a signal with no way to read
+/// what it signalled is not a fix.
+///
+/// Sabotage: drop the `KeyCode::Enter` arm from the empty-matches branch. Only
+/// this fails.
+#[test]
+fn f5_enter_on_an_unmatched_query_hands_the_line_back() {
+    let mut palette = Picker::new(
+        "Which command?",
+        vec![Row::new("/effort"), Row::new("/model")],
+    )
+    .taking_a_line();
+
+    type_into(&mut palette, "effort high");
+    assert_eq!(
+        palette.matching(),
+        0,
+        "the fixture needs an unmatched query"
+    );
+
+    assert_eq!(
+        palette.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Outcome::Typed,
+        "`Enter` on a whole command line did nothing, which is where a line \
+         pasted from the guides used to stop",
+    );
+    assert_eq!(
+        palette.query(),
+        "effort high",
+        "the arguments are the half the row could not carry, so a line handed \
+         back without them is the same loss in a different place",
+    );
+}
+
+/// **F5 — `Tab` completes and does not submit.**
+///
+/// Completion on a query that completes to nothing is nothing. Submitting is a
+/// different act and takes the key that means it — otherwise an operator
+/// half-way through typing a command, reaching for completion, runs it.
+#[test]
+fn f5_tab_never_submits_a_line() {
+    let mut palette = Picker::new("Which command?", vec![Row::new("/effort")]).taking_a_line();
+    type_into(&mut palette, "effort high");
+
+    assert_eq!(
+        palette.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        Outcome::Idle,
+        "`Tab` submitted a line. It is the completion key, and completing to \
+         nothing is nothing",
+    );
+}
+
+/// **F5 — every other picker still answers an unmatched query with silence.**
+///
+/// The palette's rows are a vocabulary; every other picker in the product offers
+/// the sessions that exist, the models a provider serves, the files a rewind
+/// would restore. A query matching none of those is a query for something that is
+/// not there, and handing the text back would offer the operator a thing that
+/// does not exist.
+///
+/// Sabotage: make `takes_a_line` default to true. Only this fails, and it is the
+/// arm that says why the flag exists at all.
+#[test]
+fn f5_a_picker_that_did_not_ask_for_a_line_does_not_take_one() {
+    let mut sessions = Picker::new("Which session?", vec![Row::new("a-real-session")]);
+    type_into(&mut sessions, "no-such-session");
+    assert_eq!(sessions.matching(), 0);
+
+    assert_eq!(
+        sessions.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Outcome::Idle,
+        "a picker over things that exist handed back a name for one that does not",
+    );
+}
+
+/// **F5 — an empty query is not a line.**
+///
+/// A palette opened and immediately answered with `Enter` has nothing typed in
+/// it. Handing back an empty line would submit a bare `/`, which parses as no
+/// command and reads as the interface having done something arbitrary.
+#[test]
+fn f5_an_empty_query_is_not_a_line() {
+    let mut palette = Picker::new("Which command?", Vec::new()).taking_a_line();
+    assert_eq!(
+        palette.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Outcome::Idle,
+    );
+}

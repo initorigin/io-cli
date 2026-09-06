@@ -150,6 +150,28 @@ pub enum Outcome {
     Chosen(usize),
     /// The user backed out.
     Cancelled,
+    /// `Enter` on a query that matches no row, in a picker that takes one
+    /// (0.39.0).
+    ///
+    /// **The palette is the only surface that opts in, and the reason is that it
+    /// is the only one whose rows are a *vocabulary* rather than a list of
+    /// things.** Every other picker in the product offers the sessions that
+    /// exist, the models a provider serves, the files a rewind would restore — a
+    /// query matching none of those is a query for something that is not there,
+    /// and the honest answer is the empty list. The palette's rows are commands,
+    /// and `/effort high` matches none of them for a reason that has nothing to
+    /// do with whether `/effort` exists: the row is `/effort` and the argument is
+    /// not part of it.
+    ///
+    /// So a line pasted from the guides, or sent by a script into a session, sat
+    /// in the filter reading `No row matches` and `Enter` did nothing at all.
+    /// This carries the whole typed line back to the caller, which parses it the
+    /// way a typed prompt is parsed.
+    ///
+    /// The line itself is read back with [`Picker::query`] rather than carried
+    /// here, so this enum stays `Copy` — nine call sites match on it and several
+    /// do so in a loop.
+    Typed,
 }
 
 pub struct Picker {
@@ -227,6 +249,15 @@ pub struct Picker {
     /// under the marker, and there is only ever one of those. What is reserved is
     /// another question; see [`Self::rows_wanted`].
     unfolds: BTreeMap<usize, u16>,
+    /// Whether `Enter` on a query that matches nothing hands the line back
+    /// instead of doing nothing (0.39.0). See [`Outcome::Typed`], and
+    /// [`Picker::taking_a_line`], which is the only thing that sets it.
+    ///
+    /// Off by default, and that default is the interesting half: on every other
+    /// picker in the product a query matching no row is a query for something
+    /// that is not there, and handing the text back would offer the operator a
+    /// session, a model or a file that does not exist.
+    takes_a_line: bool,
     /// Where the unfolded block was drawn by the last [`Self::render`], for the
     /// caller to draw into.
     ///
@@ -250,6 +281,7 @@ impl Picker {
             marks: BTreeSet::new(),
             unfolds: BTreeMap::new(),
             opened: None,
+            takes_a_line: false,
         };
         // A grouped list opens with a heading in the first slot, and the marker
         // may not rest on one. Stepping here rather than only in `refilter`
@@ -259,6 +291,24 @@ impl Picker {
         picker.step_off_heading(1);
         picker.intent = picker.matches.get(picker.cursor).copied();
         picker
+    }
+
+    /// This picker's rows are a vocabulary, so a query matching none of them may
+    /// still be a line worth running (0.39.0).
+    ///
+    /// **The palette, and nothing else.** `Enter` on an unmatched query hands the
+    /// line back as [`Outcome::Typed`] rather than doing nothing, which is what
+    /// lets `/effort high` — a line from the guides, or one a script sent into a
+    /// session — run instead of sitting in the filter reading `No row matches`.
+    /// The row is `/effort` and the argument is not part of it, so the failure to
+    /// match says nothing about whether the command exists.
+    ///
+    /// Not on any other picker, deliberately: a query that matches no session, no
+    /// model and no file is a query for something that is not there.
+    #[must_use]
+    pub fn taking_a_line(mut self) -> Self {
+        self.takes_a_line = true;
+        self
     }
 
     /// Open with a row already selected — what `/theme` does, so the picker opens
@@ -691,7 +741,13 @@ impl Picker {
                     .get(self.cursor)
                     .is_some_and(|index| self.rows[*index].heading);
                 if self.matches.is_empty() || on_heading {
-                    Outcome::Idle
+                    // **`Enter` only, never `Tab`.** Completion on a query that
+                    // completes to nothing is nothing; submitting is a different
+                    // act and takes the key that means it.
+                    match (key.code, self.takes_a_line, self.query.is_empty()) {
+                        (KeyCode::Enter, true, false) => Outcome::Typed,
+                        _ => Outcome::Idle,
+                    }
                 } else {
                     Outcome::Chosen(self.selected())
                 }

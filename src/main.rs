@@ -1433,6 +1433,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 continue;
             }
         }
+        // Set only by `Outcome::Typed` below: the palette handed back a whole
+        // command line, and this keystroke has to reach `app.key` rather than
+        // stopping at the picker.
+        let mut submitting = false;
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
@@ -4357,9 +4361,36 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     picker = None;
                 }
                 Outcome::Idle => {}
+                // **The palette's query was a whole command line, so it runs on
+                // this `Enter` rather than the next one.** The line goes into the
+                // composer with its `/` put back — the slash never reached the
+                // prompt, because opening the palette is what it did — and then
+                // this block deliberately does *not* `continue`, so the same
+                // keystroke falls through to `app.key(key)` below and is
+                // submitted exactly as a hand-typed line would be.
+                //
+                // That fall-through is the whole of "one Enter". A `continue`
+                // here would leave the line sitting in the prompt waiting for a
+                // second press, which is better than 0.38.2 — where `Enter` on an
+                // unmatched query did nothing at all and `/effort high` was stuck
+                // behind `No row matches` — and still not what a line pasted from
+                // the guides should need.
+                Outcome::Typed => {
+                    let line = format!("/{}", open.query());
+                    picker = None;
+                    app.composer.set(&line);
+                    submitting = true;
+                }
             }
-            paint_picker(screen, &mut app, picker.as_mut())?;
-            continue;
+            // Every outcome but `Typed` ends the keystroke here. A flag rather
+            // than a condition read back off the composer, because the states are
+            // otherwise indistinguishable: a cancelled palette also leaves
+            // `picker` empty, and the prompt it leaves behind may well begin with
+            // a slash the operator typed a minute ago.
+            if !submitting {
+                paint_picker(screen, &mut app, picker.as_mut())?;
+                continue;
+            }
         }
 
         // `/` at an empty prompt opens the palette, in front of the session
@@ -4383,7 +4414,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // is what `/model` already does against four hundred models. That is
             // the trade the release contract records, and the fallback if it turns
             // out wrong is *not* to restore the round trip.
-            picker = Some((Picker::new("Which command?", rows), Pick::Palette));
+            // `.taking_a_line()` for the mid-turn palette's reason, and it has to
+            // be on both: a line pasted at an idle prompt is the case an operator
+            // meets first.
+            picker = Some((
+                Picker::new("Which command?", rows).taking_a_line(),
+                Pick::Palette,
+            ));
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -7260,6 +7297,17 @@ fn mid_turn_picker(
         }
         Outcome::Cancelled => *picker = None,
         Outcome::Idle => {}
+        // **Mid-turn the line goes into the prompt and is not submitted, and
+        // that is a difference with a reason.** Submitting mid-turn does not run
+        // a command — it queues a prompt for the turn after this one — so a line
+        // that ran itself here would be queueing work on a keystroke the operator
+        // pressed to close a palette. The idle door submits because there the
+        // same `Enter` means the same thing it would have meant at the prompt.
+        Outcome::Typed => {
+            let line = format!("/{}", open.query());
+            *picker = None;
+            app.composer.set(&line);
+        }
     }
 }
 
@@ -7792,7 +7840,12 @@ async fn turn<P: Provider>(
                                 Picker::new(
                                     "Which command?",
                                     commands::palette(templates, skills),
-                                ),
+                                )
+                                // The palette's rows are a vocabulary, so `Enter`
+                                // on a query matching none of them hands the line
+                                // back to be parsed rather than doing nothing.
+                                // See `Outcome::Typed`.
+                                .taking_a_line(),
                                 Pick::Palette,
                             ));
                             Command::None

@@ -474,7 +474,12 @@ impl Wizard {
                 self.step = Step::Cancelled;
                 Progress::Cancelled
             }
-            Outcome::Idle => Progress::Idle,
+            // `Typed` needs `Picker::taking_a_line`, which only the palette asks
+            // for; the wizard's rows are things that exist — providers, models,
+            // themes, postures — and a query matching none of them is a query for
+            // one that does not. Named rather than wildcarded so the next variant
+            // is a compile error here as well.
+            Outcome::Idle | Outcome::Typed => Progress::Idle,
         }
     }
 
@@ -537,7 +542,12 @@ impl Wizard {
                 self.step = Step::Cancelled;
                 Progress::Cancelled
             }
-            Outcome::Idle => Progress::Idle,
+            // `Typed` needs `Picker::taking_a_line`, which only the palette asks
+            // for; the wizard's rows are things that exist — providers, models,
+            // themes, postures — and a query matching none of them is a query for
+            // one that does not. Named rather than wildcarded so the next variant
+            // is a compile error here as well.
+            Outcome::Idle | Outcome::Typed => Progress::Idle,
         }
     }
 
@@ -626,7 +636,12 @@ impl Wizard {
                 self.step = Step::Cancelled;
                 Progress::Cancelled
             }
-            Outcome::Idle => Progress::Idle,
+            // `Typed` needs `Picker::taking_a_line`, which only the palette asks
+            // for; the wizard's rows are things that exist — providers, models,
+            // themes, postures — and a query matching none of them is a query for
+            // one that does not. Named rather than wildcarded so the next variant
+            // is a compile error here as well.
+            Outcome::Idle | Outcome::Typed => Progress::Idle,
         }
     }
 
@@ -645,7 +660,12 @@ impl Wizard {
                 self.step = Step::Cancelled;
                 Progress::Cancelled
             }
-            Outcome::Idle => Progress::Idle,
+            // `Typed` needs `Picker::taking_a_line`, which only the palette asks
+            // for; the wizard's rows are things that exist — providers, models,
+            // themes, postures — and a query matching none of them is a query for
+            // one that does not. Named rather than wildcarded so the next variant
+            // is a compile error here as well.
+            Outcome::Idle | Outcome::Typed => Progress::Idle,
         }
     }
 
