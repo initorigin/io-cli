@@ -883,7 +883,10 @@ impl Intent {
             // question "does Ctrl+C decline, or interrupt?" with *it interrupts*.
             // An arm answering `Some(None)` here would be a second, contradictory
             // answer to that question, in a different file.
-            Outcome::Cancelled | Outcome::Idle => None,
+            // `Typed` cannot arrive either: it needs `Picker::taking_a_line`, and
+            // the palette is the only surface that asks for it. Named rather than
+            // wildcarded so the next variant is a compile error here too.
+            Outcome::Cancelled | Outcome::Idle | Outcome::Typed => None,
         }
     }
 

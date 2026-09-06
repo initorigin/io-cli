@@ -2084,18 +2084,27 @@ fn f7_a_dial_carries_the_host_as_asked_the_port_and_the_verdict() {
     );
 }
 
-/// 0.14.0 F8 — a sandbox says what happened and what isolated it.
+/// 0.14.0 F8, amended by 0.39.0's F6 — a sandbox draws only what is news.
+///
+/// **`create`, `exec` and `destroy` draw nothing since 0.39.0**, and this arm is
+/// the one that says so. They were three muted rows around one command whose own
+/// row sits directly beneath them and says what ran and how it ended — four rows
+/// for one act. That the command was contained is a standing property of the
+/// session and is on the status line; how it was contained is the backend named
+/// there beside it. Neither is news at the moment a command runs.
+///
+/// The two that survive are the two that changed something: a limit reached
+/// changed what the command did, and a gate that ran and did not pass decided
+/// whether the turn was finished.
 ///
 /// Sabotage: draw `cap_hit` through the error path — `Tone::Error` in place of
 /// the warning — under which only F8 fails, on a run whose cap held exactly as
 /// its operator configured it being reported to them as a run that broke.
 #[test]
-fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists() {
+fn f8_a_sandbox_draws_only_the_kinds_that_are_news() {
     let mut events = Events::new(DARK);
 
-    // `create` and `exec` are the two io-harness sets a backend on, so the line
-    // carries what isolated the work.
-    for (kind, expected) in [("create", "created"), ("exec", "ran")] {
+    for kind in ["create", "exec", "destroy"] {
         let line = rendered(
             &mut events,
             EventKind::Sandbox {
@@ -2103,27 +2112,28 @@ fn f8_a_sandbox_draws_its_four_kinds_and_carries_a_backend_only_where_one_exists
                 backend: Some("macos-sandbox-exec".into()),
             },
         );
-        assert!(line.contains(expected), "{kind}: {line:?}");
-        assert!(line.contains("macos-sandbox-exec"), "{kind}: {line:?}");
+        assert!(
+            line.trim().is_empty(),
+            "`{kind}` drew a row. It is the lifecycle of a sandbox around a \
+             command that has its own row, and it costs the operator a line to \
+             tell them something the status line already carries: {line:?}",
+        );
     }
 
-    // `cap_hit` and `destroy` carry `None` always, so there is no backend to
-    // draw — and none is worked out here and printed as though the event had
-    // said it.
-    for kind in ["cap_hit", "destroy"] {
-        let line = rendered(
-            &mut events,
-            EventKind::Sandbox {
-                kind: kind.into(),
-                backend: None,
-            },
-        );
-        assert!(!line.trim().is_empty(), "{kind} drew nothing: {line:?}");
-        assert!(
-            !line.contains("sandbox-exec") && !line.contains("none"),
-            "{kind} has no backend and this line invented one: {line:?}",
-        );
-    }
+    // `cap_hit` carries `None` always, so there is no backend to draw — and none
+    // is worked out here and printed as though the event had said it.
+    let line = rendered(
+        &mut events,
+        EventKind::Sandbox {
+            kind: "cap_hit".into(),
+            backend: None,
+        },
+    );
+    assert!(!line.trim().is_empty(), "cap_hit drew nothing: {line:?}");
+    assert!(
+        !line.contains("sandbox-exec") && !line.contains("none"),
+        "cap_hit has no backend and this line invented one: {line:?}",
+    );
 
     // **A limit reached, and not a failure.** The sandbox did what it was
     // configured to do, and the error path would say the opposite of that to the
@@ -3275,6 +3285,147 @@ fn f8_a_thought_is_committed_above_the_prose_it_produced() {
         thought_at < answer_at,
         "the thought must be drawn above the answer it produced: {committed:?}",
     );
+}
+
+/// **F15 — a program the turn wrote gets a row, and its acts are the rows under
+/// it.**
+///
+/// `EventKind::Program` carries the interpreter, a detail line, a callback count
+/// and an outcome — and no program text, which is why this row says what ran and
+/// how it ended rather than what was written. The acts are not on it either and
+/// do not need to be: each callback re-enters dispatch and arrives as its own
+/// `ToolCall`, so the cells beneath this row are what it did. What the row adds
+/// is that they belong to one program rather than to the model calling tools one
+/// at a time, which matters because a program's acts are not separately approved.
+#[test]
+fn f15_a_program_says_what_ran_and_how_it_ended() {
+    let mut events = Events::new(DARK);
+    let line = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: "python3 3.12".into(),
+            calls: 3,
+            outcome: "finished".into(),
+        },
+    );
+
+    assert!(line.contains("Program"), "{line}");
+    assert!(
+        line.contains("python3"),
+        "the interpreter that ran it: {line}"
+    );
+    assert!(line.contains("3 calls"), "{line}");
+    assert!(line.contains("finished"), "{line}");
+
+    // "1 calls" is the shape of a number nobody checked.
+    let one = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: String::new(),
+            calls: 1,
+            outcome: "finished".into(),
+        },
+    );
+    assert!(one.contains("1 call") && !one.contains("1 calls"), "{one}");
+}
+
+/// **F15 — a host with no interpreter says so once, and a host with one says
+/// nothing.**
+///
+/// The documented fallback is that a run without an interpreter composes, sends
+/// and steps exactly as it would with the feature off. That is the right
+/// behaviour and a silent version of it is not: an operator who configured
+/// `[codeact]` and is watching twelve round trips where they expected one program
+/// needs to know the host had no interpreter — the difference between a setting
+/// that is not working and one that is not applicable.
+///
+/// `available` draws nothing, because a capability being present is a fact about
+/// the run's configuration and a row for it on every contained turn would be
+/// furniture.
+#[test]
+fn f15_a_withheld_capability_says_so_and_an_available_one_does_not() {
+    let mut events = Events::new(DARK);
+
+    let available = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: "python3 3.12".into(),
+            calls: 0,
+            outcome: "available".into(),
+        },
+    );
+    assert!(
+        available.trim().is_empty(),
+        "a capability being present drew a row on a turn that had not used it: {available}",
+    );
+
+    let withheld = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: None,
+            detail: "tried python3, python".into(),
+            calls: 0,
+            outcome: "withheld".into(),
+        },
+    );
+    assert!(
+        withheld.contains("tried python3, python"),
+        "the discovery sentence is io-harness's own, naming what it looked for — \
+         a sentence written here would be a second opinion about a probe this \
+         crate did not run: {withheld}",
+    );
+}
+
+/// **F18 — a picture the agent was handed is named, and not drawn.**
+///
+/// `src/picture.rs` draws every image the *operator* attached, where they attach
+/// it. This event is the other four doors — an MCP tool's reply, a browser
+/// screenshot, the agent's own `view_image`, and the contract's own images — and
+/// before io-harness 0.81.0 there was no event for any of them.
+///
+/// The row's job is to say that something entered the model's context. Without
+/// it an operator whose window filled with a screenshot they never asked for
+/// could read `/context`, see the conversation swollen, and find nothing anywhere
+/// saying a picture had arrived.
+///
+/// The `source` word is io-harness's, passed through rather than translated: a
+/// fifth door it grows reads as itself rather than as "unknown".
+#[test]
+fn f18_an_image_the_agent_was_handed_is_named_with_its_door_and_its_size() {
+    for source in ["mcp", "browser", "view_image", "caller"] {
+        let mut events = Events::new(DARK);
+        let line = rendered(
+            &mut events,
+            EventKind::ImageAttached {
+                media_type: "image/png".into(),
+                bytes: 391_790,
+                digest: "sha256:not-a-real-digest".into(),
+                source: source.into(),
+            },
+        );
+
+        assert!(
+            line.contains(source),
+            "the row has to say which door the picture came through, because that \
+             is the difference between one the operator sent and one the agent \
+             fetched: {line}",
+        );
+        assert!(line.contains("image/png"), "{line}");
+        assert!(
+            line.contains("382.6 KB"),
+            "the size is spelled with `picture::bytes`, like every other size in \
+             the product — a second formatter would report one image two ways \
+             depending on which door it came through: {line}",
+        );
+        assert!(
+            !line.contains("sha256"),
+            "the digest is io-harness's bookkeeping and means nothing to a reader \
+             of a transcript: {line}",
+        );
+    }
 }
 
 /// **F8 — a spawned child's outcome is words, not a struct literal.**

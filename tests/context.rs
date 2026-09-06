@@ -401,9 +401,9 @@ fn f1_an_announced_ceiling_is_the_window_the_share_is_taken_against() {
     // And the same value reaches `ctx N%`, through `Status`, rather than being a
     // second reader of the event.
     let mut status = io_cli::status::Status::new("a-model");
-    status.note_ceiling(128_000);
+    status.note_ceiling(128_000, "model");
     assert_eq!(status.ceiling, Some(128_000));
-    status.note_ceiling(0);
+    status.note_ceiling(0, "model");
     assert_eq!(
         status.ceiling,
         Some(128_000),
@@ -441,7 +441,7 @@ fn f7_the_catalogue_names_a_tool_only_the_request_knew_about() {
         Some(&Request::of(&request())),
         &contract(),
         None,
-        None,
+        context::Ceiling::default(),
         &ToolMask::none(),
         &ascii(),
         80,
@@ -499,7 +499,7 @@ fn f7_the_system_block_is_tokens_of_its_own_text_and_not_a_byte_count() {
         Some(&seen),
         &contract,
         None,
-        None,
+        context::Ceiling::default(),
         &ToolMask::none(),
         &ascii(),
         80,
@@ -534,7 +534,7 @@ fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
         None,
         &contract(),
         None,
-        None,
+        context::Ceiling::default(),
         &ToolMask::none(),
         &ascii(),
         80,
@@ -551,7 +551,7 @@ fn f7_the_page_draws_in_ascii_and_says_so_before_a_turn_has_run() {
         Some(&Request::of(&request())),
         &contract(),
         None,
-        None,
+        context::Ceiling::default(),
         &ToolMask::none(),
         &ascii(),
         80,
@@ -629,7 +629,7 @@ fn f10_the_status_share_is_the_page_total_over_the_page_window() {
     const ANNOUNCED: u64 = 103_424;
     let mut status = io_cli::status::Status::new("a-model");
     status.budgets = io_cli::status::Budgets::in_force(&contract);
-    status.note_ceiling(ANNOUNCED);
+    status.note_ceiling(ANNOUNCED, "model");
     status.note_context_request(&seen, &contract, contract.max_tokens);
 
     let announced_window = context::window(&contract, contract.max_tokens, Some(ANNOUNCED));
@@ -649,7 +649,7 @@ fn f10_the_status_share_is_the_page_total_over_the_page_window() {
     // `budgets.window` alone, so one screen carried two denominators for one word.
     let mut folded = io_cli::status::Status::new("a-model");
     folded.budgets = io_cli::status::Budgets::in_force(&contract);
-    folded.note_ceiling(ANNOUNCED);
+    folded.note_ceiling(ANNOUNCED, "model");
     folded.note_context(30_000);
     assert_eq!(
         folded.context,
@@ -959,7 +959,7 @@ fn f9_the_withheld_row_is_absent_until_there_is_one_and_then_states_its_cost() {
         Some(&Request::of(&request())),
         &contract(),
         None,
-        None,
+        context::Ceiling::default(),
         &mask,
         &ascii(),
         80,
@@ -1006,7 +1006,7 @@ fn f9_allow_reports_a_no_op_and_a_clear_names_what_returned() {
 /// **The defect this replaces was the safety lever being silently inert.**
 /// io-harness keeps an unknown mask name rather than rejecting it, deliberately,
 /// so a mask stays portable across builds with different cargo features
-/// (`io-harness-0.81.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
+/// (`io-harness-0.82.0/src/tools/mod.rs:55-58`). That means `mask_gate` matches on
 /// the exact string and a misspelling withholds nothing — while the operator was
 /// told "calling it will be refused before anything starts" and `/context` drew it
 /// on the withheld row. `/context withhold Docx_Write` and the file gets written.
@@ -1154,4 +1154,193 @@ fn f1_the_longest_configured_server_id_wins_not_the_first() {
         !costs.contains_key("github"),
         "`github` was charged for a tool that is not its own: {costs:?}"
     );
+}
+
+/// **F17 — the rung that decided the ceiling is a sentence, not a bare word.**
+///
+/// `EventKind::ContextCeiling` names one of three rungs and io-cli discarded the
+/// word entirely through 0.38.2 — the arm in `src/main.rs` destructured
+/// `max_tokens` and matched the rest with `..`. Drawing the word alone would
+/// still not be readable: `fallback` tells an operator which enum arm fired, not
+/// that nothing sized their provider and what to do about it.
+///
+/// Asserted against the *rendered* sentence rather than the word, because the
+/// word is io-harness's and the sentence is this crate's, and it is the sentence
+/// that is the feature.
+#[test]
+fn f17_each_rung_is_drawn_as_a_sentence_an_operator_can_act_on() {
+    let dash = ASCII.dash;
+
+    let contract = context::rung("contract", dash);
+    assert!(
+        contract.contains("[run.context]"),
+        "the contract rung has to name the section that decided it, or an \
+         operator cannot find the number they set: {contract}",
+    );
+
+    let model = context::rung("model", dash);
+    assert!(
+        model.contains("model") && model.contains("catalogue"),
+        "the model rung has to say the window was read rather than assumed: {model}",
+    );
+
+    let fallback = context::rung("fallback", dash);
+    assert!(
+        fallback.contains("assumption"),
+        "`fallback` means nothing sized this provider, and the sentence has to \
+         say so: {fallback}",
+    );
+    assert!(
+        fallback.contains(io_cli::settings::REFERENCE_CATALOGUE_KEY),
+        "the fallback sentence has to name the key that turns the catalogue on, \
+         which is the one thing that turns this assumption into a reading: {fallback}",
+    );
+    assert!(
+        fallback.contains("local"),
+        "a local endpoint assuming less than a hosted one looks exactly like a \
+         regression, and this is the only surface that says it is not: {fallback}",
+    );
+
+    // io-harness may grow a fourth rung: `source` is a `String` on a
+    // `#[non_exhaustive]` variant. Passing it through is what stops the one case
+    // somebody needs to see from being the one case nothing draws.
+    let unknown = context::rung("something-new", dash);
+    assert!(
+        unknown.contains("something-new"),
+        "an unrecognised rung is passed through, never swallowed: {unknown}",
+    );
+}
+
+/// **F17 — the page draws it, which is the half a sentence test cannot prove.**
+///
+/// `rung` above could be correct, complete and called by nothing, and every arm
+/// in the test above it would still be green. This is the arm that drives
+/// `committed` and reads the rows it produced. It also asserts the absence:
+/// before the first `ContextCeiling` event — and against any harness that emits
+/// none — there is no rung to name, and a row reading "unknown" would be
+/// furniture on the one page that exists to be read closely.
+///
+/// Sabotage: delete the `if let Some(source) = announced_source` block from
+/// `committed`. The sentence arms stay green and this one fails.
+#[test]
+fn f17_the_context_page_draws_the_rung_when_the_run_announced_one() {
+    let with = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract(),
+        None,
+        context::Ceiling {
+            max_tokens: Some(128_000),
+            source: Some("fallback"),
+        },
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
+    assert!(
+        with.iter().any(|row| row.contains("assumption")),
+        "the page announced a ceiling and drew no rung, so the number stands there \
+         with no provenance at all: {with:#?}",
+    );
+
+    let without = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract(),
+        None,
+        context::Ceiling {
+            max_tokens: Some(128_000),
+            source: None,
+        },
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
+    assert!(
+        !without.iter().any(|row| row.contains("assumption")),
+        "a run that announced no rung was given one anyway: {without:#?}",
+    );
+}
+
+/// **F11 — the second lever on per-turn context is visible when it is in force.**
+///
+/// `[run] collapse` shortens an observation that will not fit whole rather than
+/// dropping it. It has been reachable from a configuration file since io-harness
+/// 0.81.0 — which this crate has pinned since 0.38.2 — and `contract::configured`
+/// applies it through `Config::apply_to` on both doors, so it has been in force
+/// for anyone who wrote the key and visible on no surface at all. That is the
+/// worst state for a context lever: an operator reading the page about what fills
+/// their window, with a setting silently reshaping it.
+///
+/// **Drawn as a saving, unlike the mask one row above it.** A collapsed entry
+/// really does contribute fewer characters; a withheld tool costs the same
+/// catalogue plus a sentence. The two levers sit next to each other and mean
+/// opposite things, which is why each says which it is.
+///
+/// Sabotage: draw the row unconditionally. The absent arm fails, which is the one
+/// that keeps a page about what a turn costs from growing furniture.
+#[test]
+fn f11_the_context_page_says_when_collapse_is_shortening_entries() {
+    let with = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract().with_collapse(io_harness::context::Collapse { keep_chars: 4_000 }),
+        None,
+        context::Ceiling::default(),
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
+    assert!(
+        with.iter().any(|row| row.contains("collapse")),
+        "a lever in force and no row for it: {with:#?}",
+    );
+    // Joined, because the page wraps at its width and this sentence is longer
+    // than eighty columns — asserting against one row would be asserting about
+    // where the fold lands.
+    let page = with.join(" ");
+    assert!(
+        page.contains("4000") || page.contains("4,000"),
+        "the row has to say how much survives, or it reports a switch rather \
+         than a setting: {page}",
+    );
+    assert!(
+        page.contains("shortened") && page.contains("rather than dropped"),
+        "and what it does, because the lever one row above it withholds and \
+         saves nothing: {page}",
+    );
+
+    let without = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract(),
+        None,
+        context::Ceiling::default(),
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
+    assert!(
+        !without.iter().any(|row| row.contains("collapse")),
+        "a lever nobody turned on drew a row: {without:#?}",
+    );
+}
+
+/// **F17 — `fallback` no longer means 24,000, and no sentence here says it does.**
+///
+/// Through io-harness 0.81.0 the fallback was one constant. 0.82.0 splits it into
+/// 128,000 remote and 24,000 loopback, so any surface still naming a number for
+/// this rung is stating something that stopped being true under the pin this
+/// release moves.
+///
+/// Sabotage: put `24,000` back into the fallback sentence. Only this fails.
+#[test]
+fn f17_no_rung_sentence_names_a_number_the_pin_moved() {
+    for source in ["contract", "model", "fallback", "whatever"] {
+        let said = context::rung(source, ASCII.dash);
+        for stale in ["24,000", "24000", "128,000", "128000", "7,616", "7616"] {
+            assert!(
+                !said.contains(stale),
+                "the `{source}` sentence names `{stale}`. These are io-harness's \
+                 constants and it has moved them once already; a sentence that \
+                 quotes one is a sentence that goes stale at the next pin: {said}",
+            );
+        }
+    }
 }

@@ -1721,10 +1721,36 @@ impl Events {
                 // that a kind cannot be given a line here and a weight somewhere
                 // else that disagrees with it.
                 let (said, tone) = match kind.as_str() {
-                    "create" => ("a sandbox was created", Tone::Muted),
-                    "exec" => ("a command ran in the sandbox", Tone::Muted),
+                    // **`create`, `exec` and `destroy` draw nothing as of
+                    // 0.39.0.** They were three muted rows saying a sandbox was
+                    // made, a command ran in it, and it was torn down — around
+                    // one command whose own row sits directly beneath them and
+                    // says what ran and how it ended. Four rows for one act, and
+                    // the three that were dropped are the three that carry no
+                    // fact the operator does not already have: *that* the command
+                    // was contained is a standing property of the session and is
+                    // on the status line, and *how* it was contained is the
+                    // backend named there beside it.
+                    //
+                    // The two that survive are the two that are news. A limit
+                    // being reached changed what the command did; a gate that ran
+                    // and did not pass decided whether the turn was finished. A
+                    // row is worth a line when it changes something, and the
+                    // lifecycle of a sandbox around a command that has its own
+                    // row does not.
+                    //
+                    // **This is what F6 delivers of "the three lines fold into
+                    // the one", and it is not all of it.** The rest — the argv
+                    // beside the binary, and the first lines of output indented
+                    // under the row — is not reachable from the event stream:
+                    // `EventKind::ToolCall` is emitted *before* the call runs and
+                    // carries nothing about what came back, and its `target` is
+                    // picked from a fixed list of argument names that an exec call
+                    // does not use, so the event has the binary and never the
+                    // arguments. Both would need a store read per completed call.
+                    // `US-IO-CLI-0.39.0-I03` records that.
+                    "create" | "exec" | "destroy" => return Vec::new(),
                     "cap_hit" => ("the sandbox reached a limit it was given", Tone::Warning),
-                    "destroy" => ("the sandbox was torn down", Tone::Muted),
                     // `ran and` is load-bearing: it is the whole of what
                     // separates a criterion that judged the work from one that
                     // never got to.
@@ -1794,6 +1820,135 @@ impl Events {
                 } else {
                     theme.notice(Tone::Refused, format!("dialled {host}:{port}"))
                 });
+                lines
+            }
+            // **A program the turn wrote, and what became of it (0.39.0).**
+            //
+            // io-harness emits this once before the first step, saying whether the
+            // capability is `available` or `withheld`, and once per program
+            // afterwards with `finished`, `failed`, `bound` or `timeout`.
+            //
+            // **The source is not here and cannot be.** `EventKind::Program`
+            // carries the interpreter, a detail line, a callback count and an
+            // outcome — no program text — so this row says what ran and how it
+            // ended rather than what was written. The acts the program took are
+            // not on it either, and do not need to be: each callback re-enters
+            // dispatch and arrives as its own `ToolCall`, so the cells beneath
+            // this row *are* what it did. What this row adds is that they belong
+            // to one program rather than to the model calling tools one at a
+            // time, which matters to a reader because a program's acts are not
+            // separately approved.
+            //
+            // **`available` draws nothing.** A capability being present is a fact
+            // about the run's configuration, and a row for it on every contained
+            // turn would be furniture. `withheld` does draw, because an operator
+            // who configured `[codeact]` and is watching twelve round trips where
+            // they expected one program needs to know the host had no
+            // interpreter — that is the difference between a setting that is not
+            // working and one that is not applicable.
+            EventKind::Program {
+                interpreter,
+                detail,
+                calls,
+                outcome,
+            } => {
+                if outcome == "available" {
+                    return Vec::new();
+                }
+                let mut lines = self.flush_text();
+                if outcome == "withheld" {
+                    // io-harness's own discovery sentence, which names what it
+                    // tried. A sentence of io-cli's here would be a second
+                    // opinion about a probe it did not run.
+                    lines.push(theme.notice(
+                        Tone::Muted,
+                        format!("no program interpreter{separator}{detail}"),
+                    ));
+                    return lines;
+                }
+                let mut spans = vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled("Program".to_string(), theme.style(Tone::Normal)),
+                ];
+                if let Some(interpreter) = interpreter {
+                    spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                    spans.push(Span::styled(interpreter.clone(), theme.style(Tone::Muted)));
+                }
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                spans.push(Span::styled(
+                    // Singular and plural, because "1 calls" is the shape of a
+                    // number nobody checked.
+                    if *calls == 1 {
+                        "1 call".to_string()
+                    } else {
+                        format!("{calls} calls")
+                    },
+                    theme.style(Tone::Muted),
+                ));
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                spans.push(Span::styled(
+                    outcome.clone(),
+                    // A program that failed, ran out of callbacks or timed out is
+                    // not an error in `io` and is not drawn as one — it is an
+                    // outcome the operator asked for the possibility of. But it is
+                    // not `finished` either, and the tone is what says so on a
+                    // row somebody is scanning.
+                    theme.style(if outcome == "finished" {
+                        Tone::Muted
+                    } else {
+                        Tone::Warning
+                    }),
+                ));
+                lines.push(Line::from(spans));
+                lines
+            }
+            // **A picture the agent was handed, named but not drawn (0.39.0).**
+            //
+            // The operator's own attachments are drawn where they are attached, by
+            // `crate::picture`. This event is for the other four ways an image
+            // reaches a run — an MCP tool's reply, a browser screenshot, the
+            // agent's own `view_image`, and the contract's own images — and until
+            // io-harness 0.81.0 there was no event for any of them at all.
+            //
+            // The row says where it came from, what it is and how big, and stops
+            // there. Showing it is not on: the bytes are not on the event (by
+            // design — `ImageAttached` carries a digest and never the image), and
+            // a surface that fetched them to draw a screenshot the operator did
+            // not ask for would spend a terminal's whole viewport on it.
+            //
+            // What makes the row worth a line rather than a silence is that this
+            // is something that **entered the model's context**. An operator whose
+            // window filled with a screenshot could otherwise read `/context`, see
+            // the conversation swollen and find nothing anywhere saying a picture
+            // had arrived.
+            EventKind::ImageAttached {
+                media_type,
+                bytes,
+                source,
+                ..
+            } => {
+                let mut lines = self.flush_text();
+                lines.push(Line::from(vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled("Image".to_string(), theme.style(Tone::Normal)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    // io-harness's own word for the door it came through, not a
+                    // sentence of io-cli's about it: `mcp`, `browser`,
+                    // `view_image` or `caller`. A fifth one it grows reads as
+                    // itself rather than as "unknown".
+                    Span::styled(source.clone(), theme.style(Tone::Muted)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    Span::styled(media_type.clone(), theme.style(Tone::Muted)),
+                    Span::styled(separator, theme.style(Tone::Muted)),
+                    // `crate::picture::bytes`, which is what every other size an
+                    // operator reads in this product is spelled with. A second
+                    // formatter here would report one image two ways depending on
+                    // which door it came through.
+                    Span::styled(
+                        crate::picture::bytes(usize::try_from(*bytes).unwrap_or(usize::MAX)),
+                        theme.style(Tone::Muted),
+                    ),
+                ]));
                 lines
             }
             // Guarded on the items rather than only on the tag, because io-harness

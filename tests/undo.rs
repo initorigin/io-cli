@@ -415,6 +415,14 @@ fn the_undo_confirmations_decline_at_row_zero() {
     for (what, rows) in [
         ("file", confirm_file("src/a.rs").1),
         ("step", confirm_step(4).1),
+        // The whole turn, which the `Esc` chord now raises as well as `/undo`.
+        // It is the largest of the three and the one the field test lost files
+        // to, so a decline that is not at row 0 here is the worst version of the
+        // mistake this loop exists to catch.
+        (
+            "turn",
+            io_cli::undo::confirm_turn("undo the last turn?".to_string()).1,
+        ),
     ] {
         assert_eq!(rows[0].label, io_cli::store::LEAVE_IT, "{what}");
         assert!(!io_cli::store::acts(0), "{what}");

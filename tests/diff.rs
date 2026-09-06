@@ -588,3 +588,67 @@ fn f6_the_style_is_read_from_the_setting_and_an_unknown_value_is_unified() {
     assert_eq!(DiffStyle::from_setting(Some("minmal")), DiffStyle::Unified);
     assert_eq!(DiffStyle::default(), DiffStyle::Unified);
 }
+
+/// **F2 — the header counts the hunk, because the recorded fields count
+/// something else.**
+///
+/// io-harness is explicit that `Edit::measure` and `Edit::with_hunk` are handed
+/// *different texts* and that this is deliberate: `measure` is given the fragment
+/// an `edit_file` replaced — "its counts have meant the size of the replacement
+/// since 0.18.0" — while the hunk needs the file's own line numbers and so is
+/// computed from the two whole texts. Folding them together upstream would
+/// silently change every number in every trace the harness has written.
+///
+/// Correct for the library, wrong for a header sitting on the diff it claims to
+/// count. This is the pair the 2026-09-05 field test met: `+3 -9` on an approval
+/// above an edit that landed as `-9 +10`, two measurements of one change, with
+/// nothing on screen saying they were measuring different things.
+///
+/// The fixture is that shape exactly — recorded counts of a small replacement, a
+/// hunk of a larger whole-file change — and the header has to follow the rows a
+/// reader can see and count.
+///
+/// Sabotage: put `edit.lines_added`/`edit.lines_removed` back in `header`. Only
+/// this fails.
+#[test]
+fn f2_the_header_counts_the_hunk_and_not_the_replaced_fragment() {
+    // Three lines out, four in, with two rows of context: what a reader can count
+    // on screen is four additions and three removals.
+    const WHOLE_FILE: &str = "@@ -1,5 +1,6 @@\n use std::io;\n-fn a() {}\n-fn b() {}\n-fn c() {}\n\
+                              +fn a(x: u8) {}\n+fn b(x: u8) {}\n+fn c(x: u8) {}\n+fn d() {}\n \
+                              fn tail() {}\n";
+
+    let edit = Edit {
+        step: 4,
+        tool: "edit_file".to_string(),
+        path: "src/parse.rs".to_string(),
+        // What `Edit::measure` records for an `edit_file`: the size of the
+        // fragment that was replaced, which is neither of the two numbers above.
+        lines_added: 1,
+        lines_removed: 1,
+        hunk: Some(WHOLE_FILE.to_string()),
+    };
+
+    let drawn: Vec<String> = cell(&edit, &DARK, 100)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let head = drawn.first().expect("the cell has a header").clone();
+
+    assert!(
+        head.contains("+4") && head.contains("-3"),
+        "the header has to count the rows drawn under it — four lines arrive and \
+         three leave — not the fragment `Edit::measure` was handed: {head}",
+    );
+    assert!(
+        !head.contains("+1 -1"),
+        "the header is reporting the replaced fragment's size over a diff of the \
+         whole file, which is the two-measurements-of-one-change the field test \
+         found: {head}",
+    );
+}

@@ -3025,6 +3025,66 @@ fn f10_a_configuration_with_no_templates_passes_every_plain_goal_through() {
     );
 }
 
+/// **F8 — `io exec` without `--json` says what it did, and says it on stderr.**
+///
+/// The README's own sentence is that `io exec` shows what it refused. That was
+/// true in a session and true in the JSON stream and false on the path most
+/// operators reach first: without `--json` this door installed `Ignore` and said
+/// nothing at all, so a run that edited four files and was refused a fifth
+/// printed the answer and no sign of the refusal.
+///
+/// **The half that matters most is stdout.** The whole contract of this door is
+/// that stdout carries the agent's reply and nothing else, so a `$(io exec …)` is
+/// the answer. A commentary line written there would corrupt every caller that
+/// has ever depended on it — which is why `Narrating` holds no writer at all and
+/// names `eprintln!` directly, rather than being generic over one the way
+/// `Ndjson` is. A writer parameter is a way to pass stdout by mistake.
+///
+/// Asserted as source text because the alternative is capturing a process's
+/// stderr, which `tests/pty.rs` can do and this file cannot; what is checked here
+/// is the property that makes the mistake impossible rather than one run that
+/// happened not to make it.
+#[test]
+fn f8_the_headless_commentary_cannot_be_written_to_stdout() {
+    let text = source("exec.rs");
+    let start = text
+        .find("pub struct Narrating;")
+        .expect("`Narrating` is the commentary observer");
+    let end = text[start..]
+        .find("impl<W: Write + Send> Observer for Ndjson<W>")
+        .map(|at| start + at)
+        .expect("`Ndjson`'s impl follows it");
+    let narrating = &text[start..end];
+
+    assert!(
+        narrating.contains("eprintln!"),
+        "the commentary is written with `eprintln!` or it is not on stderr",
+    );
+    assert!(
+        !narrating.contains("println!")
+            || narrating.matches("println!").count() == narrating.matches("eprintln!").count(),
+        "`Narrating` writes to stdout. That stream is the agent's reply and \
+         nothing else, and a line of commentary there breaks every caller that \
+         reads it: {narrating}",
+    );
+    assert!(
+        !narrating.contains("stdout"),
+        "`Narrating` names stdout, which it has no business reaching: {narrating}",
+    );
+
+    // And both headless doors take it, because a resumed run that went quiet
+    // where the first half spoke would leave an operator carrying work on with
+    // less to read than they had starting it.
+    assert_eq!(
+        text.matches("else { &narrating }").count()
+            + text
+                .matches("else {\n            &narrating\n        }")
+                .count(),
+        2,
+        "both `io exec` and `io resume` narrate without `--json`",
+    );
+}
+
 /// **F7 — `io exec` still refuses every approval, and 0.36.0 is the release that
 /// could have changed that by accident.**
 ///

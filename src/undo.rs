@@ -191,6 +191,37 @@ pub fn confirm_file(path: &str) -> (String, Vec<crate::picker::Row>) {
     )
 }
 
+/// The confirmation for undoing a whole turn, over the line that describes it.
+///
+/// **One construction for the two ways a turn is undone, and 0.39.0 is when that
+/// stopped being optional.** `/undo` raised this picker; the `Esc` chord armed
+/// instead — one press to warn with a footer line, a second to act — on the
+/// reasoning that arming is a property of a keystroke while a typed command has
+/// already been deliberate once. The 2026-09-05 field test showed what that misses:
+/// the first press was the operator dismissing a picker, so the warning was never
+/// read as one, and the second press put two files back. A footer line is not a
+/// question, and this is the one key in the product that changes an operator's
+/// files on io-cli's own initiative.
+///
+/// `title` is [`crate::rewind::armed_line`], which is what the footer used to say
+/// — kept, because it names what would be undone, and now it names it in a
+/// surface that waits for an answer.
+///
+/// Row 0 declines, as in the two confirmations beside it, and `tests/undo.rs`
+/// asserts that by index rather than by reading the words.
+pub fn confirm_turn(title: String) -> (String, Vec<crate::picker::Row>) {
+    (
+        title,
+        vec![
+            crate::picker::Row::with_detail(crate::store::LEAVE_IT, "the turn stands"),
+            crate::picker::Row::with_detail(
+                "undo the whole turn",
+                "its files, its notes, its queued children and the conversation head",
+            ),
+        ],
+    )
+}
+
 /// The confirmation for undoing one step.
 pub fn confirm_step(step: u32) -> (String, Vec<crate::picker::Row>) {
     (

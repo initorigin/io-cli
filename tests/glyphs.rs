@@ -588,9 +588,20 @@ fn every_event_this_release_renders_draws_in_ascii() {
             port: 443,
             allowed: false,
         },
+        // **`cap_hit` and not `create` since 0.39.0.** `create`, `exec` and
+        // `destroy` draw nothing now, so a fixture using one of them would sweep
+        // an empty render and pass without looking at anything — the coverage
+        // check below asserts the *name* is covered and cannot tell the
+        // difference. `cap_hit` is one of the two kinds that still draws, and it
+        // takes the toned-notice path where `gate_output` takes the muted-leader
+        // one, so between them the two shapes are covered.
         EventKind::Sandbox {
-            kind: "create".into(),
-            backend: Some("macos-sandbox-exec".into()),
+            kind: "cap_hit".into(),
+            backend: None,
+        },
+        EventKind::Sandbox {
+            kind: "gate_output".into(),
+            backend: None,
         },
         EventKind::Stalled,
         // 0.27.0 — the one silence that gained a line, and it carries the muted
@@ -601,6 +612,31 @@ fn every_event_this_release_renders_draws_in_ascii() {
             started: 3,
             used: 1,
             discarded: 2,
+        },
+        // 0.39.0 — a picture the agent was handed rather than one the operator
+        // attached. Four separators and the muted leader, all of which differ
+        // between the sets; the picture itself is never drawn from this arm, so
+        // what is swept here is the whole of what it renders.
+        EventKind::ImageAttached {
+            media_type: "image/png".into(),
+            bytes: 391_790,
+            digest: "sha256:not-a-real-digest".into(),
+            source: "browser".into(),
+        },
+        // 0.39.0 — a program a turn wrote. `finished` takes the muted-leader path
+        // with four separators; `withheld` takes the toned-notice path, and both
+        // are swept because they are two different renderings of one kind.
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: "python3 3.12".into(),
+            calls: 3,
+            outcome: "finished".into(),
+        },
+        EventKind::Program {
+            interpreter: None,
+            detail: "tried python3, python".into(),
+            calls: 0,
+            outcome: "withheld".into(),
         },
     ];
 

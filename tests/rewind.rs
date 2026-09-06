@@ -809,44 +809,45 @@ fn press(app: &mut App, code: KeyCode) -> Command {
     app.key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+/// **F3 — one press asks, and no press arms.**
+///
+/// Through 0.38.2 the first `Esc` armed and wrote what it would undo into the
+/// scrollback; the second acted. That is a warning only for an operator who
+/// pressed the key meaning to undo. The 2026-09-05 field test pressed it to
+/// dismiss a picker, never read the footer as a question, and the next press put
+/// two files back.
+///
+/// So the keystroke now raises `/undo`'s own confirmation and nothing arms. The
+/// arming flag is asserted at every step, because a stale one is exactly how a
+/// later release would reintroduce a second press that acts.
+///
+/// Sabotage: set `self.armed` in the rewind arm again. This fails on the flag
+/// while the command stays `Rewind`, which is the failure worth having — the
+/// return value alone would not have caught it.
 #[test]
-fn f11_the_first_escape_arms_and_the_second_performs() {
+fn f3_one_escape_asks_and_nothing_arms() {
     let mut app = app();
     assert!(!app.armed(), "a session does not begin armed");
 
-    assert_eq!(press(&mut app, KeyCode::Esc), Command::ArmRewind);
-    assert!(app.armed(), "the first press must arm rather than act");
-
-    assert_eq!(press(&mut app, KeyCode::Esc), Command::Rewind);
-    assert!(
-        !app.armed(),
-        "performing must disarm, or a third press would undo a second turn",
-    );
-}
-
-#[test]
-fn f11_any_other_key_disarms_and_the_next_escape_arms_again() {
-    let mut app = app();
-    assert_eq!(press(&mut app, KeyCode::Esc), Command::ArmRewind);
-
-    // A keystroke in between. The operator went to type something and changed
-    // their mind; the arming must not survive it.
-    press(&mut app, KeyCode::Char('h'));
-    assert!(!app.armed(), "any other key cancels the arming");
-
-    // And the composer now holds text, so `Esc` is no longer the rewind key at
-    // all — clear it and check the arming restarts from the beginning rather than
-    // firing, which is what a stale flag would do.
-    press(&mut app, KeyCode::Backspace);
     assert_eq!(
         press(&mut app, KeyCode::Esc),
-        Command::ArmRewind,
-        "after a cancel the next Esc must arm, never perform",
+        Command::Rewind,
+        "one press raises the question the driver confirms with",
     );
+    assert!(
+        !app.armed(),
+        "the rewind armed. A second press of a key an operator may have pressed \
+         for some other reason is not consent to change their files",
+    );
+
+    // And again: a question that was asked and (from this side) not answered
+    // leaves nothing behind that a repeat press could fire.
+    assert_eq!(press(&mut app, KeyCode::Esc), Command::Rewind);
+    assert!(!app.armed());
 }
 
 #[test]
-fn f11_escape_with_text_in_the_composer_is_not_a_rewind() {
+fn f3_escape_with_text_in_the_composer_is_not_a_rewind() {
     let mut app = app();
     press(&mut app, KeyCode::Char('n'));
     press(&mut app, KeyCode::Char('o'));
@@ -854,10 +855,9 @@ fn f11_escape_with_text_in_the_composer_is_not_a_rewind() {
     let what = press(&mut app, KeyCode::Esc);
     assert_ne!(
         what,
-        Command::ArmRewind,
-        "a typed prompt is not an empty one"
+        Command::Rewind,
+        "a typed prompt is not an empty one, and `Esc` there is not an undo",
     );
-    assert_ne!(what, Command::Rewind);
     assert!(!app.armed());
 }
 

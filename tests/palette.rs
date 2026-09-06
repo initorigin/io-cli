@@ -142,15 +142,31 @@ fn f1_a_slash_at_an_empty_prompt_opens_the_palette_and_nowhere_else() {
         app.armed(),
     ));
 
-    // A half-pressed rewind is the one sequence in this product whose second
-    // press changes the operator's files. The driver opens the palette *in front
-    // of* `App::key`, which is what disarms — so the palette declines while
-    // something is armed, the `/` falls through to the session, and the arming is
-    // cleared by the keystroke exactly as every other key clears it. Without this
-    // the arming would survive the palette and a later `Esc` would fire a rewind
-    // nobody was still expecting.
+    // A half-pressed sequence is a keystroke the session is still waiting to
+    // complete. The driver opens the palette *in front of* `App::key`, which is
+    // what disarms — so the palette declines while something is armed, the `/`
+    // falls through to the session, and the arming is cleared by the keystroke
+    // exactly as every other key clears it. Without this the arming would survive
+    // the palette and a later chord would complete a sequence nobody was still
+    // expecting.
+    //
+    // **Driven by a rebound rewind since 0.39.0.** The default binding is one
+    // chord now — the rewind's consent is a confirmation the driver raises, not a
+    // second press — so nothing in the shipped keymap arms, and a test that used
+    // `Esc` here would be asserting the guard against a state it can no longer
+    // reach. A two-chord binding still arms, and that is what this drives.
     let mut app = App::new(DARK, "m");
-    assert_eq!(app.key(key(KeyCode::Esc)), Command::ArmRewind);
+    let (keys, notices) = io_cli::keys::Keys::resolve(Some(
+        &[("rewind".to_string(), "ctrl+r ctrl+r".to_string())]
+            .into_iter()
+            .collect(),
+    ));
+    assert!(notices.is_empty(), "{notices:?}");
+    app.set_keys(keys);
+    assert_eq!(
+        app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+        Command::None,
+    );
     assert!(app.armed());
     assert!(
         !commands::opens_palette(slash(), app.composer.is_empty(), app.armed()),

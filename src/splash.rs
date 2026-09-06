@@ -134,6 +134,25 @@ pub fn lines(theme: &Theme, tty: bool, width: u16, about: &About) -> Vec<Line<'s
     ];
     if facts.iter().any(|(_, value)| value.is_some()) {
         lines.push(row_of(theme, down, Vec::new(), 0));
+        // **Dated, because the card is scrollback and can never be corrected.**
+        // All three of these move during a session — `/model` swaps the model, a
+        // posture change the policy, `/resume` the workspace — and the card went
+        // in through `Screen::commit`, which is `insert_before`, so this process
+        // cannot go back and rewrite a row of it. Undated, the model row read as
+        // a current fact: after `/model` the status line said one model and the
+        // card said the one the session started with, two names on screen at
+        // once with nothing saying which the next turn was going to. The caption
+        // is what makes the card a record of an opening rather than a second,
+        // stale answer to the same question.
+        let dash = theme.glyphs.dash;
+        let caption = format!("opened with {dash} the status line is current");
+        let width = caption.chars().count();
+        lines.push(row_of(
+            theme,
+            down,
+            vec![Span::styled(caption, theme.style(Tone::Muted))],
+            width,
+        ));
     }
     for (label, value) in facts {
         let Some(value) = value else { continue };

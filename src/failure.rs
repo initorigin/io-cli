@@ -71,6 +71,39 @@ fn head_conflict(error: &Error) -> bool {
 /// `String`: a lost head race is worth naming the session it was lost on, and a
 /// `&'static str` cannot.
 pub fn advice(error: &Error) -> Option<String> {
+    advice_with(error, crate::provider::catalogue_host())
+}
+
+/// [`advice`], with the catalogue host handed in rather than read from the
+/// process.
+///
+/// Split out so the reference-host arm has a site a test can reach at all: the
+/// host is written into a `OnceLock` by `provider::build`, which no test drives,
+/// and an arm whose only input is process state is an arm nothing can falsify.
+/// [`advice`] is this function with the process's own answer.
+pub fn advice_with(error: &Error, catalogue_host: Option<&str>) -> Option<String> {
+    // **The reference catalogue's own host, before the generic net arms.**
+    // Turning the catalogue on puts a second host in `Provider::endpoints`, and
+    // io-harness authorises every one of them before the first step — so an
+    // egress policy that denies this one refuses the whole run rather than
+    // quietly skipping the lookup. That is the sharp edge of the release's
+    // decision to turn it on by default, and the operator meets it as a refusal
+    // naming a host they never configured, for a request they never made.
+    //
+    // Matched on the host rather than on the words of the refusal, because the
+    // host is what the policy actually denied and the wording is io-harness's to
+    // change.
+    if let (Error::Refused { act, target, .. }, Some(host)) = (error, catalogue_host) {
+        if act == "net" && target.contains(host) {
+            return Some(format!(
+                "this run was refused because your egress policy denies {host}, which \
+                 `io` reads before the first step to learn the model's real context \
+                 window. Allow that host, or set `{} = false` to size from an \
+                 assumption instead.",
+                crate::settings::REFERENCE_CATALOGUE_KEY,
+            ));
+        }
+    }
     if let Error::Conflict { run_id, owner, .. } = error {
         return Some(if owner.is_empty() {
             // `run_id` is the session id here, and is called one. No expiry is
