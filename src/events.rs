@@ -1822,6 +1822,86 @@ impl Events {
                 });
                 lines
             }
+            // **A program the turn wrote, and what became of it (0.39.0).**
+            //
+            // io-harness emits this once before the first step, saying whether the
+            // capability is `available` or `withheld`, and once per program
+            // afterwards with `finished`, `failed`, `bound` or `timeout`.
+            //
+            // **The source is not here and cannot be.** `EventKind::Program`
+            // carries the interpreter, a detail line, a callback count and an
+            // outcome — no program text — so this row says what ran and how it
+            // ended rather than what was written. The acts the program took are
+            // not on it either, and do not need to be: each callback re-enters
+            // dispatch and arrives as its own `ToolCall`, so the cells beneath
+            // this row *are* what it did. What this row adds is that they belong
+            // to one program rather than to the model calling tools one at a
+            // time, which matters to a reader because a program's acts are not
+            // separately approved.
+            //
+            // **`available` draws nothing.** A capability being present is a fact
+            // about the run's configuration, and a row for it on every contained
+            // turn would be furniture. `withheld` does draw, because an operator
+            // who configured `[codeact]` and is watching twelve round trips where
+            // they expected one program needs to know the host had no
+            // interpreter — that is the difference between a setting that is not
+            // working and one that is not applicable.
+            EventKind::Program {
+                interpreter,
+                detail,
+                calls,
+                outcome,
+            } => {
+                if outcome == "available" {
+                    return Vec::new();
+                }
+                let mut lines = self.flush_text();
+                if outcome == "withheld" {
+                    // io-harness's own discovery sentence, which names what it
+                    // tried. A sentence of io-cli's here would be a second
+                    // opinion about a probe it did not run.
+                    lines.push(theme.notice(
+                        Tone::Muted,
+                        format!("no program interpreter{separator}{detail}"),
+                    ));
+                    return lines;
+                }
+                let mut spans = vec![
+                    Span::styled(leader(separator), theme.style(Tone::Muted)),
+                    Span::styled("Program".to_string(), theme.style(Tone::Normal)),
+                ];
+                if let Some(interpreter) = interpreter {
+                    spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                    spans.push(Span::styled(interpreter.clone(), theme.style(Tone::Muted)));
+                }
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                spans.push(Span::styled(
+                    // Singular and plural, because "1 calls" is the shape of a
+                    // number nobody checked.
+                    if *calls == 1 {
+                        "1 call".to_string()
+                    } else {
+                        format!("{calls} calls")
+                    },
+                    theme.style(Tone::Muted),
+                ));
+                spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+                spans.push(Span::styled(
+                    outcome.clone(),
+                    // A program that failed, ran out of callbacks or timed out is
+                    // not an error in `io` and is not drawn as one — it is an
+                    // outcome the operator asked for the possibility of. But it is
+                    // not `finished` either, and the tone is what says so on a
+                    // row somebody is scanning.
+                    theme.style(if outcome == "finished" {
+                        Tone::Muted
+                    } else {
+                        Tone::Warning
+                    }),
+                ));
+                lines.push(Line::from(spans));
+                lines
+            }
             // **A picture the agent was handed, named but not drawn (0.39.0).**
             //
             // The operator's own attachments are drawn where they are attached, by

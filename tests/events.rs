@@ -3301,6 +3301,98 @@ fn f8_a_thought_is_committed_above_the_prose_it_produced() {
 ///
 /// Sabotage: drop the `said_plainly` rebinding in the `Step` arm and every row
 /// with a brace in it fails.
+/// **F15 — a program the turn wrote gets a row, and its acts are the rows under
+/// it.**
+///
+/// `EventKind::Program` carries the interpreter, a detail line, a callback count
+/// and an outcome — and no program text, which is why this row says what ran and
+/// how it ended rather than what was written. The acts are not on it either and
+/// do not need to be: each callback re-enters dispatch and arrives as its own
+/// `ToolCall`, so the cells beneath this row are what it did. What the row adds
+/// is that they belong to one program rather than to the model calling tools one
+/// at a time, which matters because a program's acts are not separately approved.
+#[test]
+fn f15_a_program_says_what_ran_and_how_it_ended() {
+    let mut events = Events::new(DARK);
+    let line = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: "python3 3.12".into(),
+            calls: 3,
+            outcome: "finished".into(),
+        },
+    );
+
+    assert!(line.contains("Program"), "{line}");
+    assert!(
+        line.contains("python3"),
+        "the interpreter that ran it: {line}"
+    );
+    assert!(line.contains("3 calls"), "{line}");
+    assert!(line.contains("finished"), "{line}");
+
+    // "1 calls" is the shape of a number nobody checked.
+    let one = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: String::new(),
+            calls: 1,
+            outcome: "finished".into(),
+        },
+    );
+    assert!(one.contains("1 call") && !one.contains("1 calls"), "{one}");
+}
+
+/// **F15 — a host with no interpreter says so once, and a host with one says
+/// nothing.**
+///
+/// The documented fallback is that a run without an interpreter composes, sends
+/// and steps exactly as it would with the feature off. That is the right
+/// behaviour and a silent version of it is not: an operator who configured
+/// `[codeact]` and is watching twelve round trips where they expected one program
+/// needs to know the host had no interpreter — the difference between a setting
+/// that is not working and one that is not applicable.
+///
+/// `available` draws nothing, because a capability being present is a fact about
+/// the run's configuration and a row for it on every contained turn would be
+/// furniture.
+#[test]
+fn f15_a_withheld_capability_says_so_and_an_available_one_does_not() {
+    let mut events = Events::new(DARK);
+
+    let available = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: "python3 3.12".into(),
+            calls: 0,
+            outcome: "available".into(),
+        },
+    );
+    assert!(
+        available.trim().is_empty(),
+        "a capability being present drew a row on a turn that had not used it: {available}",
+    );
+
+    let withheld = rendered(
+        &mut events,
+        EventKind::Program {
+            interpreter: None,
+            detail: "tried python3, python".into(),
+            calls: 0,
+            outcome: "withheld".into(),
+        },
+    );
+    assert!(
+        withheld.contains("tried python3, python"),
+        "the discovery sentence is io-harness's own, naming what it looked for — \
+         a sentence written here would be a second opinion about a probe this \
+         crate did not run: {withheld}",
+    );
+}
+
 /// **F18 — a picture the agent was handed is named, and not drawn.**
 ///
 /// `src/picture.rs` draws every image the *operator* attached, where they attach

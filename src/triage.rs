@@ -291,35 +291,34 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
          the first step",
     ),
     ("contained", Disposition::Status, "the containment field"),
-    // **0.79.0 — a kind this crate cannot receive, dispositioned anyway.**
-    // Placed between `contained` and `dialed` because that is where
-    // `EventKind` declares it, and this table's whole ordering rule is that it
-    // can be read down the side of `observe.rs` when the pin moves.
+    // **0.79.0 declared it, 0.39.0 turned it on.** The note here said "revisit
+    // when this crate enables `codeact`", and this is that revisit. Placed
+    // between `contained` and `dialed` because that is where `EventKind` declares
+    // it, and this table's whole ordering rule is that it can be read down the
+    // side of `observe.rs` when the pin moves.
     //
-    // `EventKind::Program` is declared unconditionally in `observe.rs`, but
-    // every site that emits it is behind io-harness's `codeact` feature, which
-    // this crate does not enable. So the row exists because the table is total
-    // over what the harness *declares*, and the disposition is the one a run
-    // would get if the feature were ever turned on.
+    // **A line, and the old note's objection is answered rather than overruled.**
+    // It refused one because "a line here would announce that a program ran and
+    // then say nothing about what it did", which is true of the event and false
+    // of the transcript: every act the program took re-enters dispatch and
+    // arrives as its own `tool_call`, so the rows underneath this one are exactly
+    // what it did. What was missing was the row that says they belong to a
+    // program rather than to the model calling tools one at a time — which is a
+    // materially different thing for a reader to know, because a program's acts
+    // are not separately approved.
     //
-    // Silent rather than a line, and the discovery half is why: the event is
-    // emitted once before the first step saying `available` or `withheld`, and
-    // once per program afterwards. A capability's availability is a fact about
-    // the run's configuration rather than about the conversation, and the acts a
-    // program takes are not on this event at all — each one re-enters dispatch
-    // and arrives as its own `tool_call`, which the transcript already draws. A
-    // line here would announce that a program ran and then say nothing about
-    // what it did.
-    //
-    // **Revisit when this crate enables `codeact`.** A program a turn wrote is
-    // the largest thing a model can do in one step, and the roadmap says it
-    // belongs in the transcript as source. That is a release, not a row.
+    // The availability half is drawn too, and only when a capability was
+    // **withheld**. That is a fact about the run's configuration rather than
+    // about the conversation, and would be furniture on every contained turn —
+    // but an operator who configured `[codeact]` and is watching the agent make
+    // twelve round trips instead of writing one program needs to know the host
+    // had no interpreter.
     (
         "program",
-        Disposition::Silent,
-        "`io exec --json`, which forwards it verbatim, and the durable trace; no run this crate \
-         drives emits it, because every emitting site is behind io-harness's `codeact` feature and \
-         this crate does not enable it",
+        Disposition::Line,
+        "a row naming the interpreter, how many calls the program made and how it ended, with the \
+         acts it took drawn beneath it as their own tool cells; a withheld capability says so \
+         once, and `io exec --json` forwards the event verbatim",
     ),
     (
         "dialed",

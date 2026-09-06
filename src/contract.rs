@@ -432,6 +432,33 @@ pub fn configured(
         Some(routing) => contract.with_routing(routing),
         None => contract,
     };
+    // **CodeAct, where an `[codeact]` section asks for it (0.39.0).**
+    //
+    // Here rather than in [`session`], and that placement is the whole of it: a
+    // turn that could write one contained program in the terminal and not in CI
+    // would be the 0.14.0 asymmetry rebuilt, on the door where an unattended run
+    // has the most to gain from doing in one step what it otherwise does in
+    // twelve.
+    //
+    // **Conditional, and a genuine no-op when nothing asked.** `contract::session`
+    // must reproduce io-harness's `default_contract` field for field with nothing
+    // configured, which `tests/contract.rs` asserts by Debug equality — so an
+    // unconditional `with_codeact(CodeActConfig::default())` is not a harmless
+    // default, it is a failing gate and a behaviour change for every operator who
+    // never asked. The `match` is [`masking`]'s shape for [`masking`]'s reason:
+    // byte-identity becomes a property of this function rather than a coincidence
+    // of what the harness happens to default to.
+    //
+    // **Enabling the feature hands the agent nothing on its own.** io-harness
+    // advertises `run_program` only where a contract carries this configuration —
+    // `codeact_ready` opens with `contract.codeact.clone()?` — so with the section
+    // absent the tool catalogue is byte for byte what 0.38.2 sent. That is worth
+    // saying because `media` behaved differently in 0.9.0 and gave every run a
+    // tool as a consequence of a feature flag.
+    let contract = match config.codeact() {
+        Some(codeact) => contract.with_codeact(codeact),
+        None => contract,
+    };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.

@@ -308,6 +308,45 @@ reverted the theme, the diff style and everything else in the section at once wi
 nothing said about it, and the session now starts on the defaults carrying
 io-harness's own message — which names the key that broke — in its scrollback.
 
+### Letting a turn write a program
+
+Since 0.39.0 a turn can write one contained program instead of a chain of tool
+calls. It is io-harness's CodeAct, reached through io-harness's own `[codeact]`
+section:
+
+```toml
+[codeact]
+interpreter = "python3"
+max_callbacks = 64
+timeout_secs = 120
+```
+
+**Absent, nothing changes.** The tool catalogue a turn is sent is byte for byte
+what it was before this release: io-harness offers `run_program` only where a
+contract carries this section, so enabling the feature grants the agent nothing on
+its own. That is worth saying plainly, because turning on `media` in 0.9.0 did
+give every run a new tool as a side effect of a flag.
+
+Like `[otel]`, this belongs in your user-scope file — a repository may not decide
+that whoever clones it runs programs.
+
+**A host with no interpreter is a supported host.** io-harness looks for `python3`
+then `python`, needs 3.8 or newer, and where it finds neither the turn composes,
+sends and steps exactly as it would with the section absent. `io` says so once,
+in io-harness's own words naming what it tried, rather than leaving you watching
+twelve round trips where you expected one program.
+
+A program that ran draws one row — the interpreter, how many calls it made, and
+how it ended — and **the tool cells underneath it are what it did**. Each callback
+re-enters the same dispatch every other tool call goes through, so the same policy
+gate sees it and the same transcript draws it. What the row adds is that those
+acts belong to one program rather than to the model calling tools one at a time,
+which is worth knowing because they are not separately approved.
+
+The program's own source is not in the transcript. io-harness's event carries the
+interpreter, a callback count and an outcome, and no program text; the durable
+trace is where the detail lives.
+
 ### Sending a run to a collector
 
 Since 0.39.0 `io` can export every run as OpenTelemetry spans. It is io-harness's

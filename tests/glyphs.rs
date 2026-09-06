@@ -623,6 +623,21 @@ fn every_event_this_release_renders_draws_in_ascii() {
             digest: "sha256:not-a-real-digest".into(),
             source: "browser".into(),
         },
+        // 0.39.0 — a program a turn wrote. `finished` takes the muted-leader path
+        // with four separators; `withheld` takes the toned-notice path, and both
+        // are swept because they are two different renderings of one kind.
+        EventKind::Program {
+            interpreter: Some("python3".into()),
+            detail: "python3 3.12".into(),
+            calls: 3,
+            outcome: "finished".into(),
+        },
+        EventKind::Program {
+            interpreter: None,
+            detail: "tried python3, python".into(),
+            calls: 0,
+            outcome: "withheld".into(),
+        },
     ];
 
     // **The list above is checked against the renderer, not trusted.** It is
