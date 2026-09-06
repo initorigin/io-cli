@@ -317,22 +317,6 @@ pub fn reference_catalogue(stored: Option<&CliSettings>) -> Option<io_harness::R
 /// slightly wrong is worse than one that names none.
 pub const REFERENCE_CATALOGUE_KEY: &str = "app.io-cli.reference_catalogue";
 
-/// What a contained turn decides, in the words the session says it in.
-///
-/// **Disclosure rather than decoration**, and through 0.11.0 the disclosure was
-/// wrong. It offered a responder, a plan gate, MCP servers, language servers, a
-/// browser and skills as things this mode grants, and named a lost mid-turn steer
-/// as the price. Both stopped being true: 0.11.0 gave the flat turn a contract
-/// too, so every one of those capabilities is on both turns, and since 0.17.0
-/// both turns take a `SteerInbox` as well — a contained turn can be steered, so
-/// there is no price to name. `Ctrl+C` is the observer's cancel on both, which
-/// is the half of that old sentence that was right all along.
-///
-/// What is left is one difference, and it is the one the caps are for:
-/// `turn_contained_bounded_steered` is the only session entry point that reaches
-/// io-harness's spawn loop, so this is the only turn that can fan out. A notice
-/// that sold the mode on anything else was talking an operator into a fan-out to
-/// get capabilities their session already had.
 /// The caps `/contain on` offers to write when nothing is configured (0.39.0).
 ///
 /// **Small on purpose, and every number is defensible out loud.** Until this
@@ -411,6 +395,22 @@ pub fn containment_offer(caps: &io_harness::Containment) -> (String, Vec<crate::
     )
 }
 
+/// What a contained turn decides, in the words the session says it in.
+///
+/// **Disclosure rather than decoration**, and through 0.11.0 the disclosure was
+/// wrong. It offered a responder, a plan gate, MCP servers, language servers, a
+/// browser and skills as things this mode grants, and named a lost mid-turn steer
+/// as the price. Both stopped being true: 0.11.0 gave the flat turn a contract
+/// too, so every one of those capabilities is on both turns, and since 0.17.0
+/// both turns take a `SteerInbox` as well — a contained turn can be steered, so
+/// there is no price to name. `Ctrl+C` is the observer's cancel on both, which
+/// is the half of that old sentence that was right all along.
+///
+/// What is left is one difference, and it is the one the caps are for:
+/// `turn_contained_bounded_steered` is the only session entry point that reaches
+/// io-harness's spawn loop, so this is the only turn that can fan out. A notice
+/// that sold the mode on anything else was talking an operator into a fan-out to
+/// get capabilities their session already had.
 pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
     format!(
         "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \

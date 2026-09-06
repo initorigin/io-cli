@@ -660,34 +660,6 @@ pub fn hooks(
     (!hooks.is_empty()).then_some(hooks)
 }
 
-/// The OpenTelemetry exporter an `[otel]` section asks for, and the line that
-/// says what it is (0.39.0).
-///
-/// **Beside [`hooks`] because it is the same kind of thing**: configuration that
-/// becomes an observer, read once per door and attached to the fan-out every door
-/// already builds. io-harness has shipped the exporter since its 0.78.0 behind a
-/// feature flag this crate did not enable, so a capability the harness released
-/// was unreleased in practice for anyone whose only interface is `io`.
-///
-/// The section is io-harness's own — `Config::otel` deserializes it, and this
-/// crate names no key of its own for it and holds no copy of the defaults.
-///
-/// # What the second half of the answer is for, and what it may not say
-///
-/// **io-harness reports export success or loss through no public value.** An
-/// export that the collector refused, or that failed three times and was dropped,
-/// is written to a `tracing::warn` and nowhere else — no counter, no callback, no
-/// event, and `Export::send` explicitly propagates no error because it runs on a
-/// task nobody awaits. This crate cannot read that account without a tracing
-/// subscriber, and a subscriber means a dependency in a set whose whole argument
-/// is that it is ten names.
-///
-/// So the line says **what was configured**, which io-cli knows, and never that
-/// anything arrived, which it does not. An operator who reads `spans go to
-/// http://localhost:4318` and sees nothing in their collector has been told
-/// exactly as much as this process knows; a line saying "exporting" would be a
-/// claim with nothing behind it. Filed upstream, and stated in the guide.
-///
 /// What a configured exporter is announced as.
 ///
 /// **Pure, and split out so the claim can be gated at all.** io-harness refuses
@@ -711,6 +683,42 @@ pub fn otel_said(endpoint: &str, service: &str) -> String {
     )
 }
 
+/// The OpenTelemetry exporter an `[otel]` section asks for, and the line that
+/// says what it is (0.39.0).
+///
+/// **Beside [`hooks`] because it is the same kind of thing**: configuration that
+/// becomes an observer, read once per door and attached to the fan-out that door
+/// builds. io-harness has shipped the exporter since its 0.78.0 behind a feature
+/// flag this crate did not enable, so a capability the harness released was
+/// unreleased in practice for anyone whose only interface is `io`.
+///
+/// **Three doors of four, and the fourth is `io acp`.** The session, `io exec`
+/// and `io resume` each compose a [`crate::fanout::Fanout`] and the exporter
+/// joins it there. The editor door composes nothing — it has never had a
+/// `[[hook]]` or a `Broadcast` either, which predates this release — so an
+/// operator with `[otel]` configured gets spans from the terminal and from CI and
+/// none from their editor. Said here and at that call site rather than left to be
+/// discovered from an empty collector.
+///
+/// The section is io-harness's own — `Config::otel` deserializes it, and this
+/// crate names no key of its own for it and holds no copy of the defaults.
+///
+/// # What the second half of the answer is for, and what it may not say
+///
+/// **io-harness reports export success or loss through no public value.** An
+/// export that the collector refused, or that failed three times and was dropped,
+/// is written to a `tracing::warn` and nowhere else — no counter, no callback, no
+/// event, and `Export::send` explicitly propagates no error because it runs on a
+/// task nobody awaits. This crate cannot read that account without a tracing
+/// subscriber, and a subscriber means a dependency in a set whose whole argument
+/// is that it is ten names.
+///
+/// So the line says **what was configured**, which io-cli knows, and never that
+/// anything arrived, which it does not. An operator who reads `spans go to
+/// http://localhost:4318` and sees nothing in their collector has been told
+/// exactly as much as this process knows; a line saying "exporting" would be a
+/// claim with nothing behind it. Filed upstream, and stated in the guide.
+///
 /// Both halves are `None` when no `[otel]` section asks for one, which is every
 /// configuration written before this release.
 pub fn otel(config: &Config) -> (Option<io_harness::OtelExporter>, Option<String>) {

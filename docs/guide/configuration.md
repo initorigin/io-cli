@@ -385,6 +385,11 @@ given. A section that will not open at all is a different case and does say so.
 Prompts, replies, tool arguments and tool output are never sent. That is
 io-harness's decision and its own documentation states it.
 
+**`io acp` does not export.** The session, `io exec` and `io resume` do; the editor
+door has never composed observers at all — it takes no `[[hook]]` either — so a
+run driven from Zed or a JetBrains IDE produces no spans. If your collector has
+traces from the terminal and none from your editor, that is why.
+
 ### Where io keeps your things
 
 **One directory: `~/.io-cli`, or `%USERPROFILE%\.io-cli` on Windows.** The

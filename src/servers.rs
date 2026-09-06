@@ -860,23 +860,6 @@ fn decided_by(rule: Option<&str>, layer: Option<&str>) -> String {
     }
 }
 
-/// A TOML basic string, escaped.
-///
-/// Here rather than through `toml::to_string`, which would need a document to
-/// serialise: this crate writes VALUES, and a value is the one thing the
-/// serialiser cannot be asked for on its own.
-///
-/// **Public, because [`edit`] takes TOML source and a caller has a Rust string.**
-/// The alternative every call site reaches for is `format!("\"{value}\"")`, which
-/// is either a parse error or a different value the moment the text carries a
-/// quote or a backslash — a Windows command path is full of the second.
-///
-/// **Every escape TOML defines and not just the two that are obvious.** A quote
-/// and a backslash are the pair a reader thinks of; a newline inside a basic
-/// string is a parse error, and an MCP `env` value is whatever an imported
-/// server definition put there. Getting it wrong is a refusal rather than a
-/// corruption — [`crate::edit::apply`] reads its own result back — but a
-/// refusal an operator cannot act on is still a verb that does not work.
 /// What `io mcp serve` says about itself, before stdout becomes the protocol
 /// (0.39.0).
 ///
@@ -884,8 +867,15 @@ fn decided_by(rule: Option<&str>, layer: Option<&str>) -> String {
 /// The whole argument for handing somebody else this install's tools is that they
 /// arrive under this install's policy, gated and journalled — so a server that
 /// started silently would be asking a client to trust a boundary it has no way to
-/// inspect. These lines are that inspection: the root, the policy in force, and
-/// which of io-harness's tools are served and which are not.
+/// inspect. These lines are that inspection: the root, the protocol, the posture
+/// in force, and the tools that are **not** served.
+///
+/// **The served set is not enumerated, and saying so is the honest version.** It
+/// is whatever `Toolbox` this install resolved minus the withheld names, it can
+/// run to dozens of entries, and a client learns it authoritatively from
+/// `tools/list` a moment later. What a reader cannot get from `tools/list` is the
+/// *absence* — that `spawn` and `ask_question` are missing by design rather than
+/// because something failed — which is why that is the half written here.
 ///
 /// **Every line goes to stderr and the caller is what writes them**, because
 /// stdout is the JSON-RPC stream from the moment the loop starts and one
@@ -925,14 +915,30 @@ pub fn serving(config: &io_harness::McpServerConfig) -> Vec<String> {
     ];
     if !io_harness::MCP_SERVER_UNSERVED.is_empty() {
         lines.push(format!(
-            "io: not served{}{}",
-            " — ",
+            "io: not served — {}",
             io_harness::MCP_SERVER_UNSERVED.join(", "),
         ));
     }
     lines
 }
 
+/// A TOML basic string, escaped.
+///
+/// Here rather than through `toml::to_string`, which would need a document to
+/// serialise: this crate writes VALUES, and a value is the one thing the
+/// serialiser cannot be asked for on its own.
+///
+/// **Public, because [`edit`] takes TOML source and a caller has a Rust string.**
+/// The alternative every call site reaches for is `format!("\"{value}\"")`, which
+/// is either a parse error or a different value the moment the text carries a
+/// quote or a backslash — a Windows command path is full of the second.
+///
+/// **Every escape TOML defines and not just the two that are obvious.** A quote
+/// and a backslash are the pair a reader thinks of; a newline inside a basic
+/// string is a parse error, and an MCP `env` value is whatever an imported
+/// server definition put there. Getting it wrong is a refusal rather than a
+/// corruption — [`crate::edit::apply`] reads its own result back — but a
+/// refusal an operator cannot act on is still a verb that does not work.
 pub fn quoted(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');

@@ -519,7 +519,8 @@ impl<P: Provider + Sync> Provider for Chain<P> {
     /// from its first, not a run that refuses to start. The one failure that is
     /// **not** swallowed is an egress policy denying the reference host, which
     /// io-harness raises before this is ever reached — see
-    /// [`crate::failure::reference_refusal`].
+    /// [`crate::failure::advice_with`], which is what turns that refusal into a
+    /// sentence naming the key that turns the catalogue off.
     async fn warm_sizing(&self) -> io_harness::Result<()> {
         // The one loop this module is permitted, over `self.links` and nothing
         // else — the shape `tests/dependencies.rs` holds this file to by exact

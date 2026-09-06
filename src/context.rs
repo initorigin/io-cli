@@ -817,31 +817,6 @@ pub fn window(contract: &TaskContract, remaining: Option<u64>, announced: Option
         .unwrap_or_else(|| contract.context.effective_tokens(remaining))
 }
 
-/// What a `source` word from `EventKind::ContextCeiling` means, in a sentence.
-///
-/// **The word alone is not readable and that is why this exists.** io-harness
-/// names one of three rungs — `contract`, `model`, `fallback` — and drawing the
-/// bare word would tell an operator which enum arm fired rather than what
-/// happened to their run. Each sentence says what decided the number and, where
-/// there is one, what to do about it.
-///
-/// **`fallback` no longer means 24,000, and this sentence is where io-cli stops
-/// saying it does.** Through io-harness 0.81.0 the fallback was one constant for
-/// every case; 0.82.0 splits it into 128,000 for a remote endpoint and 24,000 for
-/// a loopback one, sized down to 7,616. So the honest sentence names an
-/// assumption rather than a number, and points at the two things that turn an
-/// assumption into a reading — the reference catalogue for a vendor provider, and
-/// `[run.context]` for anybody who would rather state it themselves.
-///
-/// **A local ceiling is not a regression and the sentence says so**, because it
-/// looks exactly like one: an operator moving from a hosted model to Ollama or
-/// llama.cpp sees the number fall, and nothing else on the page explains that the
-/// harness is being careful rather than that this crate is wrong.
-///
-/// An unrecognised word is passed through rather than swallowed. `source` is a
-/// `String` on a `#[non_exhaustive]` variant, so io-harness may grow a fourth
-/// rung, and a surface that silently drew nothing for it would hide exactly the
-/// case somebody needs to see.
 /// What a run announced about the window it assembles inside.
 ///
 /// **One value rather than two parameters, because they are one fact.** The
@@ -866,6 +841,32 @@ pub struct Ceiling<'a> {
     pub source: Option<&'a str>,
 }
 
+/// What a `source` word from `EventKind::ContextCeiling` means, in a sentence.
+///
+/// **The word alone is not readable and that is why this exists.** io-harness
+/// names one of three rungs — `contract`, `model`, `fallback` — and drawing the
+/// bare word would tell an operator which enum arm fired rather than what
+/// happened to their run. Each sentence says what decided the number and, where
+/// there is one, what to do about it.
+///
+/// **`fallback` no longer means 24,000, and this sentence is where io-cli stops
+/// saying it does.** Through io-harness 0.81.0 the fallback was one constant for
+/// every case; 0.82.0 splits it into one default for a remote endpoint and a much
+/// smaller one for a loopback endpoint. So the honest sentence names an
+/// assumption rather than a number, and points at the two things that turn an
+/// assumption into a reading — the reference catalogue for a vendor provider, and
+/// `[run.context]` for anybody who would rather state it themselves.
+///
+/// **A local ceiling is not a regression and the sentence says so**, because it
+/// looks exactly like one: an operator moving from a hosted model to Ollama or
+/// llama.cpp sees the number fall, and nothing else on the page explains that the
+/// harness is being careful rather than that this crate is wrong.
+///
+/// An unrecognised word is passed through rather than swallowed. `source` is a
+/// `String` on a `#[non_exhaustive]` variant, so io-harness may grow a fourth
+/// rung, and a surface that silently drew nothing for it would hide exactly the
+/// case somebody needs to see.
+///
 /// `dash` is the glyph set's own, so the sentence degrades with every other one
 /// under `--plain` and the ASCII set rather than putting an em dash on a terminal
 /// that cannot draw it.

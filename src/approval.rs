@@ -356,6 +356,20 @@ impl Approval {
                 self.scroll = 0;
                 None
             }
+            // **`End` too, and its absence was a real refusal.** Every other
+            // navigation key was taken silently while `End` — which is what a
+            // reader presses to reach the bottom of a diff — fell into the arm
+            // that flashes `press y, a or n`. Being told to answer for pressing
+            // a key that means "show me the rest" is the exact confusion this
+            // release's approval work exists to remove.
+            //
+            // `usize::MAX` rather than a computed bottom: the clamp is in
+            // `as_diff`, which is the only place that knows how many rows the
+            // change has at this frame's width.
+            KeyCode::End => {
+                self.scroll = usize::MAX;
+                None
+            }
             KeyCode::Enter => Some(self.chosen()),
             KeyCode::Char(c) => {
                 let answer = Answer::ALL

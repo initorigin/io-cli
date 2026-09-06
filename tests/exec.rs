@@ -3025,26 +3025,6 @@ fn f10_a_configuration_with_no_templates_passes_every_plain_goal_through() {
     );
 }
 
-/// **F7 — `io exec` still refuses every approval, and 0.36.0 is the release that
-/// could have changed that by accident.**
-///
-/// This release gives io-cli its first non-interactive door that *can* answer an
-/// approval: an ACP client is a person in an editor, so `src/acp.rs` raises
-/// `session/request_permission` and routes the answer to `io_harness::Approver`.
-/// `io exec` is not that. It is an unattended run with nobody to ask, and the
-/// argument at `src/exec.rs:614-621` — that an ask becomes a refusal the agent is
-/// told about and adapts to, because an approver that blocked would hang forever
-/// — is unchanged and correct.
-///
-/// The failure mode this guards is the new wiring reaching the old door while
-/// every ACP test stays green. So it is a **count over the call sites**, never a
-/// `contains`: `src/exec.rs` drives five turns — the ordinary one and four resume
-/// entry points — and a `contains` is satisfied forever by any one of them. That
-/// is the discipline `AGENTS.md` states, and 0.30.0 records what happens when a
-/// gate is satisfied by one door out of two.
-///
-/// Sabotage: replace any single `&DenyAll` with the ACP approver. The count drops
-/// to four and this fails; nothing in `tests/acp.rs` moves.
 /// **F8 — `io exec` without `--json` says what it did, and says it on stderr.**
 ///
 /// The README's own sentence is that `io exec` shows what it refused. That was
@@ -3105,6 +3085,26 @@ fn f8_the_headless_commentary_cannot_be_written_to_stdout() {
     );
 }
 
+/// **F7 — `io exec` still refuses every approval, and 0.36.0 is the release that
+/// could have changed that by accident.**
+///
+/// This release gives io-cli its first non-interactive door that *can* answer an
+/// approval: an ACP client is a person in an editor, so `src/acp.rs` raises
+/// `session/request_permission` and routes the answer to `io_harness::Approver`.
+/// `io exec` is not that. It is an unattended run with nobody to ask, and the
+/// argument at `src/exec.rs:614-621` — that an ask becomes a refusal the agent is
+/// told about and adapts to, because an approver that blocked would hang forever
+/// — is unchanged and correct.
+///
+/// The failure mode this guards is the new wiring reaching the old door while
+/// every ACP test stays green. So it is a **count over the call sites**, never a
+/// `contains`: `src/exec.rs` drives five turns — the ordinary one and four resume
+/// entry points — and a `contains` is satisfied forever by any one of them. That
+/// is the discipline `AGENTS.md` states, and 0.30.0 records what happens when a
+/// gate is satisfied by one door out of two.
+///
+/// Sabotage: replace any single `&DenyAll` with the ACP approver. The count drops
+/// to four and this fails; nothing in `tests/acp.rs` moves.
 #[test]
 fn f7_every_headless_turn_still_refuses_every_approval() {
     let text = source("exec.rs");

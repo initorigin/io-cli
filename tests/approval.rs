@@ -794,14 +794,26 @@ async fn f2_the_whole_change_is_reachable_rather_than_elided() {
 /// stays on screen at every offset because it is what the decision is about.
 #[tokio::test]
 async fn f2_scrolling_the_change_decides_nothing_and_keeps_the_counts() {
+    // `End` is in this list because it was not in the code: every other
+    // navigation key was taken silently while `End` — what a reader presses to
+    // reach the bottom of a diff — flashed `press y, a or n`. Found by the
+    // adversarial review, which noticed that the refusal sweep only walks
+    // printable ASCII and so never presses it.
     for key in [
         KeyCode::Up,
         KeyCode::Down,
         KeyCode::PageUp,
         KeyCode::PageDown,
         KeyCode::Home,
+        KeyCode::End,
     ] {
-        let (_, answer) = struck(key).await;
+        let (drawn, answer) = struck(key).await;
+        assert!(
+            !drawn.contains(io_cli::approval::ONLY_THREE_KEYS),
+            "{key:?} was refused. A key that moves the proposal is a key this \
+             surface takes, and being told to answer for pressing it is the \
+             confusion this overlay exists to remove: {drawn}",
+        );
         assert!(
             answer.is_none(),
             "{key:?} answered an approval. Reading a change is not agreeing to it",

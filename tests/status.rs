@@ -6,6 +6,7 @@ mod support;
 use std::time::Duration;
 
 use io_cli::app::App;
+use io_cli::splash;
 use io_cli::status::{format_elapsed, Budgets, Status};
 use io_cli::theme::{DARK, MONO};
 use io_harness::{EventKind, RunEvent, TaskContract};
@@ -3164,5 +3165,74 @@ fn f9_the_cache_figure_is_forgotten_with_the_run() {
         status.token_field().as_deref(),
         Some("1.0k tok"),
         "the previous conversation's cache followed the new one",
+    );
+}
+
+/// **The other surface that names a model is the splash card, and it is dated.**
+///
+/// `Status::model` is live: `/model` writes the chosen name into it and the
+/// footer redraws. The splash card is not, and cannot be — it goes into the
+/// terminal's own scrollback through `Screen::commit`, which is `insert_before`,
+/// so once it is written no later frame reaches a row of it. After one `/model`
+/// the operator therefore had two model names on screen at once, the card's and
+/// the footer's, with nothing saying which one the next turn was going to.
+///
+/// A redraw is not available here, so the card says instead that its facts are
+/// the ones the session opened with, and names the surface that is current. The
+/// two then say different things without contradicting each other, which is the
+/// only shape a permanent record and a live field can both be right in.
+///
+/// Sabotage: drop the caption row from `splash::lines`. The card is a bare
+/// `model` row again, reading exactly like the footer's, and this test goes red
+/// while every other splash test stays green.
+#[test]
+fn the_splash_card_dates_its_facts_rather_than_contradicting_the_status_line() {
+    let opened_with = "deepseek/deepseek-v4-flash-0731";
+    let about = splash::About {
+        model: Some(opened_with.into()),
+        policy: Some("ask".into()),
+        workspace: Some("/w".into()),
+    };
+    let card: String = splash::lines(&DARK, true, 100, &about)
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+
+    // What `/model` does, in the field it does it to: the live surface moves and
+    // the committed card cannot follow it.
+    let mut status = Status::new(opened_with);
+    status.model = "openai/gpt-6-astra".into();
+    assert!(
+        rendered(&status, 200).contains(&status.model),
+        "the footer is the live answer and must carry the chosen model",
+    );
+
+    assert!(
+        card.contains(opened_with),
+        "the card still names what the session started with, because it is a \
+         record of an opening and nothing can rewrite it: {card:?}",
+    );
+    assert!(
+        card.contains("opened with"),
+        "the card states a model with nothing marking it as the session's \
+         opening state, so it reads as the current one: {card:?}",
+    );
+    assert!(
+        card.contains("status line"),
+        "the card dates itself but never says which surface is current, which \
+         leaves the operator with two names and no tie-break: {card:?}",
+    );
+
+    // Nothing to date when there is nothing to say. A card with no facts on it
+    // draws no caption, so the mark-only form keeps its shape.
+    let bare: String = splash::lines(&DARK, true, 100, &splash::About::default())
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(
+        !bare.contains("opened with"),
+        "a caption over an empty table is a heading for nothing: {bare:?}",
     );
 }

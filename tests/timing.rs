@@ -172,19 +172,23 @@ fn assert_no_impatient_bound(path: &std::path::Path, source: &str, violations: &
         let at = format!("{}:{}", path.display(), number + 1);
         let trimmed = line.trim();
         // A deadline built from milliseconds is a deadline nobody should be
-        // building: the unit is the tell.
+        // building: the unit is the tell. A `sleep` on the same line is the poll
+        // interval, which decides how often the harness looks and never whether
+        // it gives up.
+        //
+        // **The `sleep` test was written twice and once was dead.** A second
+        // check re-read the same line through `source.lines().nth(number)` and
+        // asked whether it contained `sleep` — which the condition above had
+        // just established it does not, so the branch was unreachable and the
+        // rule was enforced entirely by the condition. Removed rather than
+        // repaired, because there was nothing the second read could add: the
+        // line is the whole context this rule needs.
         if trimmed.contains("Duration::from_millis") && !trimmed.contains("sleep") {
-            let is_interval = source
-                .lines()
-                .nth(number)
-                .is_some_and(|l| l.contains("sleep"));
-            if !is_interval {
-                violations.push(format!(
-                    "{at}: {trimmed} — a deadline in this file is measured in \
-                     seconds. Milliseconds belong to the poll interval, which \
-                     decides how often it looks and never whether it gives up",
-                ));
-            }
+            violations.push(format!(
+                "{at}: {trimmed} — a deadline in this file is measured in \
+                 seconds. Milliseconds belong to the poll interval, which \
+                 decides how often it looks and never whether it gives up",
+            ));
         }
         // And a seconds bound has to be a generous one. Anything under five is a
         // performance assertion wearing a liveness bound's clothes.

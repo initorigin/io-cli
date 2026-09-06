@@ -1673,6 +1673,78 @@ fn f12_a_session_can_be_loaded_back() {
     );
 }
 
+/// **F12 — a session belonging to another workspace cannot be loaded.**
+///
+/// **The defect this exists for was real and shipped in the first draft of
+/// `session/load`.** There is one `runs.db` for every workspace on the machine
+/// and `Session::reopen` reads a session's root out of its stored row, so
+/// without a check a client could walk `io-1`, `io-2`, `io-3` and be handed the
+/// history of every conversation the operator has ever had, from every
+/// repository — and a prompt afterwards would edit that other workspace's files
+/// under *this* workspace's policy, because the contract is rooted at the
+/// session and the policy was resolved once at the `-C` root.
+///
+/// Found by the adversarial review, after the suite, clippy and the formatter
+/// were green — and it could not have been found by the arm above it, which uses
+/// one workspace for both processes.
+///
+/// The refusal is deliberately the same sentence a malformed id gets: a client
+/// has no business distinguishing "that session is not yours" from "that is not
+/// a session", and a message that told them apart would be an oracle for which
+/// ids exist.
+#[test]
+fn f12_a_session_from_another_workspace_is_refused() {
+    let home = tempfile::tempdir().expect("a home");
+    let mine = tempfile::tempdir().expect("this workspace");
+    let theirs = tempfile::tempdir().expect("another workspace");
+
+    // A session opened against a *different* workspace, in the same store.
+    let opened = spoken_in(
+        home.path(),
+        theirs.path(),
+        &[
+            asked(1, "initialize", json!({ "protocolVersion": 1 })),
+            asked(2, "session/new", json!({})),
+        ],
+    );
+    let elsewhere = opened
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .expect("a session id")
+        .to_string();
+
+    // Now ask an agent pointed at *this* workspace to load it.
+    let answers = spoken_in(
+        home.path(),
+        mine.path(),
+        &[
+            asked(1, "initialize", json!({ "protocolVersion": 1 })),
+            asked(2, "session/load", json!({ "sessionId": elsewhere })),
+        ],
+    );
+
+    let answer = answers
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .expect("the load was answered");
+    assert!(
+        answer.get("error").is_some(),
+        "a session rooted in another workspace was loaded: {answer}",
+    );
+
+    // And nothing of that conversation was streamed on the way to the refusal.
+    // The replay runs before any failure could, so an ordering mistake here
+    // discloses the history and then says no.
+    for frame in &answers {
+        assert_ne!(
+            frame["method"],
+            json!("session/update"),
+            "another workspace's history was replayed before the refusal: {frame}",
+        );
+    }
+}
+
 /// **F12 — a replayed turn is the two shapes a live turn already sends.**
 ///
 /// A loaded conversation goes through the client's existing rendering rather than

@@ -60,6 +60,14 @@ is a minor release.
   session id that is only unique within one `runs.db` while living in one fixed
   directory. Found by the new pty harness on its first run.
 
+- **The banner dates what it says.** The card goes into the terminal's own
+  scrollback and no later frame can reach a row of it, so after `/model` it went
+  on naming the model the session started with while the footer named the one the
+  next turn was going to — two model names on screen and nothing saying which.
+  Its three facts now sit under `opened with — the status line is current`. The
+  policy and the workspace are dated by the same caption, for the same reason:
+  both move mid-session and neither could be corrected either.
+
 ### Added
 
 - **`io exec` without `--json` says what it did.** One line per tool call and one

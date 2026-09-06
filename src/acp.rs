@@ -962,7 +962,12 @@ pub async fn main(
     let spec = crate::exec::spec_for(None, &config, model_override.as_deref())?;
     let store = crate::settings::store_path().ok_or("no place to keep the run store")?;
     let store = io_harness::Store::open(&store).map_err(|error| error.to_string())?;
-    let session = io_harness::Session::open(&store, &root).map_err(|error| error.to_string())?;
+    // **No session is opened here as of 0.39.0.** This door used to open one
+    // before the provider was built, the way every other door does, and hand it
+    // to `Editor` — and since sessions became a map keyed on what the client
+    // asks for, nothing ever used it. `Session::open` writes a row, so every
+    // `io acp` launch left an empty conversation in the store for `/resume` to
+    // list. The root is what the adapter needs; `session/new` opens the sessions.
     let policy = crate::exec::policy_for(&config, None);
 
     crate::provider::build(
@@ -971,7 +976,7 @@ pub async fn main(
         crate::settings::reference_catalogue(crate::settings::stored(&config).0.as_ref()),
         Editor {
             store,
-            session,
+            root,
             config,
             policy,
         },
@@ -982,7 +987,14 @@ pub async fn main(
 /// The ACP session, as something [`crate::provider::build`] can run.
 struct Editor {
     store: io_harness::Store,
-    session: io_harness::Session,
+    /// The workspace this adapter was pointed at, and the **only** one it will
+    /// serve.
+    ///
+    /// Every session it opens is rooted here, and a session it is asked to load
+    /// is refused unless the store says it was rooted here too — see
+    /// `session/load`, where that check is the difference between reopening a
+    /// conversation and reading somebody else's.
+    root: std::path::PathBuf,
     config: io_harness::Config,
     policy: io_harness::Policy,
 }
@@ -1013,7 +1025,7 @@ impl crate::provider::WithProvider for Editor {
             // anyway — so seeding the map would leave a conversation in the store
             // that no client ever addressed. The root is what is kept.
             sessions: std::collections::BTreeMap::new(),
-            root: self.session.root().to_path_buf(),
+            root: self.root.clone(),
             cancel: None,
             correlator: std::sync::Arc::clone(&correlator),
         };
@@ -1169,19 +1181,53 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                     ))?;
                 let opened = io_harness::Session::reopen(self.store, numeric)
                     .map_err(|error| (ErrorCode::InvalidParams, error.to_string()))?;
+                // **The session has to belong to the workspace this adapter was
+                // pointed at, and nothing else here checks that.**
+                //
+                // There is one `runs.db` for every workspace on the machine, and
+                // `Session::reopen` reads a session's root out of its stored row
+                // — so without this a client could walk `io-1`, `io-2`, `io-3`
+                // and be handed the history of every conversation the operator
+                // has ever had, from every repository, before anything failed.
+                // Worse than the disclosure: a prompt afterwards would edit that
+                // other workspace's files, because `exec::contract` roots the
+                // contract at the session's own root, while `self.policy` was
+                // resolved once from the configuration discovered at **this**
+                // root. Somebody else's tree, under this tree's rules.
+                //
+                // Refused with the same sentence a bad id gets. A client has no
+                // business distinguishing "that session is not yours" from "that
+                // is not a session", and a message that told them apart would be
+                // an oracle for the ids that exist.
+                if opened.root() != self.root {
+                    return Err((
+                        ErrorCode::InvalidParams,
+                        format!("`{id}` is not a session this agent can open here"),
+                    ));
+                }
                 let turns = opened
                     .history(self.store)
                     .map_err(|error| (ErrorCode::Internal, error.to_string()))?;
+                // **Keyed on the id this adapter would have issued, not on the
+                // string the client sent.** `i64::from_str` accepts a leading `+`
+                // and leading zeros, so `io-7`, `io-007` and `io-+7` are three
+                // map keys over one stored session — and prompts against them
+                // would interleave three `Session` values on one conversation
+                // head. Canonicalising here makes the key a property of the
+                // session rather than of how it was spelled, and the answer
+                // carries it back so a client that spelled it loosely learns the
+                // one to use.
+                let key = format!("io-{}", opened.id());
                 for turn in &turns {
                     for update in replayed(turn) {
                         let _ = self.outbound.send(Outgoing::Notification {
                             method: "session/update".into(),
-                            params: json!({ "sessionId": id, "update": update }),
+                            params: json!({ "sessionId": key, "update": update }),
                         });
                     }
                 }
-                self.sessions.insert(id, opened);
-                Ok(json!({}))
+                self.sessions.insert(key.clone(), opened);
+                Ok(json!({ "sessionId": key }))
             }
             "session/prompt" => {
                 // **The client names which session, and this stopped being
@@ -1259,6 +1305,23 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                     step: std::sync::Arc::clone(&shared.step),
                     correlator: std::sync::Arc::clone(&self.correlator),
                 },
+                // **One observer, and this is the door that gets no `[[hook]]`,
+                // no `Broadcast` and no OpenTelemetry exporter.**
+                //
+                // The other three doors compose a `Fanout` and the exporter joins
+                // it there; this one has never composed anything, which predates
+                // 0.39.0 and is not something the exporter introduced. It is
+                // named here rather than left to be discovered, because an
+                // operator who configures `[otel]` and sees spans from the
+                // terminal and from CI would reasonably assume the editor was
+                // sending them too.
+                //
+                // Not fixed in this release deliberately: giving this door a
+                // fan-out means giving it hooks and a broadcast as well — a hook
+                // that fires for two doors and not the third is a worse state
+                // than one that fires for two and says so — and that is a change
+                // to what an editor session *does*, which belongs beside the
+                // decision rather than inside a release about reaching it.
                 &reporter,
             )
             .await;
