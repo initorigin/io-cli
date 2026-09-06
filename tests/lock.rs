@@ -625,15 +625,27 @@ fn f7_the_sweep_takes_finished_locks_and_leaves_held_ones() {
 /// `acquire`, where this process's own lock is already held.
 #[test]
 fn f7_the_driver_sweeps_before_it_takes_a_lock() {
-    let main = std::fs::read_to_string("src/main.rs").expect("the driver is readable");
+    // **Comments stripped, and parens required. Both were found by sabotage, one
+    // arm at a time.**
+    //
+    // The first draft searched for `lock::sweep`, and the arm that renames the
+    // call to `lock::sweep_DELETED` *contains* that string, so it survived. Adding
+    // the paren killed that arm and not the next one: commenting the call out
+    // leaves `lock::sweep(` in the file verbatim, and a gate reading raw text
+    // cannot tell a call from a mention of one.
+    //
+    // So the sweep runs over code with the comment lines removed, which is what
+    // `tests/dependencies.rs` already does for its own needles and for the same
+    // reason. Three separate gates in this release have now been fooled by their
+    // own prose; a source-text gate that does not strip comments is checking the
+    // documentation rather than the program.
+    let main: String = std::fs::read_to_string("src/main.rs")
+        .expect("the driver is readable")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    // **The parens are the assertion, and their absence was a real defect.** This
-    // searched for `lock::sweep`, and the sabotage arm that renames the call to
-    // `lock::sweep_DELETED` *contains* that string — so the arm survived and the
-    // gate would have passed over a driver that no longer sweeps anything. Same
-    // family as the permitted-spawn set being compared with `==` rather than by
-    // substring: a needle that matches a longer name is a check that widens
-    // itself.
     let sweep = main
         .find("lock::sweep(")
         .expect("the driver never calls `lock::sweep(`, so finished locks leak forever");
