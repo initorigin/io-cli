@@ -239,7 +239,6 @@ fn f7_the_interrupt_says_where_the_turn_will_stop() {
     );
 }
 
-/// F2 — the mode is a fact about the turn, and it does not outlive it.
 /// **F10 — `/contain on` with nothing configured offers a fan-out rather than
 /// four key names.**
 ///
@@ -329,6 +328,7 @@ fn f10_the_offered_caps_bound_the_spend_and_nothing_it_cannot_know() {
     );
 }
 
+/// F2 — the mode is a fact about the turn, and it does not outlive it.
 #[test]
 fn f2_the_contained_flag_is_cleared_with_the_turn() {
     let mut app = App::new(DARK, "a-model");

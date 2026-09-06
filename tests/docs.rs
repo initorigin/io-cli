@@ -2512,29 +2512,6 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
     }
 }
 
-/// **N3 — no shipped page says withholding a tool saves anything.**
-///
-/// **This is the release's top risk written as a gate, and it is written because
-/// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
-/// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
-/// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.82.0/src/tools/mod.rs:33-42`).
-/// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`io-harness-0.82.0/src/run/prompts.rs:1381`).
-///
-/// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
-/// its headline. That framing is what a writer reaches for, because "withhold" means
-/// "remove" everywhere else in computing — so the wrong sentence is the *natural*
-/// one to write and nothing else in the suite can see it. A page claiming a saving
-/// compiles, passes every other gate, and misleads the operator into using the
-/// wrong lever for the problem they have.
-///
-/// Scoped to sentences that put a saving verb near the masking vocabulary rather
-/// than to the verbs alone: `docs/guide/accounting.md` legitimately discusses cost
-/// and cheapness throughout, and a blanket ban on the word "cheaper" would forbid
-/// the page that exists to talk about money from doing so.
-///
-/// Sabotage: write "withholding a tool makes the turn cheaper" into any guide page.
 /// **N3 — no shipped page says a thought streams as it is written (0.39.0).**
 ///
 /// The roadmap entry for this release said reasoning would stream into the
@@ -2642,6 +2619,29 @@ fn n5_no_shipped_page_claims_a_span_was_delivered() {
     }
 }
 
+/// **N3 — no shipped page says withholding a tool saves anything.**
+///
+/// **This is the release's top risk written as a gate, and it is written because
+/// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
+/// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
+/// cache breakpoint, so dropping a definition would save its tokens once and pay a
+/// cache *write* on every later turn (`io-harness-0.82.0/src/tools/mod.rs:33-42`).
+/// Withholding in fact makes the request marginally **larger**, by one sentence
+/// naming what is withheld (`io-harness-0.82.0/src/run/prompts.rs:1381`).
+///
+/// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
+/// its headline. That framing is what a writer reaches for, because "withhold" means
+/// "remove" everywhere else in computing — so the wrong sentence is the *natural*
+/// one to write and nothing else in the suite can see it. A page claiming a saving
+/// compiles, passes every other gate, and misleads the operator into using the
+/// wrong lever for the problem they have.
+///
+/// Scoped to sentences that put a saving verb near the masking vocabulary rather
+/// than to the verbs alone: `docs/guide/accounting.md` legitimately discusses cost
+/// and cheapness throughout, and a blanket ban on the word "cheaper" would forbid
+/// the page that exists to talk about money from doing so.
+///
+/// Sabotage: write "withholding a tool makes the turn cheaper" into any guide page.
 /// Every other test in the repository stays green.
 #[test]
 fn n3_no_shipped_page_claims_a_mask_reduces_what_a_turn_costs() {

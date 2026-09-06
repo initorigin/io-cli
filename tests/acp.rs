@@ -1435,21 +1435,6 @@ async fn f11_a_cancelled_outcome_is_a_denial() {
     );
 }
 
-/// **F9 — the permission request names the cell the run is actually on.**
-///
-/// **This is the release's own adversarial-review finding.** `Consulting` held an
-/// `AtomicU32` it constructed at zero and only ever read — nothing stored it — so
-/// every request named cell `{run_id}-0` whatever step raised it. Through 0.37.0
-/// that mis-addressed a `tool_call_update` on a failed call; from 0.38.0 it would
-/// mis-address the dialog an operator acts on, attaching the question to a call
-/// that had already finished.
-///
-/// The step now comes from the observer, which is the only thing in the module
-/// that sees one — an `Approver` is handed a `Request` carrying an act and a
-/// target and no step at all.
-///
-/// Asserted against `acp_map`'s own `toolCallId` for the same event rather than
-/// against a literal, so the two cannot drift into two spellings of one id.
 /// Drive the real `io acp` over pipes, and hand back every frame it answered.
 ///
 /// **A spawned process rather than a `Handler` fixture**, because the thing under
@@ -1784,6 +1769,21 @@ fn f12_a_replayed_turn_carries_what_was_said_and_nothing_it_did_not() {
     );
 }
 
+/// **F9 — the permission request names the cell the run is actually on.**
+///
+/// **This is the release's own adversarial-review finding.** `Consulting` held an
+/// `AtomicU32` it constructed at zero and only ever read — nothing stored it — so
+/// every request named cell `{run_id}-0` whatever step raised it. Through 0.37.0
+/// that mis-addressed a `tool_call_update` on a failed call; from 0.38.0 it would
+/// mis-address the dialog an operator acts on, attaching the question to a call
+/// that had already finished.
+///
+/// The step now comes from the observer, which is the only thing in the module
+/// that sees one — an `Approver` is handed a `Request` carrying an act and a
+/// target and no step at all.
+///
+/// Asserted against `acp_map`'s own `toolCallId` for the same event rather than
+/// against a literal, so the two cannot drift into two spellings of one id.
 #[test]
 fn f9_the_permission_cell_id_is_the_one_the_run_is_on() {
     let updates = tokio::sync::mpsc::unbounded_channel().0;

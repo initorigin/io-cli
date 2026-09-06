@@ -1202,12 +1202,6 @@ fn f10_a_typed_value_becomes_the_toml_its_key_needs() {
     );
 }
 
-/// The driver reaches the verb, and reaches it through `At`.
-///
-/// Nothing under `tests/` links `src/main.rs`, so the wiring is read as text —
-/// the instrument `tests/contract.rs` and `tests/context_share.rs` already use for
-/// exactly this. Two properties: the edit row exists at all, and the write is
-/// aimed at the scope the lookup returned rather than at a scope somebody picked.
 /// **F14 — the server says what it serves, and says it where it cannot corrupt
 /// the protocol.**
 ///
@@ -1302,6 +1296,12 @@ fn f14_the_serve_arm_writes_nothing_to_stdout() {
     );
 }
 
+/// The driver reaches the verb, and reaches it through `At`.
+///
+/// Nothing under `tests/` links `src/main.rs`, so the wiring is read as text —
+/// the instrument `tests/contract.rs` and `tests/context_share.rs` already use for
+/// exactly this. Two properties: the edit row exists at all, and the write is
+/// aimed at the scope the lookup returned rather than at a scope somebody picked.
 #[test]
 fn f10_the_driver_writes_into_the_scope_the_lookup_found() {
     let driver = std::fs::read_to_string(

@@ -3287,20 +3287,6 @@ fn f8_a_thought_is_committed_above_the_prose_it_produced() {
     );
 }
 
-/// **F8 — a spawned child's outcome is words, not a struct literal.**
-///
-/// io-harness formats it with `{outcome:?}`, so the sentence handed to this crate
-/// is literally `spawned child 149: Success { steps: 1 }` and the fleet result
-/// line drew it verbatim — a Rust struct in the one row meant to tell an operator
-/// what their children did.
-///
-/// Asserted over the punctuation rather than over one expected string, and over
-/// several `RunOutcome` shapes rather than one, because the point is that no
-/// `Debug` survives — including a variant a later pin adds, which is precisely
-/// what a table of the eighteen would miss.
-///
-/// Sabotage: drop the `said_plainly` rebinding in the `Step` arm and every row
-/// with a brace in it fails.
 /// **F15 — a program the turn wrote gets a row, and its acts are the rows under
 /// it.**
 ///
@@ -3442,6 +3428,20 @@ fn f18_an_image_the_agent_was_handed_is_named_with_its_door_and_its_size() {
     }
 }
 
+/// **F8 — a spawned child's outcome is words, not a struct literal.**
+///
+/// io-harness formats it with `{outcome:?}`, so the sentence handed to this crate
+/// is literally `spawned child 149: Success { steps: 1 }` and the fleet result
+/// line drew it verbatim — a Rust struct in the one row meant to tell an operator
+/// what their children did.
+///
+/// Asserted over the punctuation rather than over one expected string, and over
+/// several `RunOutcome` shapes rather than one, because the point is that no
+/// `Debug` survives — including a variant a later pin adds, which is precisely
+/// what a table of the eighteen would miss.
+///
+/// Sabotage: drop the `said_plainly` rebinding in the `Step` arm and every row
+/// with a brace in it fails.
 #[test]
 fn f8_a_spawned_childs_outcome_is_drawn_as_words() {
     for debug in [

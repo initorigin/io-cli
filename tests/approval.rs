@@ -488,12 +488,6 @@ async fn nothing_remembered_changes_nothing() {
 // and a new file is all addition.
 // ---------------------------------------------------------------------------
 
-/// Open an overlay for a write of `content` to `target`, and return what it
-/// draws at `width` columns in `height` rows.
-///
-/// Rendered through a real `Screen` rather than by calling the private layout,
-/// because what matters is what reaches the terminal — and because the overlay
-/// is height-constrained, which is the whole reason its content flexes.
 /// An approval over a plain write, with no file behind it — everything a
 /// keyboard arm needs and nothing it does not.
 ///
@@ -556,6 +550,15 @@ async fn overlay_for(target: &std::path::Path, content: &str, height: u16) -> St
     overlay_with(target, content, height, &[]).await
 }
 
+/// Open an overlay for a write of `content` to `target`, and return what it
+/// draws at `width` columns in `height` rows.
+///
+/// Rendered through a real `Screen` rather than by calling the private layout,
+/// because what matters is what reaches the terminal — and because the overlay
+/// is height-constrained, which is the whole reason its content flexes.
+///
+/// `keys` are pressed before the frame is taken, which is how the scrolling arms
+/// reach a row that is not on the first screen.
 async fn overlay_with(
     target: &std::path::Path,
     content: &str,

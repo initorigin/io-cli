@@ -2121,32 +2121,6 @@ fn n3_this_release_adds_no_configuration_key() {
     );
 }
 
-/// **F16 — the default skills directory sits under the home in force, beside the
-/// memory note.**
-///
-/// A skill is something the operator wrote, so it belongs wherever they put the
-/// rest of what they wrote: an `$IO_CONFIG_HOME` pointed somewhere else moved
-/// `io.toml` and `IO.md` there, and a skills default that stayed with io-cli's own
-/// default home would read a directory beside a configuration file this session is
-/// not using.
-///
-/// **Both halves are asserted here, in one test, because that is the only thing
-/// that keeps them together.** A test for the skills half alone permits
-/// `contract::default_skills` and `memory::path` to answer about two different
-/// directories, which is the state this release exists to end.
-///
-/// The fixture makes the *wrong* answer available on purpose: `HomeFixture`
-/// creates `~/.io-cli/skills` under a home that is not the one in force, so a
-/// regression to `home::path` fails loudly with a path rather than quietly with a
-/// `None` that could mean anything.
-///
-/// Sabotage: put `home::path()` back in `contract::default_skills` — under which
-/// this fails on the first assertion, naming the home it followed.
-///
-/// The lock is held for the whole of it. `IO_CONFIG_HOME` is left set on the way
-/// out, the way `tests/memory.rs` leaves it: the directory it names is gone by
-/// then, so a later `Config::discover` finds no user scope, which is what every
-/// other fixture in this file wants anyway.
 /// **F15 — enabling `codeact` hands the agent nothing on its own.**
 ///
 /// This is the fact worth gating, because `media` behaved differently in 0.9.0
@@ -2187,6 +2161,32 @@ fn f15_a_configuration_with_no_codeact_section_carries_none() {
     );
 }
 
+/// **F16 — the default skills directory sits under the home in force, beside the
+/// memory note.**
+///
+/// A skill is something the operator wrote, so it belongs wherever they put the
+/// rest of what they wrote: an `$IO_CONFIG_HOME` pointed somewhere else moved
+/// `io.toml` and `IO.md` there, and a skills default that stayed with io-cli's own
+/// default home would read a directory beside a configuration file this session is
+/// not using.
+///
+/// **Both halves are asserted here, in one test, because that is the only thing
+/// that keeps them together.** A test for the skills half alone permits
+/// `contract::default_skills` and `memory::path` to answer about two different
+/// directories, which is the state this release exists to end.
+///
+/// The fixture makes the *wrong* answer available on purpose: `HomeFixture`
+/// creates `~/.io-cli/skills` under a home that is not the one in force, so a
+/// regression to `home::path` fails loudly with a path rather than quietly with a
+/// `None` that could mean anything.
+///
+/// Sabotage: put `home::path()` back in `contract::default_skills` — under which
+/// this fails on the first assertion, naming the home it followed.
+///
+/// The lock is held for the whole of it. `IO_CONFIG_HOME` is left set on the way
+/// out, the way `tests/memory.rs` leaves it: the directory it names is gone by
+/// then, so a later `Config::discover` finds no user scope, which is what every
+/// other fixture in this file wants anyway.
 #[test]
 fn f16_the_skills_default_follows_the_home_in_force() {
     let _guard = env_lock();

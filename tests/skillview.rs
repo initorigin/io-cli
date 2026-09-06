@@ -877,11 +877,6 @@ fn enable_is_refused_on_a_bundle_skill_and_leaves_the_bundle_untouched() {
 // 0.30.0 F1, F2, F3 — a skill arrives and leaves.
 // ---------------------------------------------------------------------------
 
-/// **F1.** Installing copies the operator's file in, and the row reads `yours`.
-///
-/// The provenance half is the load-bearing one. `skills::wrote` answers *are these
-/// the bytes io-cli last wrote?*, so an install that recorded itself in the
-/// manifest would make the listing credit this crate with somebody else's work —
 /// **F10 — a directory holding a `SKILL.md` installs, with its companions.**
 ///
 /// io-harness has admitted folder skills all along: `Skills::discover` takes a
@@ -954,6 +949,11 @@ fn f10_a_directory_without_a_manifest_is_refused_by_name() {
     );
 }
 
+/// **F1.** Installing copies the operator's file in, and the row reads `yours`.
+///
+/// The provenance half is the load-bearing one. `skills::wrote` answers *are these
+/// the bytes io-cli last wrote?*, so an install that recorded itself in the
+/// manifest would make the listing credit this crate with somebody else's work —
 /// the same misattribution `home::origin` exists to prevent one level up.
 #[test]
 fn f1_an_installed_skill_is_copied_in_and_belongs_to_the_operator() {
