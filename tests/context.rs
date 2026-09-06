@@ -1260,6 +1260,68 @@ fn f17_the_context_page_draws_the_rung_when_the_run_announced_one() {
     );
 }
 
+/// **F11 — the second lever on per-turn context is visible when it is in force.**
+///
+/// `[run] collapse` shortens an observation that will not fit whole rather than
+/// dropping it. It has been reachable from a configuration file since io-harness
+/// 0.81.0 — which this crate has pinned since 0.38.2 — and `contract::configured`
+/// applies it through `Config::apply_to` on both doors, so it has been in force
+/// for anyone who wrote the key and visible on no surface at all. That is the
+/// worst state for a context lever: an operator reading the page about what fills
+/// their window, with a setting silently reshaping it.
+///
+/// **Drawn as a saving, unlike the mask one row above it.** A collapsed entry
+/// really does contribute fewer characters; a withheld tool costs the same
+/// catalogue plus a sentence. The two levers sit next to each other and mean
+/// opposite things, which is why each says which it is.
+///
+/// Sabotage: draw the row unconditionally. The absent arm fails, which is the one
+/// that keeps a page about what a turn costs from growing furniture.
+#[test]
+fn f11_the_context_page_says_when_collapse_is_shortening_entries() {
+    let with = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract().with_collapse(io_harness::context::Collapse { keep_chars: 4_000 }),
+        None,
+        context::Ceiling::default(),
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
+    assert!(
+        with.iter().any(|row| row.contains("collapse")),
+        "a lever in force and no row for it: {with:#?}",
+    );
+    // Joined, because the page wraps at its width and this sentence is longer
+    // than eighty columns — asserting against one row would be asserting about
+    // where the fold lands.
+    let page = with.join(" ");
+    assert!(
+        page.contains("4000") || page.contains("4,000"),
+        "the row has to say how much survives, or it reports a switch rather \
+         than a setting: {page}",
+    );
+    assert!(
+        page.contains("shortened") && page.contains("rather than dropped"),
+        "and what it does, because the lever one row above it withholds and \
+         saves nothing: {page}",
+    );
+
+    let without = drawn(&context::committed(
+        Some(&Request::of(&request())),
+        &contract(),
+        None,
+        context::Ceiling::default(),
+        &ToolMask::none(),
+        &ascii(),
+        80,
+    ));
+    assert!(
+        !without.iter().any(|row| row.contains("collapse")),
+        "a lever nobody turned on drew a row: {without:#?}",
+    );
+}
+
 /// **F17 — `fallback` no longer means 24,000, and no sentence here says it does.**
 ///
 /// Through io-harness 0.81.0 the fallback was one constant. 0.82.0 splits it into

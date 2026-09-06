@@ -182,6 +182,31 @@ buys back the conversation, and you pay per step for it. `[run.context]
 max_tokens` is still there if you want the old ceiling back deliberately rather
 than by accident.
 
+### Shortening what will not fit, instead of dropping it
+
+`[run] collapse` is the other lever on what a turn carries, and it is the one that
+actually saves something:
+
+```toml
+[run]
+collapse = { keep_chars = 4000 }
+```
+
+With it set, an observation too large to include whole contributes its first few
+thousand characters instead of being left out — the same truncation marker a
+single oversized observation already gets, so you learn one convention rather than
+two. A file read is never collapsed; that is io-harness's rule, not `io`'s.
+
+`/context` says so when it is on, and says how much survives. **Read that row
+against the one above it**, which is the tool mask: they sit next to each other
+and mean opposite things. Collapsing genuinely shortens what is sent. Withholding
+a tool does not — the catalogue goes out identical either way and gains a sentence
+naming what you withheld, which is why the mask is a scoping lever and not a
+budget one.
+
+It has been reachable since io-harness 0.81.0 and `io` has applied it on both
+doors since 0.38.2. Until 0.39.0 nothing showed you it was on.
+
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)

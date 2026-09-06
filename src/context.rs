@@ -989,6 +989,31 @@ pub fn committed(
         push(line, Tone::Refused);
     }
 
+    // **Whether the second lever on per-turn context is in force (0.39.0).**
+    //
+    // `[run] collapse` shortens an observation that will not fit whole rather
+    // than dropping it, and it has been reachable from a configuration file since
+    // io-harness 0.81.0 — which this crate has pinned since 0.38.2, so it has
+    // been in force for anyone who wrote the key and visible on no surface at
+    // all. That is the worst state for a context lever: an operator reading a
+    // page about what fills their window, with a setting silently reshaping it.
+    //
+    // Drawn only when it is on, and unlike the mask it is drawn as a **saving**
+    // — because unlike the mask it is one. A collapsed entry contributes fewer
+    // characters than it would have; a withheld tool costs the same catalogue
+    // plus a sentence. The two levers sit one row apart and mean opposite things,
+    // which is exactly why this row says which it is.
+    if contract.collapse.enabled() {
+        push(
+            format!(
+                "collapse: on {dash} an observation that will not fit whole is shortened to \
+                 {} characters rather than dropped",
+                contract.collapse.keep_chars,
+            ),
+            Tone::Muted,
+        );
+    }
+
     lines.push(Line::from(Span::styled(
         format!("{rule}{rule}{rule} context ends"),
         theme.style(Tone::Accent),
