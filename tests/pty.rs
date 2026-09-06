@@ -275,13 +275,16 @@ mod unix {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+        // The size argument is `*mut winsize` on macOS and `*const winsize` on
+        // Linux, so it is passed as a raw pointer: `&mut size` is a borrow the
+        // Linux signature does not want, and `&size` one macOS refuses.
         let opened = unsafe {
             libc::openpty(
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut size,
+                std::ptr::addr_of_mut!(size),
             )
         };
         assert!(opened == 0, "openpty: {}", std::io::Error::last_os_error());
