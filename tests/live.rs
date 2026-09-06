@@ -4023,13 +4023,34 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
     let provider = io_harness::OpenRouter::new(&key, model());
     let policy = workspace_policy();
 
+    // **`conversational = false`, and without it this arm cannot hold (0.39.0).**
+    //
+    // `contract::session` starts at `Verification::None`, and io-harness reads
+    // `contract.conversational.unwrap_or(matches!(verify, Verification::None))` —
+    // so an ungated turn may be answered in one completion with no steps at all
+    // whenever the harness's classifier decides the goal is only a question. It
+    // decided exactly that here: the run came back `Finished { steps: 0 }`, no
+    // tool was ever reached, and the arm failed on its own "the goal was not
+    // reached" guard.
+    //
+    // That is a real behaviour and not a defect — but it makes this arm's
+    // *instrument* a classifier's judgement, which is not a thing to gate a mask
+    // on. Turning the key off opens a run for every prompt, which is what the key
+    // exists for, and leaves the model with the tools as its only route.
+    //
+    // Verified against `develop` before changing anything: the same arm fails
+    // identically on 0.38.2, so this is a pre-existing gate that stopped holding
+    // as provider behaviour moved, and not something 0.39.0 broke.
+    let with_a_run = Config::from_toml("[app.io-cli]\nconversational = false\n")
+        .expect("io-cli's own section parses at any scope");
+
     let (answerer, _questions) = io_cli::intent::channel();
     let contract = io_cli::contract::session(
         "Create a file called notes.txt containing the single word hello. \
          Use the write_file tool.",
         root.to_path_buf(),
-        &no_configuration(),
-        &no_configuration().plugins(),
+        &with_a_run,
+        &with_a_run.plugins(),
         &io_cli::contract::Capabilities::default(),
         Arc::new(answerer),
         None,
