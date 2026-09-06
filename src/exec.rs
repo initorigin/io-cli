@@ -963,9 +963,22 @@ impl WithProvider for Headless {
         // want to attach to.
         let resolved = crate::resolved::Resolved::load(&self.config);
         let hooks = crate::contract::hooks(&self.config, resolved.loaded(), self.session.root());
+        // **The exporter reaches CI too, and that is the point of putting it
+        // here.** A trace configured for unattended runs and delivered only in a
+        // terminal would be a trace of the half somebody was already watching —
+        // the same asymmetry `[[hook]]` was given this door to avoid. The
+        // sentence is printed rather than dropped, because a headless run has no
+        // startup screen to have said it on.
+        let (otel, said) = crate::contract::otel(&self.config);
+        if let Some(said) = said {
+            eprintln!("io: {said}");
+        }
         let mut observers: Vec<&dyn Observer> = vec![observer];
         if let Some(hooks) = &hooks {
             observers.push(hooks);
+        }
+        if let Some(otel) = &otel {
+            observers.push(otel);
         }
         let fanout = crate::fanout::Fanout::new(observers);
         let durable =
@@ -1687,9 +1700,22 @@ impl WithProvider for Resuming {
         // nobody watched happen.
         let resolved = crate::resolved::Resolved::load(&self.config);
         let hooks = crate::contract::hooks(&self.config, resolved.loaded(), &self.root);
+        // **The exporter reaches CI too, and that is the point of putting it
+        // here.** A trace configured for unattended runs and delivered only in a
+        // terminal would be a trace of the half somebody was already watching —
+        // the same asymmetry `[[hook]]` was given this door to avoid. The
+        // sentence is printed rather than dropped, because a headless run has no
+        // startup screen to have said it on.
+        let (otel, said) = crate::contract::otel(&self.config);
+        if let Some(said) = said {
+            eprintln!("io: {said}");
+        }
         let mut observers: Vec<&dyn Observer> = vec![observer];
         if let Some(hooks) = &hooks {
             observers.push(hooks);
+        }
+        if let Some(otel) = &otel {
+            observers.push(otel);
         }
         let fanout = crate::fanout::Fanout::new(observers);
         let durable = settings::store_path().and_then(|path| Store::open(&path).ok());

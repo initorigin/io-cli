@@ -308,6 +308,44 @@ reverted the theme, the diff style and everything else in the section at once wi
 nothing said about it, and the session now starts on the defaults carrying
 io-harness's own message — which names the key that broke — in its scrollback.
 
+### Sending a run to a collector
+
+Since 0.39.0 `io` can export every run as OpenTelemetry spans. It is io-harness's
+exporter, reached through io-harness's own `[otel]` section, and `io` adds no key
+of its own:
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+service_name = "io"
+timeout_secs = 10
+max_queue = 512
+```
+
+**It has to go in your user-scope file**, not in a repository's `io.toml`.
+io-harness refuses a collector declared inside a workspace for the reason it
+refuses a provider there: the collector is a host every span of every run is
+posted to, reached with whatever credential the same table names, and an
+`io.toml` arrives with a `git clone`. Without that rule a repository could
+quietly forward every run of everyone who cloned it.
+
+The session says what it configured at startup, and `io exec` prints the same line
+on stderr. Read it literally:
+
+> spans go to http://localhost:4318/v1/traces as `io` — io reports what it
+> configured and cannot report what arrived
+
+**`io` cannot tell you a span was delivered, and will never say it was.**
+io-harness accounts for a refused or dropped batch in a log rather than in a
+value — nothing is returned, no event is emitted, and the export runs on a task
+nobody awaits — so reading that account would take a logging subscriber `io` does
+not have. If your collector is empty, the thing to check is the collector and the
+network between you, because this process knows no more than the address it was
+given. A section that will not open at all is a different case and does say so.
+
+Prompts, replies, tool arguments and tool output are never sent. That is
+io-harness's decision and its own documentation states it.
+
 ### Where io keeps your things
 
 **One directory: `~/.io-cli`, or `%USERPROFILE%\.io-cli` on Windows.** The

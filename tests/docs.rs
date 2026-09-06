@@ -2535,6 +2535,45 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
 /// the page that exists to talk about money from doing so.
 ///
 /// Sabotage: write "withholding a tool makes the turn cheaper" into any guide page.
+/// **N3 — no shipped page promises a span arrived (0.39.0).**
+///
+/// io-harness reports export success or loss through no public value: a batch the
+/// collector refused, or one that failed three times and was dropped, goes to a
+/// `tracing::warn` and nowhere else, and `Export::send` propagates no error
+/// because it runs on a task nobody awaits. Reading that account would take a
+/// tracing subscriber, which is a dependency in a set whose whole argument is
+/// that it is ten names.
+///
+/// So `io` says what it configured and never what arrived, and this holds the
+/// documentation to the same line. A page is where an operator forms the belief,
+/// and a guide promising confirmed delivery would outlive any comment in the
+/// crate — an operator who read one and saw an empty collector would look
+/// anywhere except at their own network.
+///
+/// Sabotage: write "io confirms the export" into the observability guide. Only
+/// this fails.
+#[test]
+fn n5_no_shipped_page_claims_a_span_was_delivered() {
+    for (path, text) in shipped_prose() {
+        let lower = text.to_lowercase();
+        for claim in [
+            "spans were exported",
+            "spans reached",
+            "confirms the export",
+            "confirms delivery",
+            "verifies the export",
+            "guarantees the export",
+        ] {
+            assert!(
+                !lower.contains(claim),
+                "{path} claims `{claim}`. io-harness accounts for a dropped export \
+                 in a log and in no value this crate can read, so no page may say \
+                 one arrived",
+            );
+        }
+    }
+}
+
 /// Every other test in the repository stays green.
 #[test]
 fn n3_no_shipped_page_claims_a_mask_reduces_what_a_turn_costs() {

@@ -633,6 +633,93 @@ pub fn hooks(
     (!hooks.is_empty()).then_some(hooks)
 }
 
+/// The OpenTelemetry exporter an `[otel]` section asks for, and the line that
+/// says what it is (0.39.0).
+///
+/// **Beside [`hooks`] because it is the same kind of thing**: configuration that
+/// becomes an observer, read once per door and attached to the fan-out every door
+/// already builds. io-harness has shipped the exporter since its 0.78.0 behind a
+/// feature flag this crate did not enable, so a capability the harness released
+/// was unreleased in practice for anyone whose only interface is `io`.
+///
+/// The section is io-harness's own — `Config::otel` deserializes it, and this
+/// crate names no key of its own for it and holds no copy of the defaults.
+///
+/// # What the second half of the answer is for, and what it may not say
+///
+/// **io-harness reports export success or loss through no public value.** An
+/// export that the collector refused, or that failed three times and was dropped,
+/// is written to a `tracing::warn` and nowhere else — no counter, no callback, no
+/// event, and `Export::send` explicitly propagates no error because it runs on a
+/// task nobody awaits. This crate cannot read that account without a tracing
+/// subscriber, and a subscriber means a dependency in a set whose whole argument
+/// is that it is ten names.
+///
+/// So the line says **what was configured**, which io-cli knows, and never that
+/// anything arrived, which it does not. An operator who reads `spans go to
+/// http://localhost:4318` and sees nothing in their collector has been told
+/// exactly as much as this process knows; a line saying "exporting" would be a
+/// claim with nothing behind it. Filed upstream, and stated in the guide.
+///
+/// What a configured exporter is announced as.
+///
+/// **Pure, and split out so the claim can be gated at all.** io-harness refuses
+/// an `[otel]` section in any file inside a workspace — a collector is a host
+/// every span of every run is posted to, and `io.toml` arrives with a `git
+/// clone` — so a `Config` carrying one cannot be built from a string, only
+/// discovered from a user-scope file. A test that had to write a file and set an
+/// environment variable to read one sentence would be a test about the
+/// filesystem; this way the argument is the answer, the way
+/// [`crate::keys::Newline::of`] is written for the same reason.
+///
+/// The vocabulary is the point. Every word this may not use is a word an
+/// operator would read as "it arrived", and none of them is something this
+/// process can know — see [`otel`].
+#[must_use]
+pub fn otel_said(endpoint: &str, service: &str) -> String {
+    format!(
+        "spans go to {endpoint} as `{service}` — io reports what it configured and cannot \
+         report what arrived, because io-harness accounts for a dropped batch in a log rather \
+         than in a value"
+    )
+}
+
+/// Both halves are `None` when no `[otel]` section asks for one, which is every
+/// configuration written before this release.
+pub fn otel(config: &Config) -> (Option<io_harness::OtelExporter>, Option<String>) {
+    let Some(settings) = config.otel() else {
+        return (None, None);
+    };
+    // The run store's own path: io-harness reads the trace back out of it to
+    // build spans, so an exporter pointed anywhere else would export nothing and
+    // say so to nobody.
+    let Some(store) = crate::settings::store_path() else {
+        return (
+            None,
+            Some(
+                "an [otel] section is configured and there is no run store to export from, \
+                 so nothing is exported"
+                    .to_string(),
+            ),
+        );
+    };
+    let endpoint = settings.traces_url();
+    let service = settings.service_name().to_string();
+    match io_harness::OtelExporter::open(settings, &store) {
+        Ok(exporter) => (Some(exporter), Some(otel_said(&endpoint, &service))),
+        // Said rather than swallowed, and the run goes on. Telemetry is a report
+        // on the work and never the work; refusing to start a session because a
+        // collector's address would not parse would be this crate deciding an
+        // operator's turn is less important than the trace of it.
+        Err(error) => (
+            None,
+            Some(format!(
+                "the [otel] section did not open, so nothing is exported: {error}"
+            )),
+        ),
+    }
+}
+
 /// The skills directory this session will really hand the agent, for the one
 /// surface that has to know it before a turn exists.
 ///

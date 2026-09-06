@@ -563,6 +563,16 @@ async fn drive(
     if let Some(notice) = settings::deprecated_max_steps(&config) {
         notices.push(notice);
     }
+    // **What the `[otel]` section configured, said once (0.39.0).** A session
+    // that quietly began exporting every run to a collector would be a session
+    // doing something on the operator's network that nothing on screen mentions;
+    // one that said it per turn would put telemetry above every answer. The
+    // exporter itself is built again where the turn's fan-out is composed — this
+    // is the sentence, not the observer, and the sentence is careful about what
+    // it may claim. See `contract::otel`.
+    if let (_, Some(notice)) = io_cli::contract::otel(&config) {
+        notices.push(notice);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -7665,9 +7675,21 @@ async fn turn<P: Provider>(
     // before either the interface or a hook is told about it, and a hook that
     // cancels the turn cannot leave a gap in the sequence a reader is following.
     let hooks = io_cli::contract::hooks(config, plugins, &root);
+    // **And the exporter, if one is configured (0.39.0).** One more observer on
+    // the fan-out this door already builds — which is the whole of what enabling
+    // io-harness's `otel` feature costs, because `OtelExporter` is an ordinary
+    // `Observer` and `src/fanout.rs` has been able to hold several since 0.19.0.
+    //
+    // The sentence it comes with is dropped here rather than drawn: the session
+    // says it once at startup, where its siblings are said, and repeating it per
+    // turn would put a line about telemetry above every answer.
+    let (otel, _) = io_cli::contract::otel(config);
     let mut observers: Vec<&dyn io_harness::Observer> = vec![&observer];
     if let Some(hooks) = &hooks {
         observers.push(hooks);
+    }
+    if let Some(otel) = &otel {
+        observers.push(otel);
     }
     let fanout = io_cli::fanout::Fanout::new(observers);
     // A second connection to the same file, which is what io-harness's own
