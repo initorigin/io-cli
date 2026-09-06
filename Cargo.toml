@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.38.2"
+version = "0.39.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
@@ -63,7 +63,24 @@ path = "src/lib.rs"
 # still correct about what this *renderer* can be handed; it is simply no longer
 # load-bearing on the build. Turning `barcode` back off is what would restore
 # it, and `documents` would then have to be spelled out as its other four.
-io-harness = { version = "0.81", features = ["media", "browser", "documents"] }
+# **`otel`, `mcp-server` and `codeact` are on from 0.39.0, and every one of them
+# is claimed by io-harness to add no crate.** `otel = []` writes OTLP over the
+# `reqwest` and `serde_json` already in the default build; `mcp-server =
+# ["tokio/io-std"]` is two more types inside a name already here, the JSON-RPC
+# framing hand-written precisely to avoid the nine packages `rmcp`'s server half
+# pulls in; and `codeact = []` turns nothing on at all, because its interpreter
+# is a host binary discovered the way a browser is and never downloaded. The
+# claim is verified against `cargo tree --depth 1` with all six features on
+# rather than believed from the harness's manifest — see `tests/dependencies.rs`,
+# which asserts the ten names in both directions.
+io-harness = { version = "0.82", features = [
+    "media",
+    "browser",
+    "documents",
+    "otel",
+    "mcp-server",
+    "codeact",
+] }
 # **`tui-textarea` is gone as of 0.18.0, and it is why this pair was frozen.**
 # The comment that stood here said ratatui stayed at 0.29 and crossterm at 0.28
 # because the composer was built out of that widget and the 0.30 line carried
@@ -186,3 +203,24 @@ image = { version = "0.25", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = "3"
+# **The second dev-dependency this crate has ever had, and it exists so that four
+# keystroke contracts have an instrument at all.** The three ways 0.38.2 could
+# lose an operator's work by a keystroke were all found at a real terminal and
+# none of them was visible to the 2,000-odd offline tests: `src/main.rs` is what
+# decides them and nothing under `tests/` links it, and the recorder backend
+# every other test uses is not a tty. `openpty` is thirty lines over a name that
+# is already in the transitive tree; `portable-pty` was the alternative and it
+# brings a dozen packages on Windows into a repository whose dependency argument
+# is that the set is small and enumerated. Unix only — the pty arms are compiled
+# out on Windows and `tests/pty.rs` says so out loud rather than reporting a skip
+# that reads like a pass.
+#
+# **It is declared here and not under `[target.'cfg(unix)'.dev-dependencies]`,
+# deliberately.** That is where it belongs by platform and it is exactly where
+# `tests/dependencies.rs` refuses to let it go: a target-gated dev-dependency is
+# a test-only crate arriving where N1's count cannot see it, and the gate has
+# said so since before this crate had a second one. The cost of declaring it
+# unconditionally is that Windows compiles a crate it never links; the benefit is
+# that `cargo tree --depth 1` prints the honest set. The platform gate lives on
+# the code instead, as `#[cfg(unix)]` in `tests/pty.rs`.
+libc = "0.2"

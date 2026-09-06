@@ -145,15 +145,24 @@ fn direct_dependencies() -> BTreeSet<String> {
 /// directory that cleans itself up, and the next name needs an argument of its
 /// own. Pinning the set costs the same red check as `ALLOWED` does and keeps the
 /// two meanings apart.
+///
+/// **0.39.0 added the second name, and it is the first one this function has ever
+/// had to admit.** `libc` is here for `tests/pty.rs`, which drives the built
+/// binary at a real terminal over `openpty` — the instrument four keystroke
+/// contracts have no gate without, because they are decided in `src/main.rs`,
+/// which nothing under `tests/` links, and because the recorder backend every
+/// other test uses is not a tty. `portable-pty` was the alternative and it brings
+/// a dozen packages on Windows. The argument is in the 0.39.0 release record, as
+/// this function's own doc comment requires of any name after the first.
 #[test]
-fn n1_the_only_test_only_crate_is_the_one_that_makes_a_temporary_directory() {
+fn n1_the_only_test_only_crates_are_the_temporary_directory_and_the_terminal() {
     let manifest = manifest();
     let dev: Vec<String> = names_in(manifest.get("dev-dependencies"))
         .into_iter()
         .collect();
     assert_eq!(
         dev,
-        vec!["tempfile".to_string()],
+        vec!["libc".to_string(), "tempfile".to_string()],
         "the dev-dependency set changed. `cargo tree --depth 1` prints these too, \
          so a name added here grows the crate by N1's own measure and is argued in \
          the release record like any other.",
