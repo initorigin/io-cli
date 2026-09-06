@@ -108,16 +108,21 @@ pub enum Command {
     /// stream this interface is drawing, so it would be a second copy of what is
     /// already on screen.
     Attach(i64),
-    /// The first `Esc` at an empty prompt: say what undoing the last turn would
-    /// undo, and wait for the second.
+    /// `Esc` at an empty prompt: ask whether to undo the last turn — its files,
+    /// its memory and the conversation head.
     ///
-    /// Armed rather than fired, because this is the only key in the product that
-    /// changes the operator's files on io-cli's own initiative rather than the
-    /// agent's. Every write before it arrived through a tool call and passed a
-    /// policy layer; this one does not, so it asks.
-    ArmRewind,
-    /// The second `Esc`: undo the last turn — its files, its memory and the
-    /// conversation head.
+    /// **It asks; it does not act, and it no longer arms.** This is the only key
+    /// in the product that changes the operator's files on io-cli's own
+    /// initiative rather than the agent's — every write before it arrived through
+    /// a tool call and passed a policy layer, and this one does not.
+    ///
+    /// Through 0.38.2 the first press armed and wrote what it would undo into the
+    /// scrollback, and the second press acted. That is a warning only for an
+    /// operator who pressed the key meaning to undo something; the 2026-09-05
+    /// field test pressed it to dismiss a picker, never read the footer as a
+    /// question, and lost two files to the next press. The driver now raises
+    /// `/undo`'s own confirmation from `undo::confirm_turn`, so the word and the
+    /// chord cannot come to mean different things.
     Rewind,
     /// A question opened from the store has been answered, and nobody took the
     /// answer.
@@ -2122,11 +2127,26 @@ impl App {
                     // it does the thing the operator pressed it for.
                     return self.interrupt_or_quit();
                 }
+                // **One press, and it asks.** Through 0.38.2 the first press
+                // armed and said what it would undo in a footer line, and the
+                // second acted. The 2026-09-05 field test walked into the case
+                // that reasoning does not cover: the first `Esc` was the operator
+                // dismissing a picker, so the footer was never read as a warning,
+                // and the second press put two files back. A line in the
+                // scrollback is not a question, and this is the one key in the
+                // product that changes an operator's files on io-cli's own
+                // initiative rather than the agent's.
+                //
+                // The arming machinery is untouched and still means what it
+                // means: `Hit::Arm` is a binding whose *second chord* has not
+                // arrived. The default rewind binding is one chord as of 0.39.0,
+                // so it fires here; an operator who binds two chords still
+                // presses both, and the question is raised by the second.
                 match hit {
                     Hit::Fire(_) => Command::Rewind,
                     Hit::Arm(action) => {
                         self.armed = Some(action);
-                        Command::ArmRewind
+                        Command::None
                     }
                 }
             }

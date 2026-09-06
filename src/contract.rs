@@ -432,6 +432,33 @@ pub fn configured(
         Some(routing) => contract.with_routing(routing),
         None => contract,
     };
+    // **CodeAct, where an `[codeact]` section asks for it (0.39.0).**
+    //
+    // Here rather than in [`session`], and that placement is the whole of it: a
+    // turn that could write one contained program in the terminal and not in CI
+    // would be the 0.14.0 asymmetry rebuilt, on the door where an unattended run
+    // has the most to gain from doing in one step what it otherwise does in
+    // twelve.
+    //
+    // **Conditional, and a genuine no-op when nothing asked.** `contract::session`
+    // must reproduce io-harness's `default_contract` field for field with nothing
+    // configured, which `tests/contract.rs` asserts by Debug equality — so an
+    // unconditional `with_codeact(CodeActConfig::default())` is not a harmless
+    // default, it is a failing gate and a behaviour change for every operator who
+    // never asked. The `match` is [`masking`]'s shape for [`masking`]'s reason:
+    // byte-identity becomes a property of this function rather than a coincidence
+    // of what the harness happens to default to.
+    //
+    // **Enabling the feature hands the agent nothing on its own.** io-harness
+    // advertises `run_program` only where a contract carries this configuration —
+    // `codeact_ready` opens with `contract.codeact.clone()?` — so with the section
+    // absent the tool catalogue is byte for byte what 0.38.2 sent. That is worth
+    // saying because `media` behaved differently in 0.9.0 and gave every run a
+    // tool as a consequence of a feature flag.
+    let contract = match config.codeact() {
+        Some(codeact) => contract.with_codeact(codeact),
+        None => contract,
+    };
     // `[run] skills` has had its say, and `io exec` reads no other key that can
     // name one — so for the headless arm this is already the point after every
     // key. [`session`] calls this again once `[app.io-cli]` has had its own.
@@ -500,7 +527,7 @@ pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> Tas
 /// sits ahead of a cache breakpoint and removing a definition would save its
 /// tokens once and pay a cache *write* on every later turn (`src/tools/mod.rs:40`).
 /// A mask in fact **adds** a sentence to the user prompt naming the withheld tools
-/// (`io-harness-0.81.0/src/run/prompts.rs:1381`, `withheld_sentence`), placed after the observations
+/// (`io-harness-0.82.0/src/run/prompts.rs:1381`, `withheld_sentence`), placed after the observations
 /// precisely so it costs no cache entry. A turn that withholds three tools is
 /// marginally more expensive than the same turn without the mask, not less.
 #[must_use]
@@ -633,6 +660,101 @@ pub fn hooks(
     (!hooks.is_empty()).then_some(hooks)
 }
 
+/// What a configured exporter is announced as.
+///
+/// **Pure, and split out so the claim can be gated at all.** io-harness refuses
+/// an `[otel]` section in any file inside a workspace — a collector is a host
+/// every span of every run is posted to, and `io.toml` arrives with a `git
+/// clone` — so a `Config` carrying one cannot be built from a string, only
+/// discovered from a user-scope file. A test that had to write a file and set an
+/// environment variable to read one sentence would be a test about the
+/// filesystem; this way the argument is the answer, the way
+/// [`crate::keys::Newline::of`] is written for the same reason.
+///
+/// The vocabulary is the point. Every word this may not use is a word an
+/// operator would read as "it arrived", and none of them is something this
+/// process can know — see [`otel`].
+#[must_use]
+pub fn otel_said(endpoint: &str, service: &str) -> String {
+    format!(
+        "spans go to {endpoint} as `{service}` — io reports what it configured and cannot \
+         report what arrived, because io-harness accounts for a dropped batch in a log rather \
+         than in a value"
+    )
+}
+
+/// The OpenTelemetry exporter an `[otel]` section asks for, and the line that
+/// says what it is (0.39.0).
+///
+/// **Beside [`hooks`] because it is the same kind of thing**: configuration that
+/// becomes an observer, read once per door and attached to the fan-out that door
+/// builds. io-harness has shipped the exporter since its 0.78.0 behind a feature
+/// flag this crate did not enable, so a capability the harness released was
+/// unreleased in practice for anyone whose only interface is `io`.
+///
+/// **Three doors of four, and the fourth is `io acp`.** The session, `io exec`
+/// and `io resume` each compose a [`crate::fanout::Fanout`] and the exporter
+/// joins it there. The editor door composes nothing — it has never had a
+/// `[[hook]]` or a `Broadcast` either, which predates this release — so an
+/// operator with `[otel]` configured gets spans from the terminal and from CI and
+/// none from their editor. Said here and at that call site rather than left to be
+/// discovered from an empty collector.
+///
+/// The section is io-harness's own — `Config::otel` deserializes it, and this
+/// crate names no key of its own for it and holds no copy of the defaults.
+///
+/// # What the second half of the answer is for, and what it may not say
+///
+/// **io-harness reports export success or loss through no public value.** An
+/// export that the collector refused, or that failed three times and was dropped,
+/// is written to a `tracing::warn` and nowhere else — no counter, no callback, no
+/// event, and `Export::send` explicitly propagates no error because it runs on a
+/// task nobody awaits. This crate cannot read that account without a tracing
+/// subscriber, and a subscriber means a dependency in a set whose whole argument
+/// is that it is ten names.
+///
+/// So the line says **what was configured**, which io-cli knows, and never that
+/// anything arrived, which it does not. An operator who reads `spans go to
+/// http://localhost:4318` and sees nothing in their collector has been told
+/// exactly as much as this process knows; a line saying "exporting" would be a
+/// claim with nothing behind it. Filed upstream, and stated in the guide.
+///
+/// Both halves are `None` when no `[otel]` section asks for one, which is every
+/// configuration written before this release.
+pub fn otel(config: &Config) -> (Option<io_harness::OtelExporter>, Option<String>) {
+    let Some(settings) = config.otel() else {
+        return (None, None);
+    };
+    // The run store's own path: io-harness reads the trace back out of it to
+    // build spans, so an exporter pointed anywhere else would export nothing and
+    // say so to nobody.
+    let Some(store) = crate::settings::store_path() else {
+        return (
+            None,
+            Some(
+                "an [otel] section is configured and there is no run store to export from, \
+                 so nothing is exported"
+                    .to_string(),
+            ),
+        );
+    };
+    let endpoint = settings.traces_url();
+    let service = settings.service_name().to_string();
+    match io_harness::OtelExporter::open(settings, &store) {
+        Ok(exporter) => (Some(exporter), Some(otel_said(&endpoint, &service))),
+        // Said rather than swallowed, and the run goes on. Telemetry is a report
+        // on the work and never the work; refusing to start a session because a
+        // collector's address would not parse would be this crate deciding an
+        // operator's turn is less important than the trace of it.
+        Err(error) => (
+            None,
+            Some(format!(
+                "the [otel] section did not open, so nothing is exported: {error}"
+            )),
+        ),
+    }
+}
+
 /// The skills directory this session will really hand the agent, for the one
 /// surface that has to know it before a turn exists.
 ///
@@ -657,7 +779,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
 /// is not there — it returns `Error::Config("skills directory … does not exist")`
-/// (`io-harness-0.81.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// (`io-harness-0.82.0/src/skills.rs`), and `TaskContract::discover_skills`
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
@@ -682,7 +804,7 @@ fn default_skills() -> Option<PathBuf> {
 ///
 /// **One expansion for two keys, applied after both have had their say.**
 /// io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}` and nothing else
-/// (`substitute`, `io-harness-0.81.0/src/config.rs:3159` — there is no tilde
+/// (`substitute`, `io-harness-0.82.0/src/config.rs:3159` — there is no tilde
 /// branch anywhere in it, and 0.71.0 narrowed the forms rather than widening
 /// them: a plugin manifest now refuses all three), so a `~` an operator wrote in
 /// `[run] skills` or `[app.io-cli] skills`

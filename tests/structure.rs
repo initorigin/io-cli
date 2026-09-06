@@ -279,16 +279,24 @@ fn f6_what_nobody_said_is_delivered_on_every_arm_and_not_only_the_failing_one() 
 /// number is the assertion, and a release adding a write has to come here and say
 /// which door it belongs to.
 ///
-/// **Where the nineteen are, so the number is a claim and not a constant.** One in
-/// `import_written`, the offer's own confirmation. Sixteen in `loop_over`: twelve
-/// under the picker's single `Outcome::Chosen` arm — Enter on a row, which is what
-/// a confirmation *is* in this product — and four under an `Action::` arm of a
-/// typed command (`Action::Manage`, two `Action::Profile` verbs and
-/// `Action::Config` with a value), where the Enter that submitted the line is the
-/// consent. One in `refresh_prices`, the act `prices.as_of`'s descent offers, one
-/// keystroke below the row it writes. One in `manage_main`, the headless
-/// `io config|mcp|plugin` door, which has no keyboard at all. Nineteen sites, no
-/// tenth surface, and none of them on a bare arrow.
+/// **Where the twenty are, so the number is a claim and not a constant.** One in
+/// `import_written`, the offer's own confirmation. Seventeen in `loop_over`:
+/// thirteen under the picker's single `Outcome::Chosen` arm — Enter on a row,
+/// which is what a confirmation *is* in this product — and four under an
+/// `Action::` arm of a typed command (`Action::Manage`, two `Action::Profile`
+/// verbs and `Action::Config` with a value), where the Enter that submitted the
+/// line is the consent. One in `refresh_prices`, the act `prices.as_of`'s descent
+/// offers, one keystroke below the row it writes. One in `manage_main`, the
+/// headless `io config|mcp|plugin` door, which has no keyboard at all. Twenty
+/// sites, no tenth surface, and none of them on a bare arrow.
+///
+/// **The twentieth is 0.39.0's `Pick::ContainDefault`**, and it is a thirteenth
+/// under `Outcome::Chosen` rather than a new shape: `/contain on` with no
+/// `[app.io-cli.containment]` raises a confirmation that shows every number it
+/// would write, and `store::acts(index)` gates the write exactly as the twelve
+/// beside it do. It is worth naming here because it is the first write this
+/// product makes in answer to a command whose other two spellings — `/contain
+/// off` and bare `/contain` — write nothing at all.
 ///
 /// **The arrow arm is read as a region, not searched for as a word**, because a
 /// count alone cannot see a write moved *into* the arm from somewhere else. The
@@ -351,7 +359,7 @@ fn f14_no_arrow_key_writes_a_configuration_file() {
 
     assert_eq!(
         text.matches("io_cli::configure::write(").count(),
-        19,
+        20,
         "the driver's configuration writes moved. Each one is a confirmed door — see \
          this test's own documentation for the nineteen and what confirms them — so a \
          new one is either a door that needs naming there or a write on a keystroke",

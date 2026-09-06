@@ -239,6 +239,95 @@ fn f7_the_interrupt_says_where_the_turn_will_stop() {
     );
 }
 
+/// **F10 — `/contain on` with nothing configured offers a fan-out rather than
+/// four key names.**
+///
+/// The arm used to name `max_total_agents`, `max_concurrent_agents`, `max_depth`
+/// and `max_total_tokens` and stop. That is technically correct and it asks an
+/// operator to choose a token ceiling for a mode they have not tried, out of a
+/// documentation page they are not reading.
+///
+/// **Every number is on the row that acts**, spelled out rather than summarised.
+/// This writes to their configuration file and turns on a mode that spends tokens
+/// across a tree of agents; a row reading "write a default" would be asking them
+/// to agree to figures they were never shown.
+#[test]
+fn f10_the_offer_shows_every_number_it_would_write() {
+    let caps = io_cli::settings::offered_containment();
+    let (title, rows) = io_cli::settings::containment_offer(&caps);
+
+    assert!(
+        title.contains("fan-out"),
+        "the question has to name what is being turned on: {title}",
+    );
+    assert_eq!(
+        rows[0].label,
+        io_cli::store::LEAVE_IT,
+        "every confirmation in this product declines at row 0",
+    );
+    assert!(!io_cli::store::acts(0));
+    assert!(io_cli::store::acts(1));
+
+    let acting = &rows[1].label;
+    for number in [
+        caps.max_total_agents.to_string(),
+        caps.max_concurrent_agents.to_string(),
+        caps.max_depth.to_string(),
+        caps.max_total_tokens.to_string(),
+    ] {
+        assert!(
+            acting.contains(&number),
+            "the row that writes the section does not show `{number}`, so the \
+             operator is agreeing to a figure they were never shown: {acting}",
+        );
+    }
+}
+
+/// **F10 — the offered caps are small, and the one that must exist does.**
+///
+/// A fan-out with no aggregate token ceiling is the one shape of this feature
+/// that can spend without a bound anybody chose, so an offer without one would be
+/// worse than no offer. The rest are small on purpose: enough for a fan-out to be
+/// worth having, small enough that a mistake is legible.
+///
+/// The two io-harness leaves optional stay unset, and for different reasons — a
+/// cost ceiling is documented as reserved and not enforced, so offering a number
+/// that does nothing is worse than offering none; a duration is a real ceiling and
+/// is a property of the work rather than something `io` can guess.
+#[test]
+fn f10_the_offered_caps_bound_the_spend_and_nothing_it_cannot_know() {
+    let caps = io_cli::settings::offered_containment();
+
+    assert!(
+        caps.max_total_tokens > 0,
+        "a fan-out with no aggregate token ceiling can spend without a bound \
+         anybody chose, and this is the offer that would have set it",
+    );
+    assert!(caps.max_concurrent_agents >= 2, "or it is not a fan-out");
+    assert!(
+        caps.max_concurrent_agents <= caps.max_total_agents,
+        "more at once than may exist at all is not a configuration, it is a typo",
+    );
+    assert!(
+        caps.max_depth >= 1,
+        "children are the whole point; zero depth is the mode switched off",
+    );
+    assert!(
+        caps.max_depth <= 2,
+        "depth is where a tree stops being something an operator can hold in \
+         their head, and every tier multiplies how many may be working at once",
+    );
+    assert!(
+        caps.max_total_cost.is_none(),
+        "io-harness documents the cost ceiling as reserved and not enforced, so \
+         a number here would be one that does nothing",
+    );
+    assert!(
+        caps.max_total_duration.is_none(),
+        "how long a fan-out may take is a property of the work",
+    );
+}
+
 /// F2 — the mode is a fact about the turn, and it does not outlive it.
 #[test]
 fn f2_the_contained_flag_is_cleared_with_the_turn() {

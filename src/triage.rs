@@ -291,35 +291,34 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
          the first step",
     ),
     ("contained", Disposition::Status, "the containment field"),
-    // **0.79.0 — a kind this crate cannot receive, dispositioned anyway.**
-    // Placed between `contained` and `dialed` because that is where
-    // `EventKind` declares it, and this table's whole ordering rule is that it
-    // can be read down the side of `observe.rs` when the pin moves.
+    // **0.79.0 declared it, 0.39.0 turned it on.** The note here said "revisit
+    // when this crate enables `codeact`", and this is that revisit. Placed
+    // between `contained` and `dialed` because that is where `EventKind` declares
+    // it, and this table's whole ordering rule is that it can be read down the
+    // side of `observe.rs` when the pin moves.
     //
-    // `EventKind::Program` is declared unconditionally in `observe.rs`, but
-    // every site that emits it is behind io-harness's `codeact` feature, which
-    // this crate does not enable. So the row exists because the table is total
-    // over what the harness *declares*, and the disposition is the one a run
-    // would get if the feature were ever turned on.
+    // **A line, and the old note's objection is answered rather than overruled.**
+    // It refused one because "a line here would announce that a program ran and
+    // then say nothing about what it did", which is true of the event and false
+    // of the transcript: every act the program took re-enters dispatch and
+    // arrives as its own `tool_call`, so the rows underneath this one are exactly
+    // what it did. What was missing was the row that says they belong to a
+    // program rather than to the model calling tools one at a time — which is a
+    // materially different thing for a reader to know, because a program's acts
+    // are not separately approved.
     //
-    // Silent rather than a line, and the discovery half is why: the event is
-    // emitted once before the first step saying `available` or `withheld`, and
-    // once per program afterwards. A capability's availability is a fact about
-    // the run's configuration rather than about the conversation, and the acts a
-    // program takes are not on this event at all — each one re-enters dispatch
-    // and arrives as its own `tool_call`, which the transcript already draws. A
-    // line here would announce that a program ran and then say nothing about
-    // what it did.
-    //
-    // **Revisit when this crate enables `codeact`.** A program a turn wrote is
-    // the largest thing a model can do in one step, and the roadmap says it
-    // belongs in the transcript as source. That is a release, not a row.
+    // The availability half is drawn too, and only when a capability was
+    // **withheld**. That is a fact about the run's configuration rather than
+    // about the conversation, and would be furniture on every contained turn —
+    // but an operator who configured `[codeact]` and is watching the agent make
+    // twelve round trips instead of writing one program needs to know the host
+    // had no interpreter.
     (
         "program",
-        Disposition::Silent,
-        "`io exec --json`, which forwards it verbatim, and the durable trace; no run this crate \
-         drives emits it, because every emitting site is behind io-harness's `codeact` feature and \
-         this crate does not enable it",
+        Disposition::Line,
+        "a row naming the interpreter, how many calls the program made and how it ended, with the \
+         acts it took drawn beneath it as their own tool cells; a withheld capability says so \
+         once, and `io exec --json` forwards the event verbatim",
     ),
     (
         "dialed",
@@ -349,34 +348,45 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         "the `ctx` field's denominator, and the `/context` page's total, which are one expression \
          so that they cannot disagree",
     ),
-    // **`step_usage` is silent for exactly `step_attributed`'s reason**, and it is
-    // the same shape of fact: a breakdown emitted beside every committed step,
-    // whose numbers no surface in this release renders. The cached-versus-fresh
-    // split it carries is the answer to a real complaint — the running `tok`
-    // figure reads as though every re-sent catalogue were paid in full — and
-    // answering it is a footer this release does not build. Recorded as a close
-    // call, like its sibling, rather than as an obvious silence.
+    // **`step_usage` was the close call 0.38.2 recorded, and 0.39.0 is the release
+    // it said would answer it.** The note here read "the fresh-versus-cached split
+    // it carries is what the footer's `tok` figure does not yet separate, and
+    // separating it is a release rather than a row". This is that release: the
+    // cache read accumulates onto `Status::cached` and the footer draws
+    // `52k tok · 44k cached`.
+    //
+    // A field and not a line, because it arrives beside **every** committed step —
+    // a row per step would be a breakdown nobody asked for scrolling past the work
+    // it describes. The other three numbers it carries stay unrendered and stay
+    // available on `io exec --json`.
     (
         "step_usage",
-        Disposition::Silent,
-        "`io exec --json`, which forwards it verbatim, and the durable trace; the fresh-versus-\
-         cached split it carries is what the footer's `tok` figure does not yet separate, and \
-         separating it is a release rather than a row",
+        Disposition::Status,
+        "the footer's `tok` field, which draws how much of the running total the provider read \
+         from its cache; `io exec --json` forwards all four numbers verbatim, and the durable \
+         trace keeps them",
     ),
-    // **`image_attached` is silent because the picture it announces is one this
-    // crate did not hand over.** `src/picture.rs` already draws every image the
-    // operator attached, at the moment they attach it; this event fires for one
-    // that reached the run through an MCP reply, a browser screenshot or
-    // `view_image`, which is plumbing inside io-harness that emitted nothing at
-    // all before 0.81.0. Drawing it is a renderer, and a renderer is the roadmap's
-    // work rather than a patch's. A line naming a picture without showing it would
-    // be the class of sentence this release exists to delete.
+    // **`image_attached` is a line as of 0.39.0, and the objection the old note
+    // raised is answered rather than overruled.** That note said "a line naming a
+    // picture without showing it would be the class of sentence this release
+    // exists to delete", and it was right about the sentence it was refusing. What
+    // it did not weigh is that the alternative was **silence about a thing that
+    // entered the model's context** — an operator whose window filled up with a
+    // browser screenshot they never asked for could read `/context`, see the
+    // conversation swollen, and find nothing anywhere saying a picture had
+    // arrived.
+    //
+    // So the row names where it came from, what it is and how big — `mcp`,
+    // `browser`, `view_image` or `caller`, from io-harness's own `source` field —
+    // and does not pretend to show it. The picture itself is still only drawn for
+    // an image the operator handed over, through `src/picture.rs`, on a terminal
+    // that can draw one.
     (
         "image_attached",
-        Disposition::Silent,
-        "`io exec --json`, which forwards it verbatim, and the durable trace; the image reached \
-         the run inside io-harness rather than through the operator's own attachment command, \
-         and no surface in this release draws one this crate did not hand over",
+        Disposition::Line,
+        "a row naming where the picture came from, its media type and its size; the image itself \
+         is drawn only for one the operator attached, and `io exec --json` forwards the event \
+         verbatim either way",
     ),
     (
         "finished",

@@ -138,6 +138,75 @@ act on.
 [What this release is not](limits.md) — the catalogue sent is the same either way,
 by design. The lever these numbers inform is turning a bundle or a server off.
 
+### What fills the window
+
+Every figure above is measured against a **ceiling** — the number of tokens the
+run assembles inside. Until 0.39.0 that number was 24,000 on every provider `io`
+could build, whatever model you had configured, because nothing told the harness
+how large the real window was. `ctx 12%` was a percentage of an assumption.
+
+It is now read. `/context` says which of three rungs decided it, under the total:
+
+- **sized by `[run.context]`** — you said so yourself, and that wins over
+  everything the provider knows.
+- **sized from the model's own context window** — read from a model catalogue.
+  This is the one you want, and it is what a 200,000-token model finally reports.
+- **an assumption** — nothing sized this provider, so io-harness used a default
+  for its kind.
+
+The last one is worth reading carefully, because a **local endpoint assumes far
+less than a hosted one**. Pointing `io` at Ollama or llama.cpp and seeing a much
+smaller ceiling than you had on a hosted model is the harness being careful about
+a runtime that publishes nothing, not `io` getting smaller.
+
+**Reading the real window means contacting a catalogue, and `io` does that by
+default.** For OpenRouter the catalogue is the provider's own endpoint, so nothing
+changes. For Anthropic and OpenAI it is one extra host, contacted once per
+process, before the first step — and because io-harness authorises every endpoint
+a provider declares, **an egress policy that denies that host refuses the run**
+rather than quietly skipping the lookup. If that happens, the refusal names the
+key. Turn it off with:
+
+```toml
+[app.io-cli]
+reference_catalogue = false
+```
+
+Which catalogue is a different question, and `[app.io-cli.prices] source_url`
+already answers it — set that to a mirror and both prices and windows come from
+your copy.
+
+**What this costs you is real and is not a rounding error.** A run that used to
+throw its history away at 24,000 tokens now sends what the model can hold. That
+buys back the conversation, and you pay per step for it. `[run.context]
+max_tokens` is still there if you want the old ceiling back deliberately rather
+than by accident.
+
+### Shortening what will not fit, instead of dropping it
+
+`[run] collapse` is the other lever on what a turn carries, and it is the one that
+actually saves something:
+
+```toml
+[run]
+collapse = { keep_chars = 4000 }
+```
+
+With it set, an observation too large to include whole contributes its first few
+thousand characters instead of being left out — the same truncation marker a
+single oversized observation already gets, so you learn one convention rather than
+two. A file read is never collapsed; that is io-harness's rule, not `io`'s.
+
+`/context` says so when it is on, and says how much survives. **Read that row
+against the one above it**, which is the tool mask: they sit next to each other
+and mean opposite things. Collapsing genuinely shortens what is sent. Withholding
+a tool does not — the catalogue goes out identical either way and gains a sentence
+naming what you withheld, which is why the mask is a scoping lever and not a
+budget one.
+
+It has been reachable since io-harness 0.81.0 and `io` has applied it on both
+doors since 0.38.2. Until 0.39.0 nothing showed you it was on.
+
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)

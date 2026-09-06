@@ -278,7 +278,7 @@ path does not: that directory is one you already have.
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.
 
-Nine keys live there, and eight tables:
+Ten keys live there, and eight tables:
 
 | Key | Is |
 | --- | --- |
@@ -299,6 +299,7 @@ Nine keys live there, and eight tables:
 | `[app.io-cli.gates]` | what "done" means for this repository: one of `command` (with `expect_exit`), `file` (with `contains`), or `rubric` (with `reviewer`, and `allow_self_review` if the judge may be the model that did the work), plus `retries`, which defaults to 1 and is report-only at 0. Naming none of the three, or more than one, is refused rather than resolved by precedence. See [Verification gates](verification.md#verification-gates). |
 | `[app.io-cli.routing]` | when a run should change models, and to which: `escalate_after` with `failures` and `model`, `downshift_under` with `bytes` and `model`, each a sub-table and both optional. Absent, a run asks one model from the first token to the last. **The rules do not fire under `[app.io-cli.containment]`**, which the session says at start, on `/config`, and when `/contain on` is typed. A rule that cannot be obeyed — half a rule, a threshold of zero, or an empty model — is refused by name and leaves the run unrouted. See [Which model a run asks](providers.md#which-model-a-run-asks). |
 | `[app.io-cli.prices]` | where the rates in `[prices]` came from: `source_url` names a catalogue to read instead of io-harness's default, and `source` and `models` record what the last read was and how many models it priced. The last two are written by a fetch rather than by hand. See [Where a price comes from](accounting.md#where-a-price-comes-from). |
+| `reference_catalogue` | whether `io` may read a model catalogue before the first step, so the context ceiling is the model's real window rather than an assumption. **Absent means yes**, which is a decision this release takes on your behalf: it contacts one more host per process, and an egress policy that denies that host refuses the run rather than skipping the lookup — the refusal names this key. `false` leaves the Anthropic and OpenAI providers assuming, which is what every release before 0.39.0 did. Which catalogue is `[app.io-cli.prices] source_url`'s question, not this one. See [What fills the window](accounting.md#what-fills-the-window). |
 
 Because the section is unvalidated by design, an unrecognised *value* reads as the
 default rather than stopping a session from starting. A section io-harness cannot
@@ -306,6 +307,88 @@ parse **at all** is a different case and is no longer silent: through 0.5.0 that
 reverted the theme, the diff style and everything else in the section at once with
 nothing said about it, and the session now starts on the defaults carrying
 io-harness's own message — which names the key that broke — in its scrollback.
+
+### Letting a turn write a program
+
+Since 0.39.0 a turn can write one contained program instead of a chain of tool
+calls. It is io-harness's CodeAct, reached through io-harness's own `[codeact]`
+section:
+
+```toml
+[codeact]
+interpreter = "python3"
+max_callbacks = 64
+timeout_secs = 120
+```
+
+**Absent, nothing changes.** The tool catalogue a turn is sent is byte for byte
+what it was before this release: io-harness offers `run_program` only where a
+contract carries this section, so enabling the feature grants the agent nothing on
+its own. That is worth saying plainly, because turning on `media` in 0.9.0 did
+give every run a new tool as a side effect of a flag.
+
+Like `[otel]`, this belongs in your user-scope file — a repository may not decide
+that whoever clones it runs programs.
+
+**A host with no interpreter is a supported host.** io-harness looks for `python3`
+then `python`, needs 3.8 or newer, and where it finds neither the turn composes,
+sends and steps exactly as it would with the section absent. `io` says so once,
+in io-harness's own words naming what it tried, rather than leaving you watching
+twelve round trips where you expected one program.
+
+A program that ran draws one row — the interpreter, how many calls it made, and
+how it ended — and **the tool cells underneath it are what it did**. Each callback
+re-enters the same dispatch every other tool call goes through, so the same policy
+gate sees it and the same transcript draws it. What the row adds is that those
+acts belong to one program rather than to the model calling tools one at a time,
+which is worth knowing because they are not separately approved.
+
+The program's own source is not in the transcript. io-harness's event carries the
+interpreter, a callback count and an outcome, and no program text; the durable
+trace is where the detail lives.
+
+### Sending a run to a collector
+
+Since 0.39.0 `io` can export every run as OpenTelemetry spans. It is io-harness's
+exporter, reached through io-harness's own `[otel]` section, and `io` adds no key
+of its own:
+
+```toml
+[otel]
+endpoint = "http://localhost:4318"
+service_name = "io"
+timeout_secs = 10
+max_queue = 512
+```
+
+**It has to go in your user-scope file**, not in a repository's `io.toml`.
+io-harness refuses a collector declared inside a workspace for the reason it
+refuses a provider there: the collector is a host every span of every run is
+posted to, reached with whatever credential the same table names, and an
+`io.toml` arrives with a `git clone`. Without that rule a repository could
+quietly forward every run of everyone who cloned it.
+
+The session says what it configured at startup, and `io exec` prints the same line
+on stderr. Read it literally:
+
+> spans go to http://localhost:4318/v1/traces as `io` — io reports what it
+> configured and cannot report what arrived
+
+**`io` cannot tell you a span was delivered, and will never say it was.**
+io-harness accounts for a refused or dropped batch in a log rather than in a
+value — nothing is returned, no event is emitted, and the export runs on a task
+nobody awaits — so reading that account would take a logging subscriber `io` does
+not have. If your collector is empty, the thing to check is the collector and the
+network between you, because this process knows no more than the address it was
+given. A section that will not open at all is a different case and does say so.
+
+Prompts, replies, tool arguments and tool output are never sent. That is
+io-harness's decision and its own documentation states it.
+
+**`io acp` does not export.** The session, `io exec` and `io resume` do; the editor
+door has never composed observers at all — it takes no `[[hook]]` either — so a
+run driven from Zed or a JetBrains IDE produces no spans. If your collector has
+traces from the terminal and none from your editor, that is why.
 
 ### Where io keeps your things
 

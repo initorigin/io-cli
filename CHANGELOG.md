@@ -6,6 +6,166 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-06
+
+No keystroke loses your work, a running turn shows more of what it is doing, and
+everything io-harness has shipped is reachable from the interface it has.
+
+### Fixed
+
+Three ways a session could lose what you had done, all found in one field test on
+2026-09-05. These are behaviour changes rather than corrections, which is why this
+is a minor release.
+
+- **An approval is a modal, and it says so.** Every key that was not `y`, `a`, `n`,
+  an arrow or `Enter` was ignored in silence — so an operator who began typing a
+  sentence saw their words go nowhere with nothing on screen saying the interface
+  was waiting for one of three keys. The answers row now leads with `press y, a or
+  n` when the last keystroke was refused, in a word rather than a colour, and
+  clears on the next key it does take.
+
+- **You can read the whole change before approving it.** The diff was cut at
+  whatever the viewport had, with `⋯ N more lines` on the last row: approving a
+  write whose end you cannot see is approving the elision. `Up`, `Down`, `PageUp`,
+  `PageDown` and `Home` move it under a header that stays put, and none of them
+  can answer anything.
+
+- **The `+`/`-` header counts the diff drawn under it.** io-harness measures the
+  fragment an edit replaced while the hunk is the whole file's diff — correct for
+  a library, wrong for a header sitting on top of the change it claims to count.
+  The field test met the pair as `+3 -9` above an edit the transcript recorded as
+  `-9 +10`.
+
+- **Undo asks, and no keystroke arms it.** `Esc` was bound to `esc esc`: the first
+  press armed and wrote what it would undo into the scrollback, the second acted.
+  Pressed to dismiss a picker, that footer is a line that has already scrolled and
+  the second press is not consent. The binding is one chord now and it raises
+  `/undo`'s own confirmation, which waits for an answer and names what would go
+  back. **If you have rebound `rewind`, the shipped default has changed from `esc
+  esc` to `esc`.**
+
+- **A stopped turn leaves a record.** `Ctrl+C` wrote its ending to the footer,
+  which is gone at the next keystroke, so a turn stopped after doing work left no
+  sign in the scrollback that it had ever started. It is committed to the
+  transcript now and says what was kept. The two-press contract is unchanged: the
+  first asks io-harness to stop at the next step boundary, the second stops now.
+
+- **`Enter` runs a command line you typed.** `/effort high` matched no palette row
+  — the row is `/effort` and the argument is not part of it — and `Enter` did
+  nothing at all, so a line copied from these guides sat behind `No row matches`.
+  It now runs, on that one `Enter`.
+
+- **The session lock followed the store.** Two `io` processes with different
+  `IO_CONFIG_HOME`s refused each other, because the lock file was keyed on a
+  session id that is only unique within one `runs.db` while living in one fixed
+  directory. Found by the new pty harness on its first run.
+
+- **The banner dates what it says.** The card goes into the terminal's own
+  scrollback and no later frame can reach a row of it, so after `/model` it went
+  on naming the model the session started with while the footer named the one the
+  next turn was going to — two model names on screen and nothing saying which.
+  Its three facts now sit under `opened with — the status line is current`. The
+  policy and the workspace are dated by the same caption, for the same reason:
+  both move mid-session and neither could be corrected either.
+
+### Added
+
+- **`io exec` without `--json` says what it did.** One line per tool call and one
+  per refusal, on stderr; stdout still carries the agent's reply and nothing else.
+  The README has promised that this door shows what it refused since it was
+  written, and it was true only in a session and in the JSON stream.
+
+- **The footer separates cached input from fresh.** `52k tok · 44k cached`. The
+  running figure read as though every re-sent catalogue were paid for in full;
+  four one-word turns moved it from 8.1k to 52k at a spend of $0.0001 each.
+
+- **A picture the agent was handed gets a row**, naming where it came from — an
+  MCP reply, a browser screenshot, its own `view_image`, or your attachment — its
+  type and its size. Something entered the model's context and nothing said so.
+
+- **A command a turn runs costs one row, not four.** The sandbox created, ran and
+  torn down lines are gone; that the command was contained is on the status line
+  already.
+
+- **`/setup` runs the wizard here** instead of telling you to leave and run `io
+  setup`. The theme applies at once and the rest arrives with your next message;
+  a changed provider or credential still needs `io` restarted, and it says so.
+
+- **`io skill add` takes a folder**, with its companion files, which is the layout
+  io-harness has always discovered.
+
+- **`/contain on` offers a fan-out** — four agents, two at once, one deep, and a
+  token ceiling — instead of naming four keys you would have to choose values for.
+
+- **`/context` says when `[run] collapse` is shortening entries**, and how much
+  survives. That lever has worked since 0.38.2 and appeared on no surface.
+
+- **`io mcp serve`** offers this install's own tools to another agent over MCP on
+  stdio, under this install's policy, saying which tools it serves and which
+  eleven it does not.
+
+- **`[codeact]`** lets a turn write one contained program instead of a chain of
+  tool calls. Absent, nothing changes: the tool catalogue is byte for byte what
+  0.38.2 sent.
+
+- **`[otel]`** exports a run as OpenTelemetry spans. It says what it configured
+  and never that anything arrived, because io-harness accounts for a dropped
+  batch in a log rather than in a value.
+
+- **`io acp` holds several sessions and answers `session/load`**, so an editor can
+  open two conversations and reopen yesterday's. Both were named limitations in
+  0.36.0 and 0.38.0.
+
+### Changed
+
+- **The context ceiling is the model's real window, and reading it contacts one
+  more host.** Every release before this one assembled inside a flat 24,000
+  tokens on every provider `io` could build, whatever model was configured —
+  io-harness had the whole sizing path but nothing answered it
+  (initorigin/io-cli#105, io-harness#266). The pin moves to io-harness 0.82.0,
+  which gives each provider a source, and **io-cli turns the reference catalogue
+  on by default for the Anthropic and OpenAI providers**. OpenRouter needs no
+  opt-in — its catalogue is its own endpoint.
+
+  Read this if you upgrade and nothing else. Three consequences, all real:
+
+  - **A run costs more per step.** It stops throwing history away at 24,000 and
+    sends what the model holds. That is the point, and it is not free.
+  - **One more host is contacted, once per process, before the first step** — and
+    because io-harness authorises every endpoint a provider declares, an egress
+    policy that denies it **refuses the run** rather than skipping the lookup. The
+    refusal names the key that turns it off.
+  - **A local endpoint now reports a much smaller ceiling than a hosted one.**
+    That is io-harness being careful about a runtime that publishes nothing, not
+    `io` shrinking.
+
+  `[app.io-cli] reference_catalogue = false` restores the previous behaviour for
+  those two providers. `[run.context] max_tokens` still sets the ceiling yourself
+  and still wins over everything. Which catalogue is read is
+  `[app.io-cli.prices] source_url`'s question, unchanged since 0.24.0.
+
+- **`source: "fallback"` no longer means 24,000.** io-harness 0.82.0 splits it
+  into one default for a remote endpoint and a much smaller one for a loopback
+  endpoint. Nothing io-cli ships quotes a number for that rung any more, and a
+  gate keeps it that way.
+
+### Added
+
+- **`/context` says which rung decided the ceiling**, as a sentence rather than
+  as io-harness's bare word: what set the number, and what to do if it is an
+  assumption. `EventKind::ContextCeiling` has carried this since io-harness
+  0.81.0 and io-cli discarded it.
+
+- **`[app.io-cli] reference_catalogue`**, documented in `docs/CONTRACT.md` and in
+  the configuration guide. Absent is `true`.
+
+- **`otel`, `mcp-server` and `codeact` are enabled on the io-harness
+  dependency.** Each adds no crate — `cargo tree --depth 1` is still exactly ten
+  names — and **enabling `codeact` hands the agent no tool**: `run_program` is
+  advertised only where a `[codeact]` section configures it, so a session with
+  none sends the catalogue 0.38.2 sent, byte for byte. That is worth saying
+  because `media` behaved differently in 0.9.0.
+
 ## [0.38.2] - 2026-09-06
 
 The rest of what the 2026-09-05 field test found, and the io-harness pin that turned out to carry
@@ -3590,6 +3750,7 @@ client, tool, sandbox, policy engine or session store of its own.
 - No test in this release asserts on wall-clock time.
 
 [Unreleased]: https://github.com/initorigin/io-cli/compare/v0.38.0...HEAD
+[0.39.0]: https://github.com/initorigin/io-cli/compare/v0.38.2...v0.39.0
 [0.38.2]: https://github.com/initorigin/io-cli/compare/v0.38.1...v0.38.2
 [0.38.1]: https://github.com/initorigin/io-cli/compare/v0.38.0...v0.38.1
 [0.38.0]: https://github.com/initorigin/io-cli/compare/v0.37.0...v0.38.0

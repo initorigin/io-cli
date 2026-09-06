@@ -49,6 +49,20 @@ the file stem otherwise. `io skill add ./my-skill/SKILL.md` installs `my-skill.m
 and `io skill remove my-skill` takes it back out, and the name every check asks
 about is the name a run will resolve rather than the word `SKILL`.
 
+**Since 0.39.0 you can hand it the folder instead of the file.** `io skill add
+./my-skill` — a directory holding a `SKILL.md` — installs the whole thing as
+`~/.io-cli/skills/my-skill/`, companion files and all. That matters when the skill
+references anything: a checklist, a template, a directory of examples. Pointing at
+`./my-skill/SKILL.md` still works and still installs a single file, so a skill that
+is only a manifest stays a loose `my-skill.md`; what changed is that a skill which
+is *not* only a manifest no longer has to be copied in by hand.
+
+A directory with no `SKILL.md` is refused, and the refusal names the file it
+looked for — the mistake it catches is pointing the verb one level too high.
+Symbolic links inside the folder are skipped rather than followed: the directory
+is yours, and following a link out of it would copy whatever it points at into
+io's home.
+
 **A skill `/import` wrote as a folder is manageable too, and it never was.**
 `/import` could write a skill into `~/.io-cli/skills/<name>/SKILL.md`, and neither
 lever would touch that shape — so the product shipped a verb that created state

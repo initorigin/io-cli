@@ -99,12 +99,25 @@ disk. Save before you ask about a file.
 **A terminal the client owns.** Same reason — io runs programs inside its own sandbox, and handing
 a spawn to the editor would put the run outside the boundary io exists to show you.
 
-**More than one session per process.** A second `session/new` is refused with a sentence. Run a
-second `io acp` for a second conversation.
+Two limitations that stood here until 0.39.0 are gone, and are worth naming because a client you
+upgraded from an older `io` may still be behaving as though they were there:
 
-**Loading an earlier conversation.** `session/load` is not served and `loadSession` is declared
-unsupported, so a conforming client will not offer it. Runs are still in the store and `io resume`
-reaches them.
+**Several conversations at once.** `session/new` opens as many as you ask for, each its own
+conversation in the store — the same thing two terminals in one repository are. A prompt names the
+session it is for, and one naming a session this agent does not hold is refused rather than
+delivered to whichever happened to be first.
+
+**Reopening yesterday's conversation.** `session/load` is served and `loadSession` is declared, so a
+conforming client will offer it. The session id `io` issues carries the stored session's own number,
+so loading is reopening that conversation; its turns are replayed to you as the same
+`session/update` notifications a live turn sends, which is why your client renders a loaded
+conversation with the code it already renders a running one with.
+
+What is replayed is what was **said** — your prompts and the agent's replies, along the path the
+conversation actually took. A turn you rewound is not replayed: undoing moves the head without
+deleting the turn, so the stored tree still contains it, and showing it back to you would be
+presenting work that was taken back. Tool calls and reasoning are on the durable trace rather than
+in the replay.
 
 ## When something looks wrong
 

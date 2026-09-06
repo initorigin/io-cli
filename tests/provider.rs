@@ -491,7 +491,7 @@ async fn f5_build_asks_the_operators_first_choice_first() {
         },
     ];
 
-    let (asked_first, hosts) = io_cli::provider::build(specs, None, Probe)
+    let (asked_first, hosts) = io_cli::provider::build(specs, None, None, Probe)
         .await
         .expect("a chain of two");
 
@@ -522,7 +522,7 @@ async fn f5_a_model_override_replaces_the_heads_model_and_not_the_tails() {
         },
     ];
 
-    let (asked_first, _) = io_cli::provider::build(specs, Some("chosen".into()), Probe)
+    let (asked_first, _) = io_cli::provider::build(specs, Some("chosen".into()), None, Probe)
         .await
         .expect("a chain of two");
 
@@ -709,6 +709,14 @@ fn body_after<'a>(source: &'a str, marker: &str) -> &'a str {
 /// provider catalogue already held — which is precisely the behaviour that
 /// harness release exists to end.
 ///
+/// **It caught two more at 0.82.0, which is the argument for reading the method
+/// list rather than writing it.** That release added `warm_sizing` and
+/// `assumed_window`, both defaulted; this gate failed on the pin bump alone,
+/// named the wrapper and named the method, and a wrapper that had not forwarded
+/// `warm_sizing` would simply never have warmed the provider it wraps. (The
+/// constant named above is also no longer the fallback rung — 0.82.0 moved that
+/// to `FALLBACK_WINDOW`. The sentence is kept as the account of what 0.81.0 did.)
+///
 /// **The method list is read out of the locked harness, never written here.** A
 /// literal list is a gate that goes stale at the next pin and is then repaired by
 /// editing the literal, which is the failure this repository has already paid
@@ -790,4 +798,195 @@ fn f2_every_provider_method_is_delegated_by_every_wrapper() {
             );
         }
     }
+}
+
+/// The reference catalogue an arm hands to [`io_cli::provider::build`].
+///
+/// A URL that resolves to nothing, deliberately: every arm below reads
+/// `endpoints()`, which is a list of strings the provider was constructed with
+/// and requires no socket. An arm that started needing one would be measuring
+/// something other than whether the builder was called.
+const CATALOGUE: &str = "https://catalogue.invalid/v1/models";
+
+/// Every host a built chain may reach, in order.
+///
+/// [`Probe`] returns the count and that was enough while there was one endpoint
+/// per link. It is not enough now: the whole of F16 is *which* provider gained
+/// a second host, and a count cannot tell the reference apart from a mirror of
+/// the completions endpoint.
+struct Hosts;
+
+impl io_cli::provider::WithProvider for Hosts {
+    type Out = Vec<String>;
+
+    async fn call<P: Provider>(
+        self,
+        make: impl Fn(&str) -> Result<P, String>,
+        model: String,
+    ) -> Self::Out {
+        let provider = make(&model).expect("the spec builds");
+        provider
+            .endpoints()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+fn spec_of(endpoint: &str) -> io_harness::ProviderSpec {
+    match endpoint {
+        "openrouter" => io_harness::ProviderSpec::OpenRouter {
+            model: "m".into(),
+            api_key: Some("k".into()),
+        },
+        "anthropic" => io_harness::ProviderSpec::Anthropic {
+            model: "m".into(),
+            api_key: Some("k".into()),
+        },
+        "openai" => io_harness::ProviderSpec::OpenAi {
+            model: "m".into(),
+            api_key: Some("k".into()),
+        },
+        _ => panic!("no such spec"),
+    }
+}
+
+async fn hosts_of(endpoint: &str, catalogue: Option<io_harness::Reference>) -> Vec<String> {
+    io_cli::provider::build(vec![spec_of(endpoint)], None, catalogue, Hosts)
+        .await
+        .expect("one valid spec builds")
+}
+
+/// **F16 — the opt-in reaches the two vendors that have one, and only those.**
+///
+/// io-harness 0.82.0 gives `Anthropic` and `OpenAi` a `with_reference_catalogue`
+/// builder and gives `OpenRouter` none, because OpenRouter derives its catalogue
+/// from its own completions endpoint — for that vendor the reference is not a
+/// reference at all. So the observable is `Provider::endpoints()`: the builder is
+/// exactly what puts the catalogue's URL in that list, which is also what puts it
+/// under the run's egress policy.
+///
+/// Asserted as membership rather than as a count, because a count cannot tell the
+/// reference apart from any other second host a provider might grow.
+///
+/// Sabotage: drop the `with_reference_catalogue` call from either vendor arm of
+/// `maker_for`. Only this fails, and it names which vendor.
+#[tokio::test]
+async fn f16_the_reference_catalogue_reaches_the_two_vendors_that_take_an_opt_in() {
+    let reference = io_harness::Reference::at(CATALOGUE);
+
+    for endpoint in ["anthropic", "openai"] {
+        let hosts = hosts_of(endpoint, Some(reference.clone())).await;
+        assert!(
+            hosts.iter().any(|host| host == CATALOGUE),
+            "{endpoint} was built without the reference catalogue, so it answers \
+             `assumed_window` and the ceiling an operator sees is 128,000 whatever \
+             model they configured. Its hosts were {hosts:?}",
+        );
+    }
+
+    let hosts = hosts_of("openrouter", Some(reference)).await;
+    assert!(
+        !hosts.iter().any(|host| host == CATALOGUE),
+        "OpenRouter was handed a reference catalogue. It has no `with_reference_\
+         catalogue` builder and needs none — it derives its catalogue from its own \
+         completions endpoint — so a second host here is one more thing the egress \
+         policy has to allow for nothing. Its hosts were {hosts:?}",
+    );
+}
+
+/// **F16 — with the key off, every provider is where 0.38.2 left it.**
+///
+/// The escape hatch has to be a real one: `reference_catalogue = false` means no
+/// second host, which means no extra egress to authorise and no run refused over
+/// a catalogue the operator did not ask for. One endpoint each is the whole
+/// assertion.
+///
+/// Sabotage: build the reference unconditionally in `maker_for`, ignoring the
+/// argument. The arm above still passes — it is the one that would be written by
+/// somebody who only wanted the feature to work — and this one fails.
+#[tokio::test]
+async fn f16_no_catalogue_leaves_every_provider_where_0_38_2_left_it() {
+    for endpoint in ["openrouter", "anthropic", "openai"] {
+        let hosts = hosts_of(endpoint, None).await;
+        assert_eq!(
+            hosts.len(),
+            1,
+            "{endpoint} reaches {} hosts with the catalogue turned off. The key is \
+             the only way back to 0.38.2's behaviour and it has to mean it. Its \
+             hosts were {hosts:?}",
+            hosts.len(),
+        );
+    }
+}
+
+/// **F16 — the key decides whether, and `[app.io-cli.prices] source_url` decides
+/// which.**
+///
+/// Both halves in one function because they are one decision, and because the
+/// alternative — a second key naming the catalogue's address — would be a second
+/// spelling of something `src/verify.rs` has read since 0.24.0.
+///
+/// The default is the release's own choice rather than io-harness's: absent means
+/// *on*, and `settings::reference_catalogue(None)` is what an operator who has
+/// never written `[app.io-cli]` gets.
+#[tokio::test]
+async fn f16_the_key_decides_whether_and_the_prices_url_decides_which() {
+    let absent = io_cli::settings::reference_catalogue(None);
+    assert_eq!(
+        absent.as_ref().map(io_harness::Reference::url),
+        Some("https://openrouter.ai/api/v1/models"),
+        "an operator who configured nothing gets the default catalogue. Absent \
+         meaning off would leave every Anthropic and OpenAI run assembling under \
+         an assumed window, which is what initorigin/io-cli#105 is about",
+    );
+
+    let off = io_cli::settings::CliSettings {
+        reference_catalogue: Some(false),
+        ..Default::default()
+    };
+    assert!(
+        io_cli::settings::reference_catalogue(Some(&off)).is_none(),
+        "`{}` = false has to mean it: it is the whole escape hatch for an \
+         air-gapped box and for an operator who would rather this process talked \
+         to one host",
+        io_cli::settings::REFERENCE_CATALOGUE_KEY,
+    );
+
+    let mirrored = io_cli::settings::CliSettings {
+        prices: Some(io_cli::settings::PriceSettings {
+            source_url: Some(CATALOGUE.into()),
+            source: None,
+            models: None,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        io_cli::settings::reference_catalogue(Some(&mirrored))
+            .as_ref()
+            .map(io_harness::Reference::url),
+        Some(CATALOGUE),
+        "the mirror an operator already named for prices is the mirror this reads. \
+         A second key for the same address would be a second thing to keep true, \
+         and the two would drift",
+    );
+
+    // An empty string is a key somebody wrote and left blank, and `Reference::at`
+    // would take it literally — a URL with no host, which authorises nothing and
+    // fetches nothing. It has to fall back to the default rather than build one.
+    let blank = io_cli::settings::CliSettings {
+        prices: Some(io_cli::settings::PriceSettings {
+            source_url: Some(String::new()),
+            source: None,
+            models: None,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        io_cli::settings::reference_catalogue(Some(&blank))
+            .as_ref()
+            .map(io_harness::Reference::url),
+        Some("https://openrouter.ai/api/v1/models"),
+        "a blank `source_url` is not an address",
+    );
 }

@@ -220,7 +220,10 @@ fn f9_the_table_marks_the_fixed_key() {
         .expect("Ctrl+C is in the table");
     assert!(what.contains("(fixed)"), "{what:?}");
 
-    for movable in ["Ctrl+D", "Ctrl+L", "Ctrl+T", "Shift+Tab", "Esc Esc"] {
+    // `Esc` rather than `Esc Esc` since 0.39.0 — the rewind is one chord and its
+    // consent is a confirmation the driver raises. It is still rebindable, which
+    // is what this loop is about.
+    for movable in ["Ctrl+D", "Ctrl+L", "Ctrl+T", "Shift+Tab", "Esc"] {
         let (_, what) = rows
             .iter()
             .find(|(key, _)| key == movable)
@@ -345,30 +348,35 @@ fn the_defaults_are_unchanged() {
     assert_eq!(session.key(ctrl('t')), Command::Transcript);
     assert_eq!(session.key(ctrl('d')), Command::Exit);
 
-    // The sequence, and the arming that any other key clears.
-    assert_eq!(session.key(plain(KeyCode::Esc)), Command::ArmRewind);
-    assert!(session.armed());
-    assert_eq!(session.key(ctrl('l')), Command::ClearViewport);
-    assert!(!session.armed(), "an unrelated key disarms it");
-    assert_eq!(session.key(plain(KeyCode::Esc)), Command::ArmRewind);
+    // The rewind, which asks rather than arming since 0.39.0: one press raises
+    // `/undo`'s confirmation and nothing is left half-pressed behind it.
     assert_eq!(session.key(plain(KeyCode::Esc)), Command::Rewind);
+    assert!(!session.armed());
+    assert_eq!(session.key(ctrl('l')), Command::ClearViewport);
+    assert!(!session.armed());
 }
 
-/// A sequence is rebindable as a sequence, and it still asks twice.
+/// A sequence is rebindable as a sequence, and the rewind still asks.
 ///
 /// The rewind is the one key in the product that changes the operator's files on
-/// io-cli's own initiative, and the second press is the whole of its consent. A
-/// rebinding that collapsed it to one chord would be a rebinding that removed a
-/// confirmation, which is not a preference.
+/// io-cli's own initiative, and its consent is a confirmation the driver raises.
+/// A rebinding cannot remove that, because the consent is no longer carried by
+/// the number of keystrokes: **whichever chord an operator binds, and however
+/// many presses it takes to complete, the last press raises the question.** That
+/// is a stronger property than the one this test held before 0.39.0, where a
+/// binding of one chord would have collapsed a two-press confirmation into one.
 #[test]
-fn a_rebound_sequence_still_asks_twice() {
+fn a_rebound_sequence_still_asks() {
     let (keys, notices) = Keys::resolve(Some(&asked(&[("rewind", "ctrl+r ctrl+r")])));
     assert!(notices.is_empty(), "{notices:?}");
 
     let mut session = app(keys);
     assert_eq!(session.key(plain(KeyCode::Esc)), Command::None, "Esc moved");
-    assert_eq!(session.key(ctrl('r')), Command::ArmRewind);
+    // The first chord of a two-chord sequence completes nothing, so it neither
+    // asks nor acts — the arming machinery is untouched by 0.39.0.
+    assert_eq!(session.key(ctrl('r')), Command::None);
     assert!(session.armed());
+    // The second completes it, and what it raises is the confirmation.
     assert_eq!(session.key(ctrl('r')), Command::Rewind);
     assert!(!session.armed());
 }
@@ -455,17 +463,31 @@ fn every_default_binding_is_a_row_of_the_table() {
 
 /// A chord bound to nothing is nothing, and a half-pressed sequence is not a
 /// press.
+///
+/// **No shipped binding is a sequence as of 0.39.0**, so the arming half is
+/// driven by a rebound one. The rewind was the only two-chord default; its
+/// consent moved from a second keystroke to a confirmation the driver raises,
+/// because a footer line the operator never read as a question is what the
+/// 2026-09-05 field test lost two files to.
 #[test]
 fn an_unbound_chord_reaches_the_prompt() {
     let keys = Keys::default();
     assert_eq!(keys.hit(Chord::of(ctrl('q')), None), None);
     assert_eq!(
         keys.hit(Chord::of(plain(KeyCode::Esc)), None),
+        Some(Hit::Fire(Action::Rewind)),
+        "the shipped rewind is one chord, and what it fires is a question",
+    );
+
+    let (rebound, notices) = Keys::resolve(Some(&asked(&[("rewind", "ctrl+r ctrl+r")])));
+    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(
+        rebound.hit(Chord::of(ctrl('r')), None),
         Some(Hit::Arm(Action::Rewind)),
         "the first chord of a sequence arms; it does not fire",
     );
     assert_eq!(
-        keys.hit(Chord::of(plain(KeyCode::Esc)), Some(Action::Rewind)),
+        rebound.hit(Chord::of(ctrl('r')), Some(Action::Rewind)),
         Some(Hit::Fire(Action::Rewind)),
     );
 }

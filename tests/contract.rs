@@ -1829,7 +1829,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
 /// **F7 — a tilde is a home directory, never a directory named `~`.**
 ///
 /// io-harness substitutes `${env:…}` and `${file:…}` and nothing else — there is
-/// no tilde branch anywhere in `io-harness-0.81.0/src/config.rs` — so a `~` an
+/// no tilde branch anywhere in `io-harness-0.82.0/src/config.rs` — so a `~` an
 /// operator writes in `[run] skills` reaches `Skills::discover` verbatim and the
 /// harness looks inside a directory whose name is one character long. The
 /// operator's skills sit exactly where they said they would, and the session
@@ -2118,6 +2118,46 @@ fn n3_this_release_adds_no_configuration_key() {
         "0.27.0 adds three commands and no keys; a different number here means a \
          release that promised an operator nothing would change gave them \
          something to configure",
+    );
+}
+
+/// **F15 — enabling `codeact` hands the agent nothing on its own.**
+///
+/// This is the fact worth gating, because `media` behaved differently in 0.9.0
+/// and gave every run a `view_image` tool as a consequence of a feature flag —
+/// a capability change arriving inside an interface release. io-harness
+/// advertises `run_program` only where a contract carries a `[codeact]`
+/// configuration, so with the section absent the tool catalogue is byte for byte
+/// what 0.38.2 sent.
+///
+/// Asserted through the contract rather than through a request, because the
+/// contract is where this crate's decision lives and the catalogue is
+/// io-harness's consequence of it. `f2_nothing_configured_is_the_contract_the_
+/// session_built_before` is the other half and would fail on an unconditional
+/// `with_codeact` — the two together say that the field is absent and that the
+/// whole contract is unchanged.
+///
+/// Sabotage: make the `match` in `contract::configured` unconditional with
+/// `CodeActConfig::default()`. Both this and F2's Debug equality fail.
+#[test]
+fn f15_a_configuration_with_no_codeact_section_carries_none() {
+    let _guard = env_lock();
+    let _home = HomeFixture::new();
+    let (dir, config) = discovered(&[]);
+
+    let built = io_cli::contract::configured(
+        "bring the docs up to date",
+        dir.path().to_path_buf(),
+        &config,
+        &io_harness::Plugins::default(),
+    );
+
+    assert!(
+        built.codeact.is_none(),
+        "a contract carries a CodeAct configuration nobody asked for. \
+         io-harness advertises `run_program` wherever this is set, so this is the \
+         agent gaining a tool as a consequence of a feature flag — which is what \
+         enabling `media` did in 0.9.0 and is the mistake this asserts against",
     );
 }
 

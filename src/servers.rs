@@ -860,6 +860,68 @@ fn decided_by(rule: Option<&str>, layer: Option<&str>) -> String {
     }
 }
 
+/// What `io mcp serve` says about itself, before stdout becomes the protocol
+/// (0.39.0).
+///
+/// **A server another agent borrows is only worth borrowing if it can be seen.**
+/// The whole argument for handing somebody else this install's tools is that they
+/// arrive under this install's policy, gated and journalled — so a server that
+/// started silently would be asking a client to trust a boundary it has no way to
+/// inspect. These lines are that inspection: the root, the protocol, the posture
+/// in force, and the tools that are **not** served.
+///
+/// **The served set is not enumerated, and saying so is the honest version.** It
+/// is whatever `Toolbox` this install resolved minus the withheld names, it can
+/// run to dozens of entries, and a client learns it authoritatively from
+/// `tools/list` a moment later. What a reader cannot get from `tools/list` is the
+/// *absence* — that `spawn` and `ask_question` are missing by design rather than
+/// because something failed — which is why that is the half written here.
+///
+/// **Every line goes to stderr and the caller is what writes them**, because
+/// stdout is the JSON-RPC stream from the moment the loop starts and one
+/// human-readable byte on it corrupts the protocol for the client.
+///
+/// The unserved set is io-harness's own `MCP_SERVER_UNSERVED` rather than a list
+/// written here. It is the half a reader is most likely to be surprised by — a
+/// borrowed boundary that quietly declined to offer `spawn` or `ask_question`
+/// would look like a broken server rather than a bounded one — and a second copy
+/// of it here would go stale the first time the harness moved a name.
+pub fn serving(config: &io_harness::McpServerConfig) -> Vec<String> {
+    let mut lines = vec![
+        format!("io: serving {} over MCP on stdio", config.root().display()),
+        format!(
+            "io: protocol {}, as `{}`",
+            io_harness::MCP_SERVER_PROTOCOL_VERSION,
+            config.server_name(),
+        ),
+        // **The posture in the words the rest of the product uses, and not a
+        // `Debug` of the policy.** Driving the real argv door is what caught
+        // that: the first version printed every layer, every rule and every
+        // pattern on one line — hundreds of columns of `Rule { act: Read, effect:
+        // Deny, pattern: ".env" }` — which is not a disclosure, it is a wall a
+        // reader scrolls past.
+        //
+        // `Posture::of` answers `None` for a policy that is not one of the three,
+        // which is allowed and is why the fallback says so rather than guessing.
+        // A configuration file can express far more than three postures, and
+        // naming one of them anyway would put a true-looking word beside a
+        // boundary it does not describe.
+        match crate::settings::Posture::of(&config.policy().defaults) {
+            Some(posture) => format!("io: {} — {}", posture.label(), posture.detail()),
+            None => "io: under this install's own policy, which is not one of the three \
+                     postures — `io mcp get` and the configuration file are what describe it"
+                .to_string(),
+        },
+    ];
+    if !io_harness::MCP_SERVER_UNSERVED.is_empty() {
+        lines.push(format!(
+            "io: not served — {}",
+            io_harness::MCP_SERVER_UNSERVED.join(", "),
+        ));
+    }
+    lines
+}
+
 /// A TOML basic string, escaped.
 ///
 /// Here rather than through `toml::to_string`, which would need a document to

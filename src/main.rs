@@ -476,6 +476,12 @@ async fn drive(
     // entry point that reaches io-harness's spawn loop, and it is the caps that
     // decide whether this session takes it.
     let containment = settings::containment(stored.as_ref()).cloned();
+    // The catalogue the two vendor providers may size themselves from, read from
+    // the same settings and in the same place as the caps above. On by default,
+    // and `[app.io-cli] reference_catalogue = false` is what turns it off — see
+    // `settings::reference_catalogue`, which owns both halves of that decision so
+    // that no door has to reconstruct it.
+    let catalogue = settings::reference_catalogue(stored.as_ref());
     let capabilities = io_cli::contract::Capabilities::stored(stored.as_ref());
     // The agent's own skills, walked once beside the templates and for the same
     // reasons — the palette filters on every character typed, and a directory
@@ -557,6 +563,16 @@ async fn drive(
     if let Some(notice) = settings::deprecated_max_steps(&config) {
         notices.push(notice);
     }
+    // **What the `[otel]` section configured, said once (0.39.0).** A session
+    // that quietly began exporting every run to a collector would be a session
+    // doing something on the operator's network that nothing on screen mentions;
+    // one that said it per turn would put telemetry above every answer. The
+    // exporter itself is built again where the turn's fan-out is composed — this
+    // is the sentence, not the observer, and the sentence is careful about what
+    // it may claim. See `contract::otel`.
+    if let (_, Some(notice)) = io_cli::contract::otel(&config) {
+        notices.push(notice);
+    }
     let store = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&store).map_err(|error| error.to_string())?;
     let session = Session::open(&store, root).map_err(|error| error.to_string())?;
@@ -577,7 +593,26 @@ async fn drive(
     // `Drop`, and it must outlive every turn this process takes. `let _ = …`
     // would release it on the next line, and a plain name would be a warning
     // about the one thing that is deliberate here.
-    let _session_lock = match io_cli::home::path() {
+    // **The lock lives beside the store it names a session in, not beside the
+    // crate's own home (0.39.0).** `lock::paths` keys a file on the session id,
+    // and a session id is only unique *within one `runs.db`* — `Session::open`
+    // numbers from 1 in a fresh store. Taking the lock in `home::path()` put
+    // every store's session 1 on one `session-1.lock`, so two `io` processes
+    // pointed at different `IO_CONFIG_HOME`s refused each other for a collision
+    // that means nothing: different conversations, in different stores, sharing a
+    // number. The product said so itself — the refusal below is worded "that
+    // should not be possible for a session just created" — and printed it anyway.
+    //
+    // `home::in_force` is the directory the user-scope configuration is in, which
+    // is exactly where `settings::store_path` puts `runs.db`. For an operator who
+    // has set neither variable it is the same directory as before, so nothing
+    // moves for the common case; what changes is that a moved store takes its
+    // locks with it.
+    //
+    // Found by `tests/pty.rs`, which runs several sessions at once with a home
+    // apiece, on the first day this repository could start the binary at a
+    // terminal at all.
+    let _session_lock = match io_cli::home::in_force().map(|(dir, _)| dir) {
         Some(home) => {
             // The only clock read on this path, and it is here because
             // `src/main.rs` is the one file `tests/timing.rs` permits one in.
@@ -634,6 +669,7 @@ async fn drive(
     provider::build(
         provider::chain_of(&config),
         model_override,
+        catalogue,
         Interactive {
             screen,
             inputs,
@@ -996,7 +1032,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     templates: Templates,
     theme: Theme,
     plain: bool,
-    containment: Option<io_harness::Containment>,
+    // Mutable since 0.39.0: `/contain on` with nothing configured offers to write
+    // a section, and an operator who accepts meant the next turn rather than the
+    // next session.
+    mut containment: Option<io_harness::Containment>,
     // Mutable for the reason `config` is, and it is the half a reload forgets:
     // this is derived from `config` ONCE at startup, so refreshing only the
     // `Config` would leave every `[app.io-cli]` answer stale while the rest of
@@ -1426,6 +1465,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 continue;
             }
         }
+        // Set only by `Outcome::Typed` below: the palette handed back a whole
+        // command line, and this keystroke has to reach `app.key` rather than
+        // stopping at the picker.
+        let mut submitting = false;
         // A picker owns the keyboard while it is open, which is what makes it a
         // modal overlay rather than a suggestion.
         if let Some((open, kind)) = picker.as_mut() {
@@ -4285,6 +4328,56 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
                             }
                         }
+                        // **One inline table, not four dotted writes.** `Edit::set`
+                        // takes TOML source, so the whole section lands as one
+                        // value — which is also what an operator opening the file
+                        // afterwards will want to read, rather than four lines
+                        // that have to be assembled in the head.
+                        //
+                        // User scope: `[app.io-cli]` is this crate's own section,
+                        // and a fan-out is a property of how this operator works
+                        // rather than of the repository they are in.
+                        //
+                        // `configure::write` round-trips through
+                        // `Config::discover` and undoes the write if io-harness
+                        // refuses it, so a section this crate composed wrongly
+                        // cannot leave a session unable to start.
+                        Pick::ContainDefault(caps) => {
+                            if io_cli::store::acts(index) {
+                                let inline = format!(
+                                    "{{ max_total_agents = {}, max_concurrent_agents = {}, \
+                                     max_depth = {}, max_total_tokens = {} }}",
+                                    caps.max_total_agents,
+                                    caps.max_concurrent_agents,
+                                    caps.max_depth,
+                                    caps.max_total_tokens,
+                                );
+                                let edit =
+                                    io_cli::edit::Edit::set("app.io-cli.containment", inline);
+                                match io_cli::configure::write(
+                                    session.root(),
+                                    io_harness::config::Scope::User,
+                                    &[edit],
+                                ) {
+                                    Ok(()) => {
+                                        // In force now rather than at the next
+                                        // start. An operator who typed
+                                        // `/contain on` and was asked a question
+                                        // meant the turn after it, not the
+                                        // session after that.
+                                        containment = Some(caps.clone());
+                                        contained = true;
+                                        let notice =
+                                            settings::contained_notice(caps, app.theme.glyphs.dash);
+                                        app.record(Tone::Muted, notice);
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!("the section was not written: {error}"),
+                                    ),
+                                }
+                            }
+                        }
                         Pick::Export { path, content } => {
                             if io_cli::store::acts(index) {
                                 let effective = approval::session_policy(
@@ -4350,9 +4443,36 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     picker = None;
                 }
                 Outcome::Idle => {}
+                // **The palette's query was a whole command line, so it runs on
+                // this `Enter` rather than the next one.** The line goes into the
+                // composer with its `/` put back — the slash never reached the
+                // prompt, because opening the palette is what it did — and then
+                // this block deliberately does *not* `continue`, so the same
+                // keystroke falls through to `app.key(key)` below and is
+                // submitted exactly as a hand-typed line would be.
+                //
+                // That fall-through is the whole of "one Enter". A `continue`
+                // here would leave the line sitting in the prompt waiting for a
+                // second press, which is better than 0.38.2 — where `Enter` on an
+                // unmatched query did nothing at all and `/effort high` was stuck
+                // behind `No row matches` — and still not what a line pasted from
+                // the guides should need.
+                Outcome::Typed => {
+                    let line = format!("/{}", open.query());
+                    picker = None;
+                    app.composer.set(&line);
+                    submitting = true;
+                }
             }
-            paint_picker(screen, &mut app, picker.as_mut())?;
-            continue;
+            // Every outcome but `Typed` ends the keystroke here. A flag rather
+            // than a condition read back off the composer, because the states are
+            // otherwise indistinguishable: a cancelled palette also leaves
+            // `picker` empty, and the prompt it leaves behind may well begin with
+            // a slash the operator typed a minute ago.
+            if !submitting {
+                paint_picker(screen, &mut app, picker.as_mut())?;
+                continue;
+            }
         }
 
         // `/` at an empty prompt opens the palette, in front of the session
@@ -4376,7 +4496,13 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // is what `/model` already does against four hundred models. That is
             // the trade the release contract records, and the fallback if it turns
             // out wrong is *not* to restore the round trip.
-            picker = Some((Picker::new("Which command?", rows), Pick::Palette));
+            // `.taking_a_line()` for the mid-turn palette's reason, and it has to
+            // be on both: a line pasted at an idle prompt is the case an operator
+            // meets first.
+            picker = Some((
+                Picker::new("Which command?", rows).taking_a_line(),
+                Pick::Palette,
+            ));
             paint_picker(screen, &mut app, picker.as_mut())?;
             continue;
         }
@@ -4587,20 +4713,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // The first `Esc`. Nothing has changed yet; this says what the second
             // one would change, in the turn's own words, so a confirmation is a
             // confirmation of something specific rather than of a keystroke.
-            Command::ArmRewind => match io_cli::rewind::preview(&session, &store) {
-                Some(about) => app.say(
-                    Tone::Warning,
-                    io_cli::rewind::armed_line(&about, &app.theme.glyphs),
-                ),
+            // **The chord asks, and it asks with `/undo`'s own picker.** Both
+            // reach `undo::confirm_turn`, so the word and the keystroke cannot
+            // come to mean different things; the answer is delivered by
+            // `Pick::UndoRun`, which is where the operator's files actually
+            // change. Through 0.38.2 this arm called `undo_whole_turn` directly,
+            // with an armed footer line as the only warning.
+            Command::Rewind => match io_cli::rewind::preview(&session, &store) {
+                Some(about) => {
+                    let (title, rows) = io_cli::undo::confirm_turn(io_cli::rewind::armed_line(
+                        &about,
+                        &app.theme.glyphs,
+                    ));
+                    picker = Some((Picker::new(title, rows), Pick::UndoRun));
+                }
                 None => app.say(Tone::Muted, "there is no turn to undo"),
             },
-            // The second. This is where the operator's files change.
-            // **Through `observing` since 0.27.0, which is what finally emits
-            // `EventKind::Rewound`.** The call was `rewind_run`, whose observed
-            // twin is the only thing that emits it.
-            Command::Rewind => {
-                undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
-            }
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 // Rewritten into a `Command::Submit` above, for the reason
                 // `/commit` is: invoking a skill hands work to the agent, so it
@@ -4623,11 +4751,51 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     "/commit is rewritten into a submit before the match and cannot arrive here"
                 ),
                 Action::Quit => return Ok(()),
+                // **`/setup` runs the wizard here rather than sending the
+                // operator away (0.39.0).** This arm said "run `io setup` from
+                // the shell", which is a command telling somebody to leave the
+                // program to change the program.
+                //
+                // **The same `wizard` function `io setup` calls, and that is the
+                // whole implementation.** It already owns a screen and an input
+                // stream, drives its own loop, and handles the credential check,
+                // the catalogue read and the write; this loop has both of those
+                // to lend it. A second driver would be a second wizard to keep in
+                // step, and the one that drifted would be the one nobody runs
+                // from a fresh install.
                 Action::Setup => {
-                    app.say(
-                        Tone::Muted,
-                        "run `io setup` from the shell to change the configuration",
-                    );
+                    let chosen = wizard(screen, inputs, app.theme).await?;
+                    match chosen {
+                        Some(theme) => {
+                            // Live now: the theme is this process's, and the file
+                            // is re-discovered at the next turn boundary by
+                            // `reload::Configuration`, so everything it carries
+                            // arrives with the next message.
+                            app.theme = theme;
+                            app.events.set_theme(theme);
+                            // **And what is not live, said rather than left to be
+                            // discovered.** The session runs inside the closure
+                            // that built the provider chain, and that closure
+                            // takes a model name and nothing else — so a changed
+                            // provider or credential cannot reach this session.
+                            // An operator who has just retyped an API key and
+                            // watches the next turn fail with the old one has
+                            // been told nothing by a wizard that said it was
+                            // done.
+                            app.record(
+                                Tone::Muted,
+                                "configuration written. The theme is live and the rest arrives \
+                                 with your next message — a changed provider or key needs `io` \
+                                 restarted, because this session is running inside the one it \
+                                 started with.",
+                            );
+                        }
+                        None => app.say(Tone::Muted, "setup left the configuration alone"),
+                    }
+                    // The wizard drew over the viewport and this puts the session
+                    // back, exactly as every other surface that takes the screen
+                    // does on the way out.
+                    paint(screen, &mut app)?;
                 }
                 // **The same parse, the same plan, the same write as `io mcp …`.**
                 // Nothing is decided here: the tokens, the refusals and the scope
@@ -6106,11 +6274,26 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // with the key that closes it, rather than as a refusal —
                     // the caps are what the fan-out runs under and there is no
                     // safe default for somebody else's token ceiling.
+                    // **`/contain on` with nothing configured offers to write one
+                    // (0.39.0).** This arm named four keys and stopped —
+                    // technically correct, and it asked an operator to choose a
+                    // token ceiling for a mode they had not tried, out of a
+                    // documentation page they were not reading. The offer is a
+                    // starting point rather than a homework assignment, and every
+                    // number on it is visible on the row that acts.
+                    (None, Some(true)) => {
+                        let caps = settings::offered_containment();
+                        let (title, rows) = settings::containment_offer(&caps);
+                        picker = Some((Picker::new(title, rows), Pick::ContainDefault(caps)));
+                    }
+                    // Switching *off* something that is not on, and asking what is
+                    // in force when nothing is. Neither is a moment to offer a
+                    // configuration change: the first is already true and the
+                    // second is a question.
                     (None, _) => app.record(
                         Tone::Muted,
                         "no [app.io-cli.containment] in the configuration, so a turn here \
-                         cannot fan out. Set max_total_agents, max_concurrent_agents, \
-                         max_depth and max_total_tokens to turn it on.",
+                         cannot fan out. `/contain on` offers to write one.",
                     ),
                     (Some(caps), None) => {
                         let where_it_is = if contained {
@@ -6407,34 +6590,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 },
                             ));
                         }
-                        // The bare form confirms like the other two rather than
-                        // arming like the chord. The arming is a property of a
-                        // *keystroke* — one press to warn, a second to act — and
-                        // a typed command has already been deliberate once. Both
-                        // paths end in the same `rewind::last_turn`, so the word
-                        // and the chord can never disagree about what an undo is.
+                        // **The word and the chord raise the same picker**, from
+                        // one construction in `undo::confirm_turn`. Through
+                        // 0.38.2 only this half confirmed and the chord armed
+                        // instead; see that function for what the field test did
+                        // to the arming.
                         io_cli::undo::Grain::Run => {
                             match io_cli::rewind::preview(&session, &store) {
                                 Some(about) => {
-                                    let title =
-                                        io_cli::rewind::armed_line(&about, &app.theme.glyphs);
-                                    picker = Some((
-                                        Picker::new(
-                                            title,
-                                            vec![
-                                                Row::with_detail(
-                                                    io_cli::store::LEAVE_IT,
-                                                    "the turn stands",
-                                                ),
-                                                Row::with_detail(
-                                                    "undo the whole turn",
-                                                    "its files, its notes, its queued children \
-                                                     and the conversation head",
-                                                ),
-                                            ],
-                                        ),
-                                        Pick::UndoRun,
-                                    ));
+                                    let (title, rows) = io_cli::undo::confirm_turn(
+                                        io_cli::rewind::armed_line(&about, &app.theme.glyphs),
+                                    );
+                                    picker = Some((Picker::new(title, rows), Pick::UndoRun));
                                 }
                                 None => app.say(Tone::Muted, "there is no turn to undo"),
                             }
@@ -6563,7 +6730,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         seen.latest().as_ref(),
                         &reading,
                         reading.max_tokens,
-                        app.status.ceiling,
+                        io_cli::context::Ceiling {
+                            max_tokens: app.status.ceiling,
+                            source: app.status.ceiling_source.as_deref(),
+                        },
                         &mask,
                         &app.theme,
                         screen.width(),
@@ -7264,6 +7434,17 @@ fn mid_turn_picker(
         }
         Outcome::Cancelled => *picker = None,
         Outcome::Idle => {}
+        // **Mid-turn the line goes into the prompt and is not submitted, and
+        // that is a difference with a reason.** Submitting mid-turn does not run
+        // a command — it queues a prompt for the turn after this one — so a line
+        // that ran itself here would be queueing work on a keystroke the operator
+        // pressed to close a palette. The idle door submits because there the
+        // same `Enter` means the same thing it would have meant at the prompt.
+        Outcome::Typed => {
+            let line = format!("/{}", open.query());
+            *picker = None;
+            app.composer.set(&line);
+        }
     }
 }
 
@@ -7602,9 +7783,21 @@ async fn turn<P: Provider>(
     // before either the interface or a hook is told about it, and a hook that
     // cancels the turn cannot leave a gap in the sequence a reader is following.
     let hooks = io_cli::contract::hooks(config, plugins, &root);
+    // **And the exporter, if one is configured (0.39.0).** One more observer on
+    // the fan-out this door already builds — which is the whole of what enabling
+    // io-harness's `otel` feature costs, because `OtelExporter` is an ordinary
+    // `Observer` and `src/fanout.rs` has been able to hold several since 0.19.0.
+    //
+    // The sentence it comes with is dropped here rather than drawn: the session
+    // says it once at startup, where its siblings are said, and repeating it per
+    // turn would put a line about telemetry above every answer.
+    let (otel, _) = io_cli::contract::otel(config);
     let mut observers: Vec<&dyn io_harness::Observer> = vec![&observer];
     if let Some(hooks) = &hooks {
         observers.push(hooks);
+    }
+    if let Some(otel) = &otel {
+        observers.push(otel);
     }
     let fanout = io_cli::fanout::Fanout::new(observers);
     // A second connection to the same file, which is what io-harness's own
@@ -7796,7 +7989,12 @@ async fn turn<P: Provider>(
                                 Picker::new(
                                     "Which command?",
                                     commands::palette(templates, skills),
-                                ),
+                                )
+                                // The palette's rows are a vocabulary, so `Enter`
+                                // on a query matching none of them hands the line
+                                // back to be parsed rather than doing nothing.
+                                // See `Outcome::Typed`.
+                                .taking_a_line(),
                                 Pick::Palette,
                             ));
                             Command::None
@@ -8096,7 +8294,10 @@ async fn turn<P: Provider>(
                                             seen.latest().as_ref(),
                                             &contract,
                                             contract.max_tokens,
-                                            app.status.ceiling,
+                                            io_cli::context::Ceiling {
+                                                max_tokens: app.status.ceiling,
+                                                source: app.status.ceiling_source.as_deref(),
+                                            },
                                             mask,
                                             &app.theme,
                                             screen.width(),
@@ -8422,8 +8623,30 @@ async fn turn<P: Provider>(
         // Abandoned. The run's own record is whatever io-harness had written by
         // the time the future was dropped, and saying so is the honest line: the
         // work above is real and the turn did not finish.
+        // Taken back whole: no step, nothing streamed, nothing on screen but the
+        // echo — and the echo has been rewound too, so there is nothing left to
+        // annotate. This is the operator pressing the key a moment after `Enter`.
         None if undone => {}
-        None => app.say(Tone::Muted, "stopped"),
+        // **Committed, not said, and 0.38.2 said it (0.39.0).** `App::say` writes
+        // the footer, which is gone at the next keystroke; `App::record` writes
+        // the transcript. This line is what a turn *ended as*, which `App::say`'s
+        // own documentation names as `record`'s half — and it was the one ending
+        // that went to the wrong one. The 2026-09-05 field test stopped a turn
+        // and found "no record in the scrollback that it had ever started": the
+        // prompt echo was above it, the work was above that, and the only thing
+        // tying them to an ending vanished on the next key pressed.
+        //
+        // It says what was kept as well as that it stopped, because "stopped" on
+        // its own leaves an operator looking at a half-finished transcript with
+        // no way to tell a turn that was interrupted from one that failed
+        // silently.
+        None => app.record(
+            Tone::Muted,
+            format!(
+                "stopped {} what the turn had already done is above, and is kept",
+                app.theme.glyphs.dash
+            ),
+        ),
         // **A turn that ended parked said nothing at all until 0.23.0.** The
         // harness returns `AwaitingAnswer`, `AwaitingPlan` or `AwaitingRecovery`
         // as an ordinary `Ok`, so this arm matched and dropped it — and the
@@ -8581,8 +8804,32 @@ fn note_context(
     // event, and a fourth arm at one of the three is how the headless path or the
     // resume path silently keeps the contract's number. The event arrives once,
     // beside `Started`, so this runs before the first share is computed.
-    if let io_harness::EventKind::ContextCeiling { max_tokens, .. } = &event.kind {
-        app.status.note_ceiling(*max_tokens);
+    // **`source` is taken as well as the number, and 0.38.2 threw it away.** The
+    // rest is still `..` because the variant is `#[non_exhaustive]`; the two
+    // fields it has today are both wanted, and a rung an operator cannot read is
+    // a number they have to guess the provenance of.
+    if let io_harness::EventKind::ContextCeiling {
+        max_tokens, source, ..
+    } = &event.kind
+    {
+        app.status.note_ceiling(*max_tokens, source);
+    }
+    // **How much of the prompt the provider read from its cache (0.39.0).** Here
+    // for the ceiling's reason exactly — this is the one function every door
+    // already calls per event, so an arm written beside one of the three call
+    // sites would leave the headless path or the resume path reporting a bill
+    // that looks entirely fresh.
+    //
+    // `cache_read_tokens` alone. `fresh_prompt_tokens` is the remainder and would
+    // be a second number saying the same thing; `cache_write_tokens` is charged
+    // differently and its `None` means *not reported* rather than *none written*,
+    // which is not a thing to fold into a total. Both stay on
+    // `io exec --json` and in the durable trace.
+    if let io_harness::EventKind::StepUsage {
+        cache_read_tokens, ..
+    } = &event.kind
+    {
+        app.status.note_step_usage(*cache_read_tokens);
     }
     if let Some(request) = seen.latest() {
         // **What is LEFT of the run budget, not all of it.** io-harness assembles
@@ -9503,6 +9750,13 @@ enum Pick {
     /// reads the head itself, and a run id carried from before the confirmation
     /// could name a turn another `io` has since moved off the head.
     UndoRun,
+    /// A confirmation over writing a first `[app.io-cli.containment]` (0.39.0).
+    ///
+    /// Carries the caps it will write, so the section that lands is the one whose
+    /// four numbers were on the row the operator chose — the same rule the export
+    /// confirmation below follows, and for the same reason: a value rebuilt on
+    /// acceptance is a value nobody agreed to.
+    ContainDefault(io_harness::Containment),
     /// A confirmation over one export, carrying the bytes it will write.
     ///
     /// The content is built before the confirmation and carried rather than
@@ -10100,6 +10354,40 @@ async fn manage_main(
             // status has to carry it — otherwise a script can tell an answering
             // server from a dead one only by parsing the sentence above.
             return Ok(io_cli::exec::probe_code(&probe));
+        }
+        // **`io mcp serve` — this install's own tools, offered to somebody else
+        // (0.39.0).** The other verbs on this surface manage servers io talks to;
+        // this one makes io a server, over the same protocol, on stdio.
+        //
+        // **Stdout is the protocol from this line on.** Everything io says about
+        // itself — which tools it serves, which it does not, under what policy —
+        // is written to stderr before the loop starts, because one
+        // human-readable byte on stdout corrupts the stream for the client that
+        // borrowed this boundary. That is the same rule `io acp` follows and it
+        // is the reason this arm returns rather than falling through to the
+        // `println!` verbs below it.
+        //
+        // **The policy is the one this install resolved**, not a wider one: the
+        // whole reason another agent would borrow this boundary is that it can
+        // see it, so serving under anything other than the operator's own rules
+        // would make the borrowing pointless and the disclosure a lie.
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Serve) => {
+            let store = io_cli::settings::store_path().ok_or("no place to keep the run store")?;
+            let policy = config.policy().unwrap_or_default();
+            // Named for the product an operator configured, not for the library
+            // inside it. A client's server list is where this name is read, and
+            // `io-harness` there would send somebody looking for the wrong
+            // documentation.
+            let served = io_harness::McpServerConfig::new(root, &store)
+                .with_policy(policy)
+                .with_server_name("io");
+            for line in io_cli::servers::serving(&served) {
+                eprintln!("{line}");
+            }
+            io_harness::serve_mcp(served)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(io_cli::exec::OK);
         }
         _ => {}
     }

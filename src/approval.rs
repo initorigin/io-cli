@@ -214,6 +214,21 @@ impl Answer {
 /// What the model is told when the operator says no.
 pub const REFUSED_BY_OPERATOR: &str = "the operator denied it";
 
+/// How far `PageUp` and `PageDown` move through a proposed change.
+///
+/// A fixed number rather than the viewport's height, which this surface does not
+/// know when a key arrives — the height is a property of the frame and the key
+/// comes first. Eight rows is roughly a screen of this overlay at the size it is
+/// actually drawn at, and being approximate costs a reader nothing: they are
+/// scrolling to read, not to land on a row.
+const PAGE: usize = 8;
+
+/// What the answers row says when a key that is not one of the three arrives.
+///
+/// A constant because two things need it to be the same string: the row that
+/// draws it, and the test that proves an ignored key is not ignored silently.
+pub const ONLY_THREE_KEYS: &str = "press y, a or n";
+
 /// An open question, and the answer being chosen.
 ///
 /// It owns the [`Ask`], so the run stays paused for exactly as long as this
@@ -231,6 +246,34 @@ pub struct Approval {
     /// falls back to showing the proposed content plainly, which is what 0.2.0
     /// did for every write.
     proposed: Option<Edit>,
+    /// Whether the last keystroke was one this overlay does not take (0.39.0).
+    ///
+    /// **A modal that ignores a key in silence is a modal an operator does not
+    /// know they are in.** Until 0.39.0 every key that was not `y`, `a`, `n`, an
+    /// arrow or `Enter` returned `None` and changed nothing on screen — so an
+    /// operator who had begun typing a sentence saw their words go nowhere, with
+    /// the interface giving no sign that it was waiting for one of three keys.
+    /// The 2026-09-05 field test walked into exactly that and lost the sentence.
+    ///
+    /// Set by the key that was refused and cleared by the next one this surface
+    /// does take, so it says "that key, just now" rather than "a key at some
+    /// point". It changes no decision and reaches no `Decision` — it is drawn and
+    /// nothing else.
+    nudged: bool,
+    /// How far down the proposed change the reader has scrolled, in rows
+    /// (0.39.0).
+    ///
+    /// The diff used to be cut at whatever the viewport had with `⋯ N more lines`
+    /// on the last row, which is a reasonable summary of a change and no way at
+    /// all to read one. An operator approving a write they cannot see the end of
+    /// is approving the elision.
+    ///
+    /// Rows and not hunks, because the thing being scrolled is what is drawn and
+    /// a hunk is not a unit the viewport knows about. Clamped when it is used
+    /// rather than when it is set: the number of rows depends on the width the
+    /// frame turns out to have, which this does not know at the moment a key
+    /// arrives.
+    scroll: usize,
 }
 
 impl Approval {
@@ -254,6 +297,8 @@ impl Approval {
             ask,
             chosen: 0,
             proposed,
+            nudged: false,
+            scroll: 0,
         }
     }
 
@@ -272,6 +317,11 @@ impl Approval {
     /// arrows with `Enter` for the one who does not. A key that only works when
     /// you already know it is not an interface.
     pub fn key(&mut self, key: KeyEvent) -> Option<Answer> {
+        // Cleared up front and set again only by the arm that refuses, so the
+        // mark always describes the key that has just arrived. Doing it in the
+        // refusing arm alone would leave the last refusal showing for the rest of
+        // the overlay's life.
+        self.nudged = false;
         match key.code {
             KeyCode::Left => {
                 self.chosen = self.chosen.saturating_sub(1);
@@ -283,11 +333,57 @@ impl Approval {
                 }
                 None
             }
+            // **Reading the change is not answering it.** Four keys move the
+            // proposal under the question; none of them can decide anything, and
+            // none of them is a key an operator would press meaning "yes".
+            KeyCode::Up => {
+                self.scroll = self.scroll.saturating_sub(1);
+                None
+            }
+            KeyCode::Down => {
+                self.scroll += 1;
+                None
+            }
+            KeyCode::PageUp => {
+                self.scroll = self.scroll.saturating_sub(PAGE);
+                None
+            }
+            KeyCode::PageDown => {
+                self.scroll += PAGE;
+                None
+            }
+            KeyCode::Home => {
+                self.scroll = 0;
+                None
+            }
+            // **`End` too, and its absence was a real refusal.** Every other
+            // navigation key was taken silently while `End` — which is what a
+            // reader presses to reach the bottom of a diff — fell into the arm
+            // that flashes `press y, a or n`. Being told to answer for pressing
+            // a key that means "show me the rest" is the exact confusion this
+            // release's approval work exists to remove.
+            //
+            // `usize::MAX` rather than a computed bottom: the clamp is in
+            // `as_diff`, which is the only place that knows how many rows the
+            // change has at this frame's width.
+            KeyCode::End => {
+                self.scroll = usize::MAX;
+                None
+            }
             KeyCode::Enter => Some(self.chosen()),
-            KeyCode::Char(c) => Answer::ALL
-                .into_iter()
-                .find(|answer| answer.key() == c.to_ascii_lowercase()),
-            _ => None,
+            KeyCode::Char(c) => {
+                let answer = Answer::ALL
+                    .into_iter()
+                    .find(|answer| answer.key() == c.to_ascii_lowercase());
+                // A letter that is not one of the three is the operator typing
+                // prose into a modal. It answers nothing, and now it says so.
+                self.nudged = answer.is_none();
+                answer
+            }
+            _ => {
+                self.nudged = true;
+                None
+            }
         }
     }
 
@@ -487,13 +583,18 @@ impl Approval {
     /// hundred — a different decision, not a smaller one.
     fn as_diff(&self, edit: &Edit, room: usize, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let separator = theme.glyphs.separator;
+        // **Counted from the hunk drawn below rather than from the recorded
+        // fields, and `crate::diff::counted` explains why at length.** The short
+        // version: io-harness's `lines_added`/`lines_removed` measure the
+        // *fragment* an edit replaced while the hunk is the whole file's diff, so
+        // a header taken from the fields describes something other than the rows
+        // underneath it. The field test met that as `+3 -9` above an edit that
+        // landed as `-9 +10`.
+        let (added, removed) = crate::diff::counted(edit);
         let mut lines = vec![Line::from(vec![
-            Span::styled(format!("  +{}", edit.lines_added), theme.style(Tone::Added)),
+            Span::styled(format!("  +{added}"), theme.style(Tone::Added)),
             Span::styled(" ".to_string(), theme.style(Tone::Muted)),
-            Span::styled(
-                format!("-{}", edit.lines_removed),
-                theme.style(Tone::Removed),
-            ),
+            Span::styled(format!("-{removed}"), theme.style(Tone::Removed)),
             Span::styled(
                 match &edit.hunk {
                     Some(_) => format!("{separator}{}", edit.tool),
@@ -517,12 +618,28 @@ impl Approval {
                 .map(|line| fit_line(line, width, theme)),
         );
 
-        let total = lines.len();
-        let shown = total.min(room);
-        let cut = total.saturating_sub(shown);
-        lines.truncate(shown);
-        // Said, not silently dropped. A reader who thinks they have seen a whole
-        // change and has seen its first row is worse off than one who was told.
+        // **The header stays put and the change scrolls under it.** The counts
+        // are the one row that has to be on screen at every offset — they are
+        // what the decision is being made about — so the window is taken over
+        // the body and the first line is put back on top of it.
+        //
+        // Clamped here rather than where the key was pressed, because the number
+        // of rows is a function of the width this frame turned out to have and
+        // `key` does not know it. `Home` and repeated `Up` therefore always reach
+        // the top, and `Down` past the end simply stops.
+        let body = lines.split_off(1);
+        let room_for_body = room.saturating_sub(1);
+        let furthest = body.len().saturating_sub(room_for_body);
+        let from = self.scroll.min(furthest);
+        lines.extend(body.into_iter().skip(from).take(room_for_body));
+
+        lines.truncate(room);
+        // Said, not silently dropped — and now it says what to do about it. A
+        // reader who thinks they have seen a whole change and has seen its first
+        // rows is worse off than one who was told; a reader who is told and
+        // cannot reach the rest is only slightly better off, which is what this
+        // row read like before the change could be scrolled.
+        let cut = furthest.saturating_sub(from);
         if cut > 0 {
             if let Some(last) = lines.pop() {
                 // **Room is made for it, rather than it being appended to a row
@@ -532,7 +649,14 @@ impl Approval {
                 // was hidden — which is the one thing on this overlay that must
                 // not be lost, and which a taller viewport made visible by
                 // changing which line ends up last.
-                let suffix = format!("  {} {cut} more lines", theme.glyphs.elision);
+                // No arrow glyph here: this overlay is drawn under the ASCII set
+                // as well, and a character the terminal cannot render is worse
+                // than the word it stands for. `theme.glyphs.elision` is the one
+                // symbol on the row and it comes from the chosen set.
+                let suffix = format!(
+                    "  {} {cut} more lines, scroll to read",
+                    theme.glyphs.elision
+                );
                 let room = width.saturating_sub(suffix.chars().count());
                 let mut fitted = fit_line(last, room, theme);
                 fitted
@@ -561,6 +685,21 @@ impl Approval {
         let mut spans = Vec::new();
         let mut width = 0usize;
         let mut column = 0usize;
+        // **The refused key, said in a word before the three that would work.**
+        // Built through `Theme::notice` like every other toned line in the
+        // product, so the meaning survives `NO_COLOR` and a terminal with no
+        // colour at all — this row is the one place an operator learns that what
+        // they typed did nothing, and a tone alone would tell only half of them.
+        //
+        // Ahead of the answers rather than after them: it is the reason to read
+        // the rest of the row.
+        if self.nudged {
+            let notice = theme.notice(Tone::Warning, ONLY_THREE_KEYS.to_string());
+            width += notice.width();
+            spans.extend(notice.spans);
+            spans.push(Span::styled(separator, theme.style(Tone::Muted)));
+            width += separator.chars().count();
+        }
         for (index, answer) in Answer::ALL.into_iter().enumerate() {
             if index > 0 {
                 spans.push(Span::styled(separator, theme.style(Tone::Muted)));

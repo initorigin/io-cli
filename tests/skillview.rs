@@ -877,6 +877,78 @@ fn enable_is_refused_on_a_bundle_skill_and_leaves_the_bundle_untouched() {
 // 0.30.0 F1, F2, F3 — a skill arrives and leaves.
 // ---------------------------------------------------------------------------
 
+/// **F10 — a directory holding a `SKILL.md` installs, with its companions.**
+///
+/// io-harness has admitted folder skills all along: `Skills::discover` takes a
+/// subdirectory exactly when it holds a `SKILL.md`, and `disable` has parked one
+/// as a folder since it was written. `io skill add` refused a shape the rest of
+/// the product already supported, so an operator with a skill that ships a
+/// reference file had to copy it in by hand and hope the layout was right.
+///
+/// The companion is what this arm is really about. A skill whose `SKILL.md`
+/// points at a checklist that did not come with it installs, lists and loads —
+/// and then fails at the one moment it is used, which is worse than a refusal.
+///
+/// Sabotage: copy only the manifest. The name and the path still check out and
+/// this fails on the companion.
+#[test]
+fn f10_a_folder_skill_installs_whole() {
+    let (dir, home) = home();
+    let source = dir.path().join("elsewhere").join("reviewer");
+    write(
+        &source.join("SKILL.md"),
+        &skill("reviewer", "review a diff"),
+    );
+    write(&source.join("checklist.md"), "- read the whole diff\n");
+    write(&source.join("cases").join("edge.md"), "- an empty diff\n");
+
+    let at = skillview::install(&home, &source).expect("a folder skill installs");
+
+    assert_eq!(
+        at,
+        skills::dir(&home).join("reviewer"),
+        "a folder skill lands under the name its frontmatter declares, as a \
+         directory — which is the layout `Skills::discover` walks",
+    );
+    assert_eq!(
+        read(&at.join("checklist.md")),
+        b"- read the whole diff\n",
+        "the companion file is why it is a folder at all",
+    );
+    assert_eq!(
+        read(&at.join("cases").join("edge.md")),
+        b"- an empty diff\n",
+        "and a nested one, because a skill's references are its own to arrange",
+    );
+    // The whole point of the layout: io-harness finds it.
+    let found = io_harness::Skills::discover(skills::dir(&home)).expect("the home discovers");
+    assert!(
+        found.get("reviewer").is_some(),
+        "the installed folder is not a skill io-harness can see, which makes the \
+         install a copy and nothing more",
+    );
+}
+
+/// **F10 — a directory with no `SKILL.md` is refused, and the refusal says what
+/// was looked for.**
+///
+/// The failure an operator will actually hit: pointing the verb at the folder
+/// *above* the skill, or at one whose manifest is called something else. A bare
+/// "not a file" told them nothing, and now that a directory is a legitimate
+/// argument it would be actively misleading.
+#[test]
+fn f10_a_directory_without_a_manifest_is_refused_by_name() {
+    let (dir, home) = home();
+    let source = dir.path().join("elsewhere").join("not-a-skill");
+    write(&source.join("readme.md"), "# notes\n");
+
+    let refusal = skillview::install(&home, &source).expect_err("there is no manifest");
+    assert!(
+        refusal.contains("SKILL.md"),
+        "the refusal has to name the file it looked for: {refusal}",
+    );
+}
+
 /// **F1.** Installing copies the operator's file in, and the row reads `yours`.
 ///
 /// The provenance half is the load-bearing one. `skills::wrote` answers *are these

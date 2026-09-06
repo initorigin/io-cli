@@ -170,7 +170,11 @@ fn f2_initialize_answers_protocol_version_one_and_needs_no_authentication() {
             "`{name}` is not carried into a run yet and must not be promised",
         );
     }
-    assert_eq!(result["agentCapabilities"]["loadSession"], json!(false));
+    // **`true` since 0.39.0.** It was false because the correspondence between an
+    // ACP session id and a stored conversation had to be designed rather than
+    // guessed; the design turned out to be the one the id already carried, since
+    // this adapter issues `io-<session id>`.
+    assert_eq!(result["agentCapabilities"]["loadSession"], json!(true));
 }
 
 /// **A malformed frame is answered, never fatal.**
@@ -1129,8 +1133,9 @@ fn the_served_methods_are_the_ones_this_release_implements() {
     assert!(acp::serves("session/cancel"));
 
     assert!(
-        !acp::serves("session/load"),
-        "`session/load` is excluded from 0.36.0 and must not answer",
+        acp::serves("session/load"),
+        "`session/load` is served from 0.39.0, and its `loadSession` capability \
+         is declared — the two lists agreeing is what the GATED table exists for",
     );
     assert!(
         !acp::serves("fs/read_text_file"),
@@ -1140,7 +1145,7 @@ fn the_served_methods_are_the_ones_this_release_implements() {
 
     assert_eq!(
         SERVED.len(),
-        4,
+        5,
         "the dispatch table changed without this test being updated",
     );
 }
@@ -1427,6 +1432,340 @@ async fn f11_a_cancelled_outcome_is_a_denial() {
     assert!(
         matches!(decision, io_harness::Decision::Deny { .. }),
         "a cancelled approval must not approve: {decision:?}"
+    );
+}
+
+/// Drive the real `io acp` over pipes, and hand back every frame it answered.
+///
+/// **A spawned process rather than a `Handler` fixture**, because the thing under
+/// test is the session map inside `Editing`, which is private and needs a
+/// provider to construct. None of the frames below needs a completion — opening,
+/// loading and refusing a prompt for an unknown session all happen before a turn
+/// — so this runs with a provider configured at an address nothing serves and
+/// reaches no network.
+fn spoken(frames: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let home = tempfile::tempdir().expect("a home");
+    let workspace = tempfile::tempdir().expect("a workspace");
+    spoken_in(home.path(), workspace.path(), frames)
+}
+
+/// The same, against a home that outlives the process.
+///
+/// **Two `io acp` runs over one store is what `session/load` is for**, and a
+/// helper that made a fresh home per call could only ever load a session from the
+/// process that was still running — which is the half that needs no persistence
+/// and proves the least.
+fn spoken_in(
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    frames: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let config = home.join("io.toml");
+    std::fs::write(
+        &config,
+        "[[provider]]\nkind = \"compatible\"\nmodel = \"a-model\"\n\
+         base_url = \"http://127.0.0.1:9\"\napi_key = \"not-a-key\"\n",
+    )
+    .expect("the configuration");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_io"))
+        .arg("-C")
+        .arg(workspace)
+        .arg("acp")
+        .env("IO_CONFIG", &config)
+        .env("IO_CONFIG_HOME", home)
+        .env("NO_COLOR", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("io acp starts");
+
+    {
+        let stdin = child.stdin.as_mut().expect("stdin");
+        for frame in frames {
+            writeln!(stdin, "{frame}").expect("the agent takes a frame");
+        }
+        // Closing stdin is what ends the loop, which is the protocol's own
+        // shutdown and not a kill.
+    }
+    child.stdin.take();
+
+    let out = child.wait_with_output().expect("io acp ends");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("every frame is JSON"))
+        .collect()
+}
+
+/// A request frame as a `Value`, for the arms that drive a real process.
+///
+/// Distinct from [`request`] above, which hands back a `String` for the arms that
+/// drive a `Handler` fixture directly.
+fn asked(id: i64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+}
+
+/// **F12 — the agent holds more than one session, and they do not cross.**
+///
+/// 0.36.0 held one and refused a second, which was the honest thing to do rather
+/// than multiplex badly, and 0.38.0 named it as a limitation. An editor with two
+/// files open wanting two conversations is the ordinary case.
+///
+/// The ids must differ, which is the whole of "they do not cross": every update a
+/// turn sends carries the id it belongs to, so two sessions sharing one would put
+/// one conversation's output into the other's pane.
+#[test]
+fn f12_the_agent_opens_more_than_one_session() {
+    let answers = spoken(&[
+        asked(1, "initialize", json!({ "protocolVersion": 1 })),
+        asked(2, "session/new", json!({})),
+        asked(3, "session/new", json!({})),
+    ]);
+
+    let id_of = |id: i64| -> String {
+        answers
+            .iter()
+            .find(|frame| frame["id"] == json!(id))
+            .and_then(|frame| frame["result"]["sessionId"].as_str())
+            .unwrap_or_else(|| panic!("no session id for request {id}: {answers:#?}"))
+            .to_string()
+    };
+
+    let first = id_of(2);
+    let second = id_of(3);
+    assert_ne!(
+        first, second,
+        "two sessions share an id, so every update either sends lands in both \
+         panes",
+    );
+    for frame in &answers {
+        assert!(
+            frame.get("error").is_none(),
+            "a second session was refused: {frame}",
+        );
+    }
+}
+
+/// **F12 — a prompt names its session, and one the agent does not hold is
+/// refused.**
+///
+/// Through 0.38.2 there was one session and the parameter could be ignored. With
+/// a map, a prompt that named nothing would go to whichever conversation happened
+/// to be first — which is the failure mode of multiplexing badly that 0.36.0
+/// refused a second session to avoid, arriving by the back door.
+#[test]
+fn f12_a_prompt_for_a_session_the_agent_does_not_hold_is_refused() {
+    let answers = spoken(&[
+        asked(1, "initialize", json!({ "protocolVersion": 1 })),
+        asked(
+            2,
+            "session/prompt",
+            json!({
+                "sessionId": "io-999999",
+                "prompt": [{ "type": "text", "text": "do something" }],
+            }),
+        ),
+    ]);
+
+    let refusal = answers
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .expect("the prompt was answered");
+    assert!(
+        refusal.get("error").is_some(),
+        "a prompt for a session the agent does not hold was accepted: {refusal}",
+    );
+    let message = refusal["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("session/new") || message.contains("session/load"),
+        "the refusal has to say how to get a session: {message}",
+    );
+}
+
+/// **F12 — `session/load` reopens a conversation this agent issued.**
+///
+/// Its absence was the sharpest thing missing from the editor door: an operator
+/// who closed their editor yesterday had no way back into the conversation, while
+/// `io resume` in a terminal had one all along.
+///
+/// A session opened in this same process is loaded back, which is the case that
+/// needs no history and no provider. That the *ids* round-trip is the mechanism —
+/// this adapter issues `io-<session id>`, and loading is reading that number back
+/// out and reopening it.
+#[test]
+fn f12_a_session_can_be_loaded_back() {
+    // **One home across two processes**, which is the case that matters: an
+    // operator closing their editor and reopening it is a second `io acp` over
+    // the same store, and a load that only worked inside one process would be
+    // the half that needs no persistence.
+    let home = tempfile::tempdir().expect("a home");
+    let workspace = tempfile::tempdir().expect("a workspace");
+
+    let answers = spoken_in(
+        home.path(),
+        workspace.path(),
+        &[
+            asked(1, "initialize", json!({ "protocolVersion": 1 })),
+            asked(2, "session/new", json!({})),
+        ],
+    );
+    let id = answers
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .expect("a session id")
+        .to_string();
+
+    let reloaded = spoken_in(
+        home.path(),
+        workspace.path(),
+        &[
+            asked(1, "initialize", json!({ "protocolVersion": 1 })),
+            asked(2, "session/load", json!({ "sessionId": id })),
+        ],
+    );
+    let answer = reloaded
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .expect("the load was answered");
+    assert!(
+        answer.get("error").is_none(),
+        "a session this agent issued could not be loaded back: {answer}",
+    );
+
+    // And a name it never issued is refused rather than opened as something.
+    let refused = spoken(&[
+        asked(1, "initialize", json!({ "protocolVersion": 1 })),
+        asked(2, "session/load", json!({ "sessionId": "not-ours" })),
+    ]);
+    assert!(
+        refused
+            .iter()
+            .find(|frame| frame["id"] == json!(2))
+            .expect("answered")
+            .get("error")
+            .is_some(),
+        "an id this agent never issued was loaded: {refused:#?}",
+    );
+}
+
+/// **F12 — a session belonging to another workspace cannot be loaded.**
+///
+/// **The defect this exists for was real and shipped in the first draft of
+/// `session/load`.** There is one `runs.db` for every workspace on the machine
+/// and `Session::reopen` reads a session's root out of its stored row, so
+/// without a check a client could walk `io-1`, `io-2`, `io-3` and be handed the
+/// history of every conversation the operator has ever had, from every
+/// repository — and a prompt afterwards would edit that other workspace's files
+/// under *this* workspace's policy, because the contract is rooted at the
+/// session and the policy was resolved once at the `-C` root.
+///
+/// Found by the adversarial review, after the suite, clippy and the formatter
+/// were green — and it could not have been found by the arm above it, which uses
+/// one workspace for both processes.
+///
+/// The refusal is deliberately the same sentence a malformed id gets: a client
+/// has no business distinguishing "that session is not yours" from "that is not
+/// a session", and a message that told them apart would be an oracle for which
+/// ids exist.
+#[test]
+fn f12_a_session_from_another_workspace_is_refused() {
+    let home = tempfile::tempdir().expect("a home");
+    let mine = tempfile::tempdir().expect("this workspace");
+    let theirs = tempfile::tempdir().expect("another workspace");
+
+    // A session opened against a *different* workspace, in the same store.
+    let opened = spoken_in(
+        home.path(),
+        theirs.path(),
+        &[
+            asked(1, "initialize", json!({ "protocolVersion": 1 })),
+            asked(2, "session/new", json!({})),
+        ],
+    );
+    let elsewhere = opened
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .expect("a session id")
+        .to_string();
+
+    // Now ask an agent pointed at *this* workspace to load it.
+    let answers = spoken_in(
+        home.path(),
+        mine.path(),
+        &[
+            asked(1, "initialize", json!({ "protocolVersion": 1 })),
+            asked(2, "session/load", json!({ "sessionId": elsewhere })),
+        ],
+    );
+
+    let answer = answers
+        .iter()
+        .find(|frame| frame["id"] == json!(2))
+        .expect("the load was answered");
+    assert!(
+        answer.get("error").is_some(),
+        "a session rooted in another workspace was loaded: {answer}",
+    );
+
+    // And nothing of that conversation was streamed on the way to the refusal.
+    // The replay runs before any failure could, so an ordering mistake here
+    // discloses the history and then says no.
+    for frame in &answers {
+        assert_ne!(
+            frame["method"],
+            json!("session/update"),
+            "another workspace's history was replayed before the refusal: {frame}",
+        );
+    }
+}
+
+/// **F12 — a replayed turn is the two shapes a live turn already sends.**
+///
+/// A loaded conversation goes through the client's existing rendering rather than
+/// a second path built for replay — a bespoke transcript in the result would be
+/// that second path, and it would be the one that rots, because nobody looks at
+/// it until they reopen an old session.
+///
+/// A turn with no reply contributes only its prompt: `Turn::reply` is `None` while
+/// a turn runs and for one that stopped without a closing message, and an empty
+/// agent chunk would draw the model as having answered with silence.
+#[test]
+fn f12_a_replayed_turn_carries_what_was_said_and_nothing_it_did_not() {
+    let turn = |reply: Option<&str>| io_harness::Turn {
+        id: 1,
+        session_id: 7,
+        parent_turn_id: None,
+        run_id: 3,
+        prompt: "tidy the parser".into(),
+        reply: reply.map(str::to_string),
+        outcome: Some("Success".into()),
+        created_at: "2026-09-06T00:00:00Z".into(),
+    };
+
+    let both = acp::replayed(&turn(Some("done")));
+    assert_eq!(both.len(), 2, "{both:#?}");
+    assert_eq!(both[0]["sessionUpdate"], json!("user_message_chunk"));
+    assert_eq!(both[0]["content"]["text"], json!("tidy the parser"));
+    assert_eq!(both[1]["sessionUpdate"], json!("agent_message_chunk"));
+    assert_eq!(both[1]["content"]["text"], json!("done"));
+
+    let unanswered = acp::replayed(&turn(None));
+    assert_eq!(
+        unanswered.len(),
+        1,
+        "a turn with no reply drew an empty agent chunk, which says the model \
+         answered with silence rather than that it did not answer: {unanswered:#?}",
     );
 }
 

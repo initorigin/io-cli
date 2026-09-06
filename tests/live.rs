@@ -3735,6 +3735,10 @@ async fn live_f5_an_unreachable_primary_falls_through_to_the_provider_underneath
     let (reply, served) = io_cli::provider::build(
         specs,
         None,
+        // No catalogue: this arm is about the chain falling through, and a
+        // reference read would put a second host in front of the behaviour it
+        // measures.
+        None,
         Falling {
             session: &mut session,
             store: &store,
@@ -4019,13 +4023,34 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
     let provider = io_harness::OpenRouter::new(&key, model());
     let policy = workspace_policy();
 
+    // **`conversational = false`, and without it this arm cannot hold (0.39.0).**
+    //
+    // `contract::session` starts at `Verification::None`, and io-harness reads
+    // `contract.conversational.unwrap_or(matches!(verify, Verification::None))` —
+    // so an ungated turn may be answered in one completion with no steps at all
+    // whenever the harness's classifier decides the goal is only a question. It
+    // decided exactly that here: the run came back `Finished { steps: 0 }`, no
+    // tool was ever reached, and the arm failed on its own "the goal was not
+    // reached" guard.
+    //
+    // That is a real behaviour and not a defect — but it makes this arm's
+    // *instrument* a classifier's judgement, which is not a thing to gate a mask
+    // on. Turning the key off opens a run for every prompt, which is what the key
+    // exists for, and leaves the model with the tools as its only route.
+    //
+    // Verified against `develop` before changing anything: the same arm fails
+    // identically on 0.38.2, so this is a pre-existing gate that stopped holding
+    // as provider behaviour moved, and not something 0.39.0 broke.
+    let with_a_run = Config::from_toml("[app.io-cli]\nconversational = false\n")
+        .expect("io-cli's own section parses at any scope");
+
     let (answerer, _questions) = io_cli::intent::channel();
     let contract = io_cli::contract::session(
         "Create a file called notes.txt containing the single word hello. \
          Use the write_file tool.",
         root.to_path_buf(),
-        &no_configuration(),
-        &no_configuration().plugins(),
+        &with_a_run,
+        &with_a_run.plugins(),
         &io_cli::contract::Capabilities::default(),
         Arc::new(answerer),
         None,
@@ -4059,7 +4084,7 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
     // working mask, which is the finding worth keeping: io-harness *announces* the
     // mask in the user prompt — "Unavailable this turn — these tools are listed
     // above but calling one is refused and starts nothing: write_file"
-    // (`io-harness-0.81.0/src/run/prompts.rs:1381`) — so a compliant model never attempts the call and
+    // (`io-harness-0.82.0/src/run/prompts.rs:1381`) — so a compliant model never attempts the call and
     // never produces the refusal. The run above said so in its own reasoning: "the
     // previous turns show write_file was refused, so I used a shell redirect
     // instead". That is the mask working at its best, not evidence of absence.
@@ -4378,4 +4403,75 @@ fn live_o3_a_gated_run_that_cannot_pass_exits_six() {
         stderr.contains("gate"),
         "stderr must say the gate is what ended this: {stderr}",
     );
+}
+
+/// **F16/O3 — the ceiling a real run announces is the model's window, not 24,000.**
+///
+/// **This is the release's headline and the only arm that can decide it.** 0.38.2
+/// built the whole path — all four wrappers delegating, three surfaces reading the
+/// announced ceiling — and shipped it inert, because in io-harness 0.81.0 only
+/// `Compatible` answered `context_window` and only from a catalogue nothing
+/// primed. Every provider this crate could construct assembled under a flat
+/// 24,000 and `US-IO-CLI-0.38.2-I01` had to withdraw the claim. So an offline gate
+/// asserting the plumbing is exactly what was green through that release, and
+/// nothing but a live run against a real provider can tell this release apart
+/// from the last one.
+///
+/// The number is not asserted, and that is deliberate. It is whatever the model
+/// the fixture names actually declares, which moves when the catalogue moves. What
+/// is asserted is what the release claims: that the rung is no longer the
+/// fallback, and that the ceiling is no longer io-harness's old flat constant.
+///
+/// Nothing is written and no tool is reached — the ceiling is announced beside
+/// `Started`, before the first step — so this is the cheapest arm in the file.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f16_the_announced_ceiling_is_the_models_window() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let _ = session
+        .turn_steered(
+            "Reply with the single word ok.",
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &observer,
+            &inbox,
+        )
+        .await;
+
+    let events = collected.lock().expect("not poisoned");
+    let announced = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ContextCeiling { max_tokens, source } => Some((*max_tokens, source.clone())),
+            _ => None,
+        })
+        .expect("a real run announces its ceiling once, beside Started");
+
+    let (max_tokens, source) = announced;
+    assert_ne!(
+        source, "fallback",
+        "the run took the fallback rung, so nothing sized this provider — which is \
+         exactly the state 0.38.2 shipped and this release exists to end. \
+         ceiling: {max_tokens}",
+    );
+    assert_ne!(
+        max_tokens, 24_000,
+        "the ceiling is io-harness's old flat constant, announced as `{source}`",
+    );
+    println!("live ceiling: {max_tokens} tokens, source {source}");
 }

@@ -488,13 +488,83 @@ async fn nothing_remembered_changes_nothing() {
 // and a new file is all addition.
 // ---------------------------------------------------------------------------
 
+/// An approval over a plain write, with no file behind it — everything a
+/// keyboard arm needs and nothing it does not.
+///
+/// The arms below never answer: they press a key and read the frame. Dropping
+/// the `Ask` without answering is a denial, which is what makes the abandoned
+/// task safe.
+async fn fresh() -> io_cli::approval::Approval {
+    use io_cli::approval::{self, Approval};
+    use io_harness::{Act, ApprovalContext, Approver, Request};
+
+    let (asker, mut asks) = approval::channel();
+    let request = Request::new(Act::Write, "notes.txt".to_string())
+        .with_content("one\ntwo\nthree\n".to_string());
+    tokio::spawn(async move {
+        let asker = asker;
+        asker
+            .decide_in_context(&request, &ApprovalContext::new("tidy the parser"))
+            .await
+    });
+    let ask = asks.recv().await.expect("the question arrived");
+    Approval::new(ask, std::path::Path::new(""))
+}
+
+/// One frame of `approval` after `key`, as text.
+fn draw_after(approval: &mut io_cli::approval::Approval, key: KeyCode) -> String {
+    use io_cli::theme::DARK;
+
+    approval.key(KeyEvent::new(key, KeyModifiers::NONE));
+    let (mut screen, _recorder) = support::screen_of(100, 12, 8);
+    screen
+        .draw(|frame| approval.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    screen.viewport_text().to_string()
+}
+
+/// A fresh approval struck once with `key`: what it drew, and what it answered.
+async fn struck(key: KeyCode) -> (String, Option<io_cli::approval::Answer>) {
+    use io_cli::theme::DARK;
+
+    let mut approval = fresh().await;
+    let answer = approval.key(KeyEvent::new(key, KeyModifiers::NONE));
+    let (mut screen, _recorder) = support::screen_of(100, 12, 8);
+    screen
+        .draw(|frame| approval.render(frame, frame.area(), &DARK))
+        .expect("frame");
+    (screen.viewport_text().to_string(), answer)
+}
+
+/// [`overlay_for`], with a run of keys pressed before the frame is taken.
+async fn overlay_after(
+    target: &std::path::Path,
+    content: &str,
+    height: u16,
+    keys: &[KeyCode],
+) -> String {
+    overlay_with(target, content, height, keys).await
+}
+
+async fn overlay_for(target: &std::path::Path, content: &str, height: u16) -> String {
+    overlay_with(target, content, height, &[]).await
+}
+
 /// Open an overlay for a write of `content` to `target`, and return what it
 /// draws at `width` columns in `height` rows.
 ///
 /// Rendered through a real `Screen` rather than by calling the private layout,
 /// because what matters is what reaches the terminal — and because the overlay
 /// is height-constrained, which is the whole reason its content flexes.
-async fn overlay_for(target: &std::path::Path, content: &str, height: u16) -> String {
+///
+/// `keys` are pressed before the frame is taken, which is how the scrolling arms
+/// reach a row that is not on the first screen.
+async fn overlay_with(
+    target: &std::path::Path,
+    content: &str,
+    height: u16,
+    keys: &[KeyCode],
+) -> String {
     use io_cli::approval::{self, Approval};
     use io_cli::theme::DARK;
     use io_harness::{Act, ApprovalContext, Approver, Decision, Request};
@@ -513,7 +583,10 @@ async fn overlay_for(target: &std::path::Path, content: &str, height: u16) -> St
     // An empty root leaves an absolute target resolving to itself, which is what
     // these fixtures use; the relative case is covered by the live run, which is
     // where it was found.
-    let approval = Approval::new(ask, std::path::Path::new(""));
+    let mut approval = Approval::new(ask, std::path::Path::new(""));
+    for key in keys {
+        approval.key(KeyEvent::new(*key, KeyModifiers::NONE));
+    }
     // `height` is the VIEWPORT's height, which is what the overlay is drawn
     // into — not the terminal's. A session's is four; a taller one is what a
     // reader gets on a terminal with room, and both are worth asserting.
@@ -550,6 +623,214 @@ async fn f7_a_write_over_an_existing_file_is_shown_as_what_changes() {
         !drawn.contains("+fn one() {}"),
         "an unchanged line was drawn as an addition, which means the old side was \
          empty — the write reads as four hundred lines when it is one: {drawn}",
+    );
+}
+
+/// **F2 — the overlay's counts agree with the body it drew them over.**
+///
+/// This overlay computes its own `Edit` from the file on disk and the content the
+/// harness handed it, so `Edit::measure` and `Edit::with_hunk` are given the same
+/// two texts here and have always agreed. That is *not* true of an edit read back
+/// from the store — see `tests/diff.rs`, where `measure` was handed the fragment
+/// an `edit_file` replaced and the hunk is the whole file's diff — and it is that
+/// pair the 2026-09-05 field test met as `+3 -9` on an approval above an edit the
+/// transcript recorded as `-9 +10`.
+///
+/// So what this arm holds is the property that makes the two surfaces one answer:
+/// both count the hunk. Here that is a consistency check rather than a fix, and
+/// it is worth having because the alternative — going back to the recorded
+/// fields on this one surface — is exactly how the two drifted apart before.
+#[tokio::test]
+async fn f2_the_counts_agree_with_the_diff_drawn_beneath_them() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("two-places.rs");
+    let before = "fn first() {}\nfn b() {}\nfn c() {}\nfn d() {}\nfn last() {}\n";
+    let after = "fn FIRST() {}\nfn b() {}\nfn c() {}\nfn d() {}\nfn LAST() {}\n";
+    std::fs::write(&target, before).expect("the file exists first");
+
+    // Tall enough that the whole hunk is drawn, so the header is compared against
+    // the body rather than against an elision.
+    let drawn = overlay_for(&target, after, 16).await;
+
+    // A drawn diff row is `  1 -fn first() {}` — the line number gutter comes
+    // first, so the marker is the first character that is neither a space nor a
+    // digit. The header itself is excluded by that same rule: it carries the
+    // separator, and no body row does.
+    let separator = io_cli::theme::DARK.glyphs.separator;
+    let marker = |line: &str| {
+        (!line.contains(separator))
+            .then(|| line.trim_start_matches(|c: char| c.is_ascii_digit() || c == ' '))
+            .and_then(|rest| rest.chars().next())
+    };
+    let added = drawn
+        .lines()
+        .filter(|line| marker(line) == Some('+'))
+        .count();
+    let removed = drawn
+        .lines()
+        .filter(|line| marker(line) == Some('-'))
+        .count();
+    assert!(
+        drawn.contains(&format!("+{added} -{removed}")),
+        "the header does not count the rows drawn under it: {added} additions and \
+         {removed} removals are on screen. {drawn}",
+    );
+}
+
+/// **F1 — a key this modal does not take says so, rather than doing nothing.**
+///
+/// Every key that was not `y`, `a`, `n`, an arrow or `Enter` returned `None` and
+/// changed nothing on screen. An operator who has begun typing a sentence sees
+/// their words go nowhere and no sign that the interface is waiting for one of
+/// three keys — which is how the 2026-09-05 field test lost one.
+///
+/// The whole printable ASCII range is swept rather than a chosen letter, because
+/// the interesting keys are the ones nobody thought of. The three that answer are
+/// excluded in both cases, and so are the four that scroll and the two that move
+/// the selection: those do something visible already.
+///
+/// Sabotage: drop the `self.nudged = answer.is_none()` assignment. This fails and
+/// names the character.
+#[tokio::test]
+async fn f1_a_key_the_modal_does_not_take_is_refused_out_loud() {
+    use io_cli::approval::ONLY_THREE_KEYS;
+
+    for byte in b' '..=b'~' {
+        let c = byte as char;
+        if matches!(c.to_ascii_lowercase(), 'y' | 'a' | 'n') {
+            continue;
+        }
+        let (drawn, answer) = struck(KeyCode::Char(c)).await;
+        assert!(
+            answer.is_none(),
+            "{c:?} answered the approval. Three keys decide this, and a fourth \
+             one that does is a permission given by a keystroke nobody meant as \
+             one",
+        );
+        assert!(
+            drawn.contains(ONLY_THREE_KEYS),
+            "{c:?} was ignored in silence. The operator is typing into a modal \
+             and nothing on screen tells them so: {drawn}",
+        );
+    }
+}
+
+/// **F1 — and the mark describes the last key, not any key ever pressed.**
+///
+/// A refusal that stayed on screen would be as bad as one that never appeared:
+/// it would sit above the answers row for the rest of the overlay's life, saying
+/// something untrue about the key that has just arrived.
+#[tokio::test]
+async fn f1_the_refusal_clears_on_the_next_key_the_modal_does_take() {
+    use io_cli::approval::ONLY_THREE_KEYS;
+
+    let mut approval = fresh().await;
+    let refused = draw_after(&mut approval, KeyCode::Char('q'));
+    assert!(refused.contains(ONLY_THREE_KEYS), "{refused}");
+
+    // An arrow is taken, so the refusal is over.
+    let moved = draw_after(&mut approval, KeyCode::Right);
+    assert!(
+        !moved.contains(ONLY_THREE_KEYS),
+        "the refusal outlived the key it was about: {moved}",
+    );
+}
+
+/// **F2 — the proposed change can be read to its end.**
+///
+/// The diff was cut at whatever the viewport had, with `⋯ N more lines` on the
+/// last row. That is a reasonable summary of a change and no way to read one: an
+/// operator approving a write whose end they cannot see is approving the elision.
+///
+/// The fixture is forty distinct lines into a short viewport, so the last line
+/// cannot be on the first screen by accident. `Home` is asserted as well, because
+/// a scroll with no way back to the top strands a reader who has paged past the
+/// counts they were deciding on.
+///
+/// Sabotage: ignore `self.scroll` in `as_diff`. This fails; the header and
+/// counting arms stay green.
+#[tokio::test]
+async fn f2_the_whole_change_is_reachable_rather_than_elided() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("long.rs");
+    let after: String = (0..40).map(|n| format!("fn line{n}() {{}}\n")).collect();
+
+    let first = overlay_for(&target, &after, 8).await;
+    assert!(
+        first.contains("fn line0() {}"),
+        "the change opens at its beginning: {first}",
+    );
+    assert!(
+        !first.contains("fn line39() {}"),
+        "the fixture is meant to be taller than the viewport, or this arm proves \
+         nothing: {first}",
+    );
+    assert!(
+        first.contains("more lines"),
+        "a change that does not fit has to say so: {first}",
+    );
+
+    let paged = overlay_after(&target, &after, 8, &[KeyCode::PageDown; 8]).await;
+    assert!(
+        paged.contains("fn line39() {}"),
+        "the end of the change is unreachable, so the operator is approving the \
+         elision: {paged}",
+    );
+
+    let home = overlay_after(
+        &target,
+        &after,
+        8,
+        &[KeyCode::PageDown, KeyCode::PageDown, KeyCode::Home],
+    )
+    .await;
+    assert!(
+        home.contains("fn line0() {}"),
+        "there is no way back to the top of the change: {home}",
+    );
+}
+
+/// **F2 — scrolling reads and never answers.**
+///
+/// The four keys that move the proposal are added to a surface whose entire job
+/// is taking a permission. None of them may decide anything, and the counts row
+/// stays on screen at every offset because it is what the decision is about.
+#[tokio::test]
+async fn f2_scrolling_the_change_decides_nothing_and_keeps_the_counts() {
+    // `End` is in this list because it was not in the code: every other
+    // navigation key was taken silently while `End` — what a reader presses to
+    // reach the bottom of a diff — flashed `press y, a or n`. Found by the
+    // adversarial review, which noticed that the refusal sweep only walks
+    // printable ASCII and so never presses it.
+    for key in [
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Home,
+        KeyCode::End,
+    ] {
+        let (drawn, answer) = struck(key).await;
+        assert!(
+            !drawn.contains(io_cli::approval::ONLY_THREE_KEYS),
+            "{key:?} was refused. A key that moves the proposal is a key this \
+             surface takes, and being told to answer for pressing it is the \
+             confusion this overlay exists to remove: {drawn}",
+        );
+        assert!(
+            answer.is_none(),
+            "{key:?} answered an approval. Reading a change is not agreeing to it",
+        );
+    }
+
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let target = directory.path().join("long.rs");
+    let after: String = (0..40).map(|n| format!("fn line{n}() {{}}\n")).collect();
+    let paged = overlay_after(&target, &after, 8, &[KeyCode::PageDown; 4]).await;
+    assert!(
+        paged.contains("+40"),
+        "the counts scrolled away with the diff. They are what is being decided \
+         on, and every other row is context for them: {paged}",
     );
 }
 

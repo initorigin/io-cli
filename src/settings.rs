@@ -201,6 +201,39 @@ pub struct CliSettings {
     /// goes through the harness's three builders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<crate::routing::Settings>,
+    /// `reference_catalogue` — whether the Anthropic and OpenAI providers may read
+    /// a model catalogue before the first step, to learn the real context window.
+    ///
+    /// **Absent means yes, and that is a decision this crate takes on the
+    /// operator's behalf rather than a default it inherited.** io-harness 0.82.0
+    /// gives every provider a source for `Provider::context_window`, but for these
+    /// two the source is opt-in: `with_reference_catalogue` is a builder nobody is
+    /// obliged to call, and without it both providers answer
+    /// `assumed_window` — 128,000 for a remote endpoint. That assumption is
+    /// usually close for these two vendors and it is still an assumption, and a
+    /// model smaller than 128,000 that no catalogue carries is assumed *larger*
+    /// than it is, which io-harness recovers from by compacting on a
+    /// `ContextOverflow` and a run with compaction off does not recover from at
+    /// all.
+    ///
+    /// **What saying yes costs the operator, stated here because every surface
+    /// that draws the ceiling has to say it too.** One more host is contacted
+    /// before the first step, which puts it in `Provider::endpoints` and therefore
+    /// under the run's egress policy — and a policy that denies it **refuses the
+    /// run** rather than quietly skipping the lookup. That refusal is recognised
+    /// and rendered with this key's name in it; see [`crate::provider`].
+    ///
+    /// **Which catalogue is not this key's question.** `[app.io-cli.prices]
+    /// source_url` already names one, for a mirror or an air-gapped copy, and
+    /// [`crate::verify::served`] has read it since 0.24.0. A second spelling of
+    /// "where the catalogue is" would be a second thing to keep true, so this key
+    /// is the switch and that one is the address.
+    ///
+    /// `false` is the whole point of the key: an air-gapped box, a proxy that
+    /// lies, or an operator who would simply rather this process talked to one
+    /// host. It leaves both providers exactly where 0.38.2 left them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_catalogue: Option<bool>,
 }
 
 /// Where prices come from, and what the last read was.
@@ -249,6 +282,117 @@ pub struct PriceSettings {
 /// `tests/`, which is the same reason [`plain`] lives here.
 pub fn containment(stored: Option<&CliSettings>) -> Option<&io_harness::Containment> {
     stored.and_then(|settings| settings.containment.as_ref())
+}
+
+/// The catalogue the vendor providers may size themselves from, if any.
+///
+/// One function so that "is it on" and "which one" are answered together and in
+/// one place. Both halves come from `[app.io-cli]` — the switch from
+/// `reference_catalogue`, the address from `[app.io-cli.prices] source_url`,
+/// which has meant exactly this since 0.24.0 — and the default is `Some`, which
+/// is the release's own decision rather than io-harness's.
+///
+/// A function rather than a field read at the call site for the reason
+/// [`containment`] and [`plain`] are: `src/main.rs` cannot be linked from
+/// anything under `tests/`, so a decision made there has no gate at all.
+pub fn reference_catalogue(stored: Option<&CliSettings>) -> Option<io_harness::Reference> {
+    if stored.is_some_and(|settings| settings.reference_catalogue == Some(false)) {
+        return None;
+    }
+    let source = stored
+        .and_then(|settings| settings.prices.as_ref())
+        .and_then(|prices| prices.source_url.as_deref())
+        .filter(|url| !url.is_empty());
+    Some(match source {
+        Some(url) => io_harness::Reference::at(url),
+        None => io_harness::Reference::new(),
+    })
+}
+
+/// The key that turns the reference catalogue off, spelled as an operator writes
+/// it.
+///
+/// A constant because three surfaces name it — the refusal a denied reference
+/// host produces, `/context`, and the guide — and a message that names a key
+/// slightly wrong is worse than one that names none.
+pub const REFERENCE_CATALOGUE_KEY: &str = "app.io-cli.reference_catalogue";
+
+/// The caps `/contain on` offers to write when nothing is configured (0.39.0).
+///
+/// **Small on purpose, and every number is defensible out loud.** Until this
+/// release `/contain on` with no `[app.io-cli.containment]` named four keys and
+/// stopped — technically correct, and it asked an operator to pick a token
+/// ceiling for a mode they had not tried, out of a documentation page they were
+/// not reading. The four keys are still what the section holds; what changed is
+/// that io offers a starting point rather than a homework assignment.
+///
+/// - **Four agents in the tree.** A root and three children. Enough for a
+///   fan-out to be worth having and small enough that a mistake is legible.
+/// - **Two at once.** The number that makes it a fan-out rather than a queue,
+///   and the one that keeps a runaway visible on `/fleet` rather than
+///   overwhelming it. This throttles rather than refuses, so a third child waits
+///   instead of failing.
+/// - **One deep.** Children, and no grandchildren. Depth is where a tree stops
+///   being something an operator can hold in their head, and every tier
+///   multiplies how many agents may be working at once.
+/// - **A token ceiling the whole tree draws down together.** This is the number
+///   that has to exist for the offer to be honest — a fan-out with no aggregate
+///   ceiling is the one shape of this feature that can spend without a bound
+///   anybody chose.
+///
+/// **Not a default.** Nothing applies these unless the operator says yes, and the
+/// absent section still means the fan-out is off — which is what keeps a session
+/// that never typed `/contain` on exactly the turn it was before.
+#[must_use]
+pub fn offered_containment() -> io_harness::Containment {
+    io_harness::Containment {
+        max_total_agents: 4,
+        max_concurrent_agents: 2,
+        max_depth: 1,
+        max_total_tokens: 200_000,
+        // Both left unset, and for different reasons. A cost ceiling is
+        // documented by io-harness as **reserved and not enforced** — it has no
+        // price telemetry, so any figure it compared against would be one it
+        // invented — and offering an operator a number that does nothing is worse
+        // than offering none. A duration is a real ceiling and is not io's to
+        // guess: how long a fan-out may take is a property of the work, and the
+        // token ceiling above is the bound that stops a runaway.
+        max_total_cost: None,
+        max_total_duration: None,
+    }
+}
+
+/// The confirmation `/contain on` raises when nothing is configured (0.39.0).
+///
+/// Row 0 declines, like every other confirmation in this product, and
+/// `tests/contain.rs` asserts that by index rather than by reading the words.
+///
+/// **The caps are spelled out in the row that acts**, not summarised. This writes
+/// to the operator's configuration file and turns on a mode that spends tokens on
+/// their behalf across a tree of agents; "write a default" as the label would be
+/// asking them to agree to a number they were never shown.
+#[must_use]
+pub fn containment_offer(caps: &io_harness::Containment) -> (String, Vec<crate::picker::Row>) {
+    (
+        "Nothing here configures a fan-out. Write one?".to_string(),
+        vec![
+            crate::picker::Row::with_detail(
+                crate::store::LEAVE_IT,
+                "this turn goes on doing the work itself",
+            ),
+            crate::picker::Row::with_detail(
+                format!(
+                    "write [app.io-cli.containment] — {} agents, {} at once, {} deep, {} tokens",
+                    caps.max_total_agents,
+                    caps.max_concurrent_agents,
+                    caps.max_depth,
+                    caps.max_total_tokens,
+                ),
+                "into your own configuration file; `/config` edits it afterwards and \
+                 `/contain off` switches it back without removing it",
+            ),
+        ],
+    )
 }
 
 /// What a contained turn decides, in the words the session says it in.
@@ -640,6 +784,15 @@ pub fn render(
                 // wizard has asked about exactly one. A rule pointing at a model
                 // the operator never chose is worse than no rule.
                 routing: None,
+                // Left out because absent is the answer this release chose, and
+                // writing `true` would state that choice as though the operator
+                // had made it. The key exists for the operator who wants the
+                // other answer — an air-gapped box, or a preference that this
+                // process talk to one host — and a wizard that wrote it down
+                // would be answering a question it never asked. Its absence is
+                // also what keeps the file the wizard writes byte-identical to
+                // the one 0.38.2's wizard wrote.
+                reference_catalogue: None,
             },
         },
     };

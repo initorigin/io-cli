@@ -827,20 +827,45 @@ pub fn enable(path: &Path, bundles: &[(String, PathBuf)]) -> Result<PathBuf, Str
 /// first completion, with `/skills` unable to help because its list comes from the
 /// call that just failed.
 pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
-    if !source.is_file() {
+    // **A directory holding a `SKILL.md` is a skill, and 0.39.0 is when this verb
+    // learned it.** io-harness has admitted folder skills all along —
+    // `Skills::discover` takes a subdirectory exactly when it holds a `SKILL.md`,
+    // and [`disable`] has parked one as a folder since it was written — so `io
+    // skill add` refusing a directory refused a shape the rest of the product
+    // already supported. An operator with a skill that ships a companion file had
+    // to copy it in by hand and hope the layout was right.
+    //
+    // The manifest is what everything below reads: the name resolution, the
+    // frontmatter, the collision checks. Only the copy differs.
+    let manifest = if source.is_dir() {
+        let manifest = source.join(SKILL_FILE);
+        if !manifest.is_file() {
+            return Err(format!(
+                "{} is a directory with no {SKILL_FILE} in it; a folder skill is a \
+                 directory holding {SKILL_FILE} with `name:` and `description:` in \
+                 its frontmatter, beside whatever files it references",
+                source.display()
+            ));
+        }
+        manifest
+    } else if source.is_file() {
+        source.to_path_buf()
+    } else {
         return Err(format!(
-            "{} is not a file; a skill is one markdown file with `name:` and \
-             `description:` in its frontmatter",
+            "{} is neither a file nor a directory; a skill is one markdown file \
+             with `name:` and `description:` in its frontmatter, or a directory \
+             holding a {SKILL_FILE} that has them",
             source.display()
         ));
-    }
+    };
+
     // The question the run will ask, asked before anything is named after the
     // answer — and this is where the source's *file name* used to be taken
     // instead. A `<name>/SKILL.md` source landed here as `SKILL.md`, which
     // [`is_bundle`] then read as a folder skill and both levers refused forever,
     // while every name check below asked about the literal word `SKILL` rather
     // than about the name the run resolves.
-    let (name, _) = describe(source);
+    let (name, _) = describe(&manifest);
 
     // **A frontmatter `name:` is somebody else's text and it is about to become a
     // file name in io's own home.** `crate::import::one_path_component` refuses
@@ -865,7 +890,15 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
     if let Err(error) = crate::home::create(&dir) {
         return Err(format!("could not create {}: {error}", dir.display()));
     }
-    let destination = dir.join(format!("{name}.md"));
+    // A loose skill lands as `<name>.md`; a folder skill lands as `<name>/`, which
+    // is the layout `Skills::discover` walks and the one [`disable`] already
+    // parks and restores. The name is the frontmatter's either way, so the two
+    // shapes cannot claim different names for one skill.
+    let destination = if source.is_dir() {
+        dir.join(&name)
+    } else {
+        dir.join(format!("{name}.md"))
+    };
     if destination.exists() {
         return Err(format!(
             "{} is already there; remove it first, or give the file you are \
@@ -938,9 +971,45 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    std::fs::copy(source, &destination)
-        .map_err(|error| format!("could not copy into {}: {error}", destination.display()))?;
+    if source.is_dir() {
+        copy_tree(source, &destination)
+            .map_err(|error| format!("could not copy into {}: {error}", destination.display()))?;
+    } else {
+        std::fs::copy(source, &destination)
+            .map_err(|error| format!("could not copy into {}: {error}", destination.display()))?;
+    }
     Ok(destination)
+}
+
+/// Copy a folder skill, whole.
+///
+/// **Every file, because a folder skill's companions are the reason it is a
+/// folder.** A skill that ships a checklist, a template or a reference and
+/// arrives without them is a skill whose `SKILL.md` points at nothing — worse
+/// than a refusal, because it installs, lists and loads.
+///
+/// Depth-first with std alone, which is what this crate has instead of a walker:
+/// `tests/dependencies.rs` permits ten names and none of them is one. Symbolic
+/// links are **not** followed — `file_type()` is read without traversing, and a
+/// link is skipped rather than copied through. A skill directory is somebody
+/// else's, and following a link out of it would copy whatever it points at into
+/// io's own home; `src/import.rs` flattens Claude's plugin tree for the same
+/// reason and this agrees with it.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    crate::home::create(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        // `file_type` rather than `metadata`, which follows a link and would
+        // report the target's kind.
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Delete a skill's file. Answers with the path that is now gone.
