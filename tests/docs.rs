@@ -2535,6 +2535,74 @@ fn f6_the_headless_guide_carves_out_the_provider_endpoint() {
 /// the page that exists to talk about money from doing so.
 ///
 /// Sabotage: write "withholding a tool makes the turn cheaper" into any guide page.
+/// **N3 — no shipped page says a thought streams as it is written (0.39.0).**
+///
+/// The roadmap entry for this release said reasoning would stream into the
+/// working rows as it arrives. It cannot: `EventKind::Reasoning` carries the
+/// whole thought and arrives once, and io-harness has no reasoning delta event —
+/// `EventKind::Token` is assistant text and nothing else. What io-harness 0.80.0
+/// fixed is the *order*, so the thought now arrives before the tokens it
+/// produced rather than after them, which is why `io` no longer has to reorder
+/// them itself.
+///
+/// So a page promising a thought that appears word by word would describe an
+/// interface nobody can build against this dependency, and an operator watching
+/// `Pondering · 13s` would be waiting for something that is never coming.
+///
+/// Sabotage: write "watch it think, token by token" into the session guide. Only
+/// this fails.
+#[test]
+fn n6_no_shipped_page_says_a_thought_streams_as_it_is_written() {
+    for (path, text) in shipped_prose() {
+        let lower = text.to_lowercase();
+        for claim in [
+            "thinking streams",
+            "reasoning streams",
+            "the thought streams",
+            "thought token by token",
+            "watch it think",
+        ] {
+            assert!(
+                !lower.contains(claim),
+                "{path} claims `{claim}`. A thought arrives whole and once — \
+                 io-harness has no reasoning delta event — so no page may promise \
+                 one appearing as it is written",
+            );
+        }
+    }
+}
+
+/// **N3 — no shipped page says the fallback ceiling is 24,000 (0.39.0).**
+///
+/// It was one constant for every case through io-harness 0.81.0. Its 0.82.0
+/// splits it — far more for a remote endpoint, far less for a loopback one — so
+/// a page still naming the old number is stating something that stopped being
+/// true under the pin this release moves, on the one page an operator would
+/// check a surprising ceiling against.
+///
+/// The sibling of `f17_no_rung_sentence_names_a_number_the_pin_moved` in
+/// `tests/context.rs`, which holds the same line in the code.
+#[test]
+fn n7_no_shipped_page_ties_the_fallback_ceiling_to_a_number() {
+    for (path, text) in shipped_prose() {
+        let lower = text.to_lowercase();
+        for claim in [
+            "fallback of 24,000",
+            "fallback is 24,000",
+            "falls back to 24,000",
+            "fallback ceiling of 24,000",
+        ] {
+            assert!(
+                !lower.contains(claim),
+                "{path} claims `{claim}`. io-harness 0.82.0 split that constant \
+                 into one default for a remote endpoint and a much smaller one \
+                 for a loopback endpoint, so no page may name a single number for \
+                 the rung",
+            );
+        }
+    }
+}
+
 /// **N3 — no shipped page promises a span arrived (0.39.0).**
 ///
 /// io-harness reports export success or loss through no public value: a batch the
