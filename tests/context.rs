@@ -619,6 +619,51 @@ fn f10_the_status_share_is_the_page_total_over_the_page_window() {
         expected > 0,
         "a fixture where both read zero would pass this test and prove nothing",
     );
+
+    // **The same agreement once a ceiling has been announced (0.38.2), which is
+    // the arm this test was missing.** Everything above runs with nothing
+    // announced, so it agreed for the old reason and would have gone on agreeing
+    // while three other surfaces divided by the contract. An adversarial review
+    // found `/status`'s label and `Status::note_context` both still reading
+    // `budgets.window`; this is the arm that would have caught them.
+    const ANNOUNCED: u64 = 103_424;
+    let mut status = io_cli::status::Status::new("a-model");
+    status.budgets = io_cli::status::Budgets::in_force(&contract);
+    status.note_ceiling(ANNOUNCED);
+    status.note_context_request(&seen, &contract, contract.max_tokens);
+
+    let announced_window = context::window(&contract, contract.max_tokens, Some(ANNOUNCED));
+    assert_eq!(
+        announced_window, ANNOUNCED,
+        "the announced ceiling is the page's denominator",
+    );
+    let expected = (total as f64 / ANNOUNCED as f64 * 100.0).round() as u8;
+    assert_eq!(
+        status.context,
+        Some(expected),
+        "the share follows the announced ceiling, not the contract's budget",
+    );
+
+    // `note_context` is the OTHER writer of the same field — a fold arrives on
+    // `EventKind::Compacted` and goes straight through it — and it divided by
+    // `budgets.window` alone, so one screen carried two denominators for one word.
+    let mut folded = io_cli::status::Status::new("a-model");
+    folded.budgets = io_cli::status::Budgets::in_force(&contract);
+    folded.note_ceiling(ANNOUNCED);
+    folded.note_context(30_000);
+    assert_eq!(
+        folded.context,
+        Some((30_000f64 / ANNOUNCED as f64 * 100.0).round() as u8),
+        "a fold's share is taken against the run's ceiling too — against the \
+         contract's 24,000 this reads 100%, which is the pressure it is reporting \
+         wrongly",
+    );
+    assert_ne!(
+        folded.context,
+        Some(100),
+        "and 100% is what the contract's budget would have produced, so this is \
+         the arm that tells the two apart",
+    );
 }
 
 /// The window is forgotten with the conversation it described.

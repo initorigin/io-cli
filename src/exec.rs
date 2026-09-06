@@ -1153,10 +1153,17 @@ pub fn listed(run_id: i64, pending: &Pending, parked: &Parked, json: bool) -> Op
     Some(if json {
         // Built through `serde_json` rather than formatted, so an answer holding
         // a quote is escaped by the same code that escapes the event stream.
-        // The three new keys are APPENDED and every one is nullable, so a reader
-        // written against the 0.37.0 shape goes on working: `serde_json` ignores
-        // what it was not asked for, and a `null` is the shape `id` and
-        // `questions` already use for a row that has none.
+        // The three new keys are all nullable, so a reader written against the
+        // earlier shape goes on working: it ignores what it did not ask for, and a
+        // `null` is the shape `id` and `questions` already use for a row that has
+        // none.
+        //
+        // **Not "appended", which is what this said first.** `serde_json` without
+        // `preserve_order` backs its map with a `BTreeMap`, so the object is
+        // emitted in key order and these three interleave — `goal` now comes out
+        // ahead of `run_id` as the first key of every row. That is safe for
+        // anything parsing JSON and is not safe for anything matching on a prefix,
+        // so the honest statement is nullability rather than position.
         //
         // `started_at` is the store's own string, unformatted. A script sorting
         // parked runs wants the sortable stamp io-harness stored, not a stamp cut

@@ -574,6 +574,111 @@ fn f5_an_image_is_refused_unless_every_link_accepts_one() {
     );
 }
 
+/// A link that declares a window and an answer limit, and nothing else.
+///
+/// Separate from [`Fake`] rather than a field on it: every one of `Fake`'s callers
+/// would have to be given two more arguments to test a property none of them are
+/// about, and the trait's `None` default is exactly what this fixture exists to
+/// override.
+struct Declaring {
+    window: Option<u64>,
+    output: Option<u64>,
+}
+
+impl io_harness::Provider for Declaring {
+    async fn complete(
+        &self,
+        _request: io_harness::CompletionRequest,
+    ) -> io_harness::Result<io_harness::CompletionResponse> {
+        Ok(io_harness::CompletionResponse::default())
+    }
+
+    fn context_window(&self) -> Option<u64> {
+        self.window
+    }
+
+    fn max_output_tokens(&self) -> Option<u64> {
+        self.output
+    }
+}
+
+/// **F2's behavioural half — a chain's two window answers go opposite ways.**
+///
+/// The text gate below proves the methods are written. It cannot prove either one
+/// returns the right thing, and an adversarial review found `max_output_tokens`
+/// returning the wrong one: it took the minimum "for the same reason" as the
+/// window, and the reason inverts.
+///
+/// `ContextBudget::for_window` computes `max_tokens = window - (max_output +
+/// floor)`. The window is *divided into*, so the smallest is safe. The reserve is
+/// *subtracted*, so the smallest leaves the most room and overflows on the link
+/// that answers most — the same failure the window's minimum prevents, reached by
+/// the arithmetic running the other way, and at the same moment: after the head
+/// has already failed.
+///
+/// The numbers are deliberately not symmetric, so an implementation that took the
+/// same direction for both would fail one arm rather than passing both.
+///
+/// Sabotage: swap either `min` for `max`.
+#[test]
+fn f2_a_chain_takes_the_smallest_window_and_the_largest_reserve() {
+    let chain = Chain::of(vec![
+        Declaring {
+            window: Some(200_000),
+            output: Some(4_096),
+        },
+        Declaring {
+            window: Some(32_000),
+            output: Some(32_768),
+        },
+    ])
+    .expect("a chain");
+
+    assert_eq!(
+        chain.context_window(),
+        Some(32_000),
+        "the smallest window: a run assembles its context once, and sizing to the \
+         head then falling through to a smaller link overflows on the call that \
+         matters",
+    );
+    assert_eq!(
+        chain.max_output_tokens(),
+        Some(32_768),
+        "the largest reserve, which is the opposite direction and is why this arm \
+         exists: the reserve is subtracted from the window, so the smallest one \
+         leaves the most room and the fall-through's longer answer runs off the end",
+    );
+
+    // A link that says nothing is skipped rather than counted as zero, and a chain
+    // where nobody says anything is `None` — which is the pre-0.38.2 fallback, not
+    // a window of zero.
+    let quiet = Chain::of(vec![
+        Declaring {
+            window: None,
+            output: None,
+        },
+        Declaring {
+            window: Some(64_000),
+            output: None,
+        },
+    ])
+    .expect("a chain");
+    assert_eq!(quiet.context_window(), Some(64_000), "silence is not zero");
+    assert_eq!(quiet.max_output_tokens(), None);
+
+    let silent = Chain::of(vec![Declaring {
+        window: None,
+        output: None,
+    }])
+    .expect("a chain");
+    assert_eq!(
+        silent.context_window(),
+        None,
+        "a chain nobody sized answers `None`, which sends the run to io-harness's \
+         own fallback exactly as before",
+    );
+}
+
 /// The text between a declaration's opening brace and the first `}` in column
 /// zero, which is where every item in the harness's source ends.
 fn body_after<'a>(source: &'a str, marker: &str) -> &'a str {

@@ -1021,7 +1021,19 @@ impl Status {
     }
 
     pub fn note_context(&mut self, est_tokens: u64) {
-        let Some(window) = self.budgets.window.filter(|window| *window > 0) else {
+        // **The announced ceiling first, and the contract only where nothing was
+        // announced (0.38.2).** This divided by `budgets.window` alone, which is
+        // the contract's own budget — so a fold arriving through
+        // `EventKind::Compacted` computed its share against 24,000 while the
+        // `/context` page one keystroke away used the run's real ceiling. Two
+        // denominators for one word on one screen is the failure this field has
+        // already been fixed for once; a third reader of the same question is how
+        // it came back.
+        let Some(window) = self
+            .ceiling
+            .or(self.budgets.window)
+            .filter(|window| *window > 0)
+        else {
             return;
         };
         let share = (est_tokens as f64 / window as f64 * 100.0).round();
@@ -2378,7 +2390,13 @@ pub fn committed(
     // every contract declares one. The arm below is that type's `None` spelled out
     // rather than an `unwrap` — a committed page is not worth a panic — and it is
     // unreachable from here.
-    let window = match Budgets::in_force(contract).window {
+    // The same denominator the share was taken against, and not the contract's
+    // (0.38.2). `status.context` is a percentage of the announced ceiling; drawing
+    // it beside the contract's number would print a fill and a window that do not
+    // multiply out — `39% of a 24,000 window` on a run assembling inside 103,424.
+    // The page and the line were made one expression for exactly this reason and
+    // this is the third surface asking the same question.
+    let window = match status.ceiling.or(Budgets::in_force(contract).window) {
         Some(tokens) => format_tokens(tokens),
         None => "unknown".to_string(),
     };

@@ -24,9 +24,14 @@ the feature was one deleted line from reverting in silence.
 
 The pin moves 0.79 → 0.81.0. Its two additions to the `Provider` trait default to `None`, so every
 wrapper in this crate compiled clean, passed every test, and answered for itself instead of for the
-provider it wraps — leaving every run on the 24,000-token fallback that harness release exists to
-end. Nothing reported it and nothing could have; there is a gate now that reads the method list out
-of the locked harness rather than out of a list somebody wrote down.
+provider it wraps. Nothing reported it and nothing could have; there is a gate now that reads the
+method list out of the locked harness rather than out of a list somebody wrote down.
+
+Delegating them does not move the number yet, and the release says so rather than implying
+otherwise. In io-harness 0.81.0 only `Compatible` implements those two methods, and only from a
+catalogue that has to be fetched on the same instance first — so on OpenRouter, Anthropic and
+OpenAI the run still assembles under the 24,000-token fallback. That is upstream's to answer and it
+has been filed. What this release fixes is that the wrapper is no longer the thing losing it.
 
 ### Added
 
@@ -38,16 +43,21 @@ of the locked harness rather than out of a list somebody wrote down.
 
 ### Changed
 
-- **Behaviour change for operators.** A run's context ceiling now follows the model where the
-  provider knows its window, so `ctx N%` and the `/context` page divide by a real number instead of
-  a flat 24,000. On a large-window model the percentage will read much lower than it did for the
-  same conversation, and that is the correction: the old figure began reporting pressure at roughly
-  a fifth of the window actually available. A `[run.context] max_tokens` you set still wins over
-  both.
+- `ctx N%`, the `/context` page and `/status` all divide by the ceiling the run announces
+  (`EventKind::ContextCeiling`, new in io-harness 0.81.0) rather than by the budget on the contract
+  io-cli built. **On the providers this release can construct, that is the same 24,000 it was**:
+  in io-harness 0.81.0 only `Compatible` answers `context_window`, and only from a catalogue
+  `models()` has already fetched on that same instance, so the harness reports `source: "fallback"`
+  and the number does not move. The plumbing is connected end to end and gated; what it waits on is
+  a provider that answers. Nothing you see changes yet, and that is stated rather than implied.
 - **Behaviour change for scripts.** The plain rows of `io resume --list` are wider — a script
-  slicing them by column position sees new fields at the end. The `--json` shape is the one this
-  product asks scripts to parse, and its three new keys are appended and nullable, so an existing
-  reader is unaffected.
+  slicing them by column position sees new fields. The `--json` shape is the one this product asks
+  scripts to parse, and its three new keys are nullable, so an existing reader is unaffected. They
+  are not appended: `serde_json` emits an object in key order, so `goal` now precedes `run_id`.
+  Anything parsing JSON is fine; anything matching the line by prefix is not.
+- **Behaviour change for scripts.** `io config get` on a key that no file sets and that io-cli's
+  catalogue does not name answers `no such key` where it answered `default`. A misspelt key used to
+  be indistinguishable from an unset one, which is the whole reason to ask.
 - The two "older binary" warnings on `[[mcp]]` and `[[plugin]]` `enabled` keys name io-cli 0.29.0 —
   the release that first understood the key — instead of io-harness 0.69.0 and 0.70.0. Same
   boundary, stated in the version an operator can actually check, and it no longer goes stale every

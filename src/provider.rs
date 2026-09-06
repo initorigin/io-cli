@@ -178,12 +178,27 @@ impl Provider for Vendor {
     // `max_output_tokens` with `None` defaults, so every wrapper in this file
     // compiles without them and answers "this provider is not saying" — which
     // sends the run back to `context::FALLBACK_MAX_TOKENS`, the 24,000 the
-    // harness release exists to stop being universal. `Compatible` and
-    // `OpenRouter` both answer from a catalogue they have already fetched, so
-    // the answer is here and this crate was throwing it away. There is no
-    // compiler error and no test failure for a defaulted method: the only gate
-    // is `f2_every_provider_method_is_delegated_by_every_wrapper`, which reads
-    // the method list out of the locked harness rather than a literal.
+    // harness release exists to stop being universal.
+    //
+    // **What this does NOT do today, stated because the first draft of this
+    // comment claimed otherwise.** In io-harness 0.81.0 exactly one shipped
+    // provider implements either method — `Compatible`, at
+    // `io-harness-0.81.0/src/provider/compatible.rs:512` — and it answers only
+    // from a catalogue `models()` has already fetched *on that instance*.
+    // `OpenRouter`, `Anthropic` and `OpenAi` declare neither and take the trait's
+    // `None`, and this crate never awaits `models()` on the provider it hands a
+    // run. So on every configuration io-cli builds today the chain answers `None`,
+    // the harness emits `source: "fallback"`, and the ceiling is the same 24,000
+    // it was before. Delegating is still right and still necessary — it is the
+    // wrapper's whole job, and a wrapper that answers for itself is wrong whatever
+    // the inner provider says — but the operator-visible change waits on
+    // io-harness, and `US-IO-CLI-0.38.2-I01` records that.
+    //
+    // There is no compiler error and no test failure for a defaulted method: the
+    // only gate is `f2_every_provider_method_is_delegated_by_every_wrapper`, which
+    // reads the method list out of the locked harness rather than a literal — and
+    // it is a source-text gate, so it proves the method is written and never that
+    // anything answers.
     fn context_window(&self) -> Option<u64> {
         match self {
             Self::OpenRouter(p) => p.context_window(),
@@ -414,12 +429,27 @@ impl<P: Provider + Sync> Provider for Chain<P> {
         self.links.iter().filter_map(Provider::context_window).min()
     }
 
-    /// The smallest reserved answer any link declares, for the same reason.
+    /// **The largest reserved answer any link declares — the opposite of the
+    /// window above, because this number is subtracted rather than divided by.**
+    ///
+    /// The instinct is that the two are the same question and take the same
+    /// conservative direction. They are not. `ContextBudget::for_window` computes
+    /// `max_tokens = window - (max_output + floor)`, so a *smaller* reserve leaves
+    /// a *larger* assembled section: taking the minimum reserves room for the link
+    /// that answers least and then overflows on the link that answers most.
+    ///
+    /// Concretely, two links on 128,000-token windows, the head allowing 4,096
+    /// output tokens and the fall-through allowing 32,768. The minimum reserves
+    /// 4,096, leaving 115,712 for the prompt; the fall-through may then answer
+    /// 32,768 into a 128,000 window that already holds 115,712. That is the same
+    /// overflow the window's minimum exists to prevent, arriving at the same
+    /// moment — after the head has failed — through the arithmetic running the
+    /// other way.
     fn max_output_tokens(&self) -> Option<u64> {
         self.links
             .iter()
             .filter_map(Provider::max_output_tokens)
-            .min()
+            .max()
     }
 
     fn name(&self) -> &str {
