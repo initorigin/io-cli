@@ -4059,7 +4059,7 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
     // working mask, which is the finding worth keeping: io-harness *announces* the
     // mask in the user prompt — "Unavailable this turn — these tools are listed
     // above but calling one is refused and starts nothing: write_file"
-    // (`run/prompts.rs:1133`) — so a compliant model never attempts the call and
+    // (`io-harness-0.81.0/src/run/prompts.rs:1381`) — so a compliant model never attempts the call and
     // never produces the refusal. The run above said so in its own reasoning: "the
     // previous turns show write_file was refused, so I used a shell redirect
     // instead". That is the mask working at its best, not evidence of absence.

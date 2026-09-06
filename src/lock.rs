@@ -440,6 +440,81 @@ pub fn acquire(home: &Path, session: i64, root: &Path, started: SystemTime) -> i
     Ok(Taken::Held(Guard { file, owner, wrote }))
 }
 
+/// Remove the lock files of sessions that are over, and answer how many went.
+///
+/// **The leak is real and the obvious fix is the one thing this module must not
+/// do.** The 2026-09-05 field test found thirty-one `session-N.lock` files in
+/// `~/.io-cli` with nothing removing them. [`Guard::drop`] already takes the
+/// owner record away; the lock file is left, and [`LOCK`]'s own documentation
+/// says why — unlinking a file another process holds a lock on releases nothing,
+/// so the next opener creates a fresh inode, locks that, and two processes then
+/// hold two different locks while each believes it is alone. Removing one's own
+/// lock on exit reintroduces exactly that, in the window between the unlink and
+/// the unlock.
+///
+/// So the removal happens from the outside, at startup, and only where **both**
+/// pieces of evidence say the session is over:
+///
+/// * no owner record beside it — [`Guard::drop`] removes that first and always,
+///   so its absence is the holder having gone; and
+/// * `try_lock` succeeds — nobody holds it *now*.
+///
+/// **The inode split cannot happen here, and the reason is a property of this
+/// crate rather than of the filesystem.** That race needs a process *waiting* to
+/// acquire, so that it lands on the unlinked inode after the unlink. Nothing in
+/// io-cli ever waits: [`acquire`] calls `try_lock`, which returns `WouldBlock`
+/// rather than queueing, and the one caller turns that into a refusal. A
+/// concurrent `acquire` during the sweep is refused and creates no waiter.
+///
+/// The unlink happens **while the lock is held**, which is what makes a
+/// concurrent acquirer see `WouldBlock` rather than a free file.
+///
+/// Best effort throughout: a file that cannot be locked or cannot be removed is
+/// left alone. A sweep is housekeeping, and housekeeping that fails is a file
+/// still on disk rather than a session that could not start.
+pub fn sweep(home: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(home) else {
+        return 0;
+    };
+    let mut gone = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        // Read back through [`paths`] rather than by editing the filename, so
+        // there is one speller for these two names and not two. A file under this
+        // stem whose middle is not a session id is not this module's and is left
+        // alone.
+        let Some(id) = name
+            .strip_prefix(STEM)
+            .and_then(|rest| rest.strip_suffix(&format!(".{LOCK}")))
+        else {
+            continue;
+        };
+        let Ok(session) = id.parse::<i64>() else {
+            continue;
+        };
+        let (lock, owner) = paths(home, session);
+        // The owner record sits beside it. Its presence means a holder wrote it
+        // and has not dropped its guard.
+        if owner.exists() {
+            continue;
+        }
+        let Ok(file) = File::open(&lock) else {
+            continue;
+        };
+        if file.try_lock().is_err() {
+            continue;
+        }
+        if std::fs::remove_file(&lock).is_ok() {
+            gone += 1;
+        }
+        let _ = file.unlock();
+    }
+    gone
+}
+
 /// The record as it is on disk, or an empty one.
 ///
 /// A record that is missing, unreadable, or not valid UTF-8 is an [`Owner`] with

@@ -128,10 +128,10 @@ pub const SKILLS_HEAD: &str = "Skills available to you";
 /// **The directive is glued to the last catalogue line with no newline between
 /// them, so a line scan cannot see the boundary.** `compose` builds the prompt as
 /// `with_skill_catalog(..)` and then `out.push_str(&directive)`
-/// (io-harness-0.79.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
+/// (io-harness-0.81.0/src/run/prompts.rs:73-76); `Skills::catalog()` ends with its
 /// last `- name: description` line carrying **no trailing newline**
-/// (src/skills.rs:470-476); and `planning_directive` returns a string beginning
-/// with a space (src/run/gate.rs:282-286). So with a plan gate registered — which
+/// (src/skills.rs:554-565); and `planning_directive` returns a string beginning
+/// with a space (src/run/gate.rs:322-326). So with a plan gate registered — which
 /// is every contained turn — the final line on the wire reads
 /// `- bundle__skill: description Before you do anything else you must call …`,
 /// still starts with `- `, and a naive scan swallows the whole directive.
@@ -786,14 +786,35 @@ pub fn total(sections: &[Section]) -> u64 {
     sections.iter().map(|section| section.tokens).sum()
 }
 
-/// The window this contract declares, in tokens.
+/// The window this run assembles inside, in tokens.
 ///
 /// `remaining` is what is left of `[run] max_tokens` for this turn, which is what
 /// makes the ceiling move: with a run budget the assembled section takes a share
 /// of what is *unspent*, so a run running low reports a smaller window rather
 /// than the flat maximum it can no longer afford.
-pub fn window(contract: &TaskContract, remaining: Option<u64>) -> u64 {
-    contract.context.effective_tokens(remaining)
+///
+/// **`announced` is the run's own answer and it wins outright (0.38.2).** Until
+/// io-harness 0.81.0 the contract was the only thing that knew: `ContextBudget`
+/// declared `24_000` unless the operator wrote `[run.context]`, so the contract
+/// and the run agreed by construction and this function could read either. They
+/// no longer agree. The harness now derives the ceiling from the model's own
+/// window where the provider knows it and emits `EventKind::ContextCeiling`
+/// saying which of `contract`, `model` or `fallback` decided — while the
+/// `TaskContract` this crate built still carries the budget it was built with.
+/// Dividing by the contract after that would report `ctx 100%` on a run a fifth
+/// of the way into a 128,000-token window, which is worse than no field: the
+/// number an operator folds a conversation over would be five times too small.
+///
+/// **The precedence needs no re-deriving here, because the announcement already
+/// carries it.** An explicit `ContextBudget` still wins inside io-harness and is
+/// announced as `source: "contract"`, so taking the announced value is taking the
+/// operator's own answer where they gave one. `None` is a run that has not
+/// announced yet — before the first event, and every run against a harness that
+/// does not emit this — and falls back to exactly the pre-0.38.2 expression.
+pub fn window(contract: &TaskContract, remaining: Option<u64>, announced: Option<u64>) -> u64 {
+    announced
+        .filter(|ceiling| *ceiling > 0)
+        .unwrap_or_else(|| contract.context.effective_tokens(remaining))
 }
 
 /// The page, committed into the scrollback.
@@ -808,6 +829,12 @@ pub fn committed(
     seen: Option<&Request>,
     contract: &TaskContract,
     remaining: Option<u64>,
+    // The ceiling this run announced, if it has. Threaded to `window` rather than
+    // read here, because the page and `ctx N%` must divide by the same number:
+    // they disagreed once already — the page totalled 4,363 of 24,000 while the
+    // line said `ctx 0%` — and the fix then was to make them one expression. A
+    // second reader of the announcement would undo that.
+    announced: Option<u64>,
     // What the next turn may not call. Drawn on this page because this is where
     // the tools are named, and an operator who withheld one an hour ago should
     // not have to remember it — but drawn only when there is one, so the row is
@@ -853,10 +880,10 @@ pub fn committed(
                 );
             }
             let total = total(&sections);
-            let window = window(contract, remaining);
+            let window = window(contract, remaining, announced);
             push(
                 format!(
-                    "total: {total} tokens of {window} {dash} the window this contract declares"
+                    "total: {total} tokens of {window} {dash} the window this run assembles inside"
                 ),
                 Tone::Normal,
             );

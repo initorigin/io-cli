@@ -305,8 +305,8 @@ fn f10_widening_keys_by_one_name_did_not_widen_the_check() {
 
 /// **F12 — the two `enabled` writes cost an older binary opposite things.**
 ///
-/// A `[[plugin]]` entry carrying `enabled` makes an io-cli built against io-harness
-/// 0.69.0 refuse the **whole configuration file**: every setting in it, loudly, at
+/// A `[[plugin]]` entry carrying `enabled` makes an io-cli older than 0.29.0
+/// refuse the **whole configuration file**: every setting in it, loudly, at
 /// startup. The same key in an `[[mcp]]` entry is **ignored** by that binary, and
 /// the server the operator switched off starts and runs with nothing said.
 ///
@@ -593,4 +593,40 @@ async fn f14_a_probe_and_a_state_nobody_reached_are_different_words() {
         Reached::NotYet,
         "a probe put its own result under a heading that says a turn produced it",
     );
+}
+
+/// **F4 — a compatibility note names an io-cli release, never an io-harness one.**
+///
+/// Both `OLDER_BINARY` sentences described the boundary as "io-harness 0.70.0's,
+/// and a binary built against 0.69.0 …". Every word of that was true and it was
+/// the wrong frame twice over. An operator knows which `io` they installed and
+/// has no reason to know which harness it was compiled against, so the sentence
+/// read as a note about somebody else's dependency rather than as a warning about
+/// their own second machine — which is how the 2026-09-05 field test reported it,
+/// as stale noise on a routine `io mcp disable`.
+///
+/// And it rotted. The pin has moved eleven times since that sentence was written
+/// and the sentence could not follow, because the fact it names is not the pin —
+/// it is the io-cli release that first understood the key, which is 0.29.0 and
+/// does not change. Naming the durable fact is what makes this gate possible at
+/// all: there is no version here for a later release to have to update.
+///
+/// Sabotage: put any `io-harness 0.NN.0` back into either constant.
+#[test]
+fn f4_no_compatibility_note_names_an_io_harness_version() {
+    for (which, sentence) in [
+        ("pluginview", io_cli::pluginview::OLDER_BINARY),
+        ("servers", servers::OLDER_BINARY),
+    ] {
+        assert!(
+            !sentence.contains("io-harness"),
+            "`{which}::OLDER_BINARY` names io-harness, which an operator did not \
+             install and cannot check: {sentence}",
+        );
+        assert!(
+            sentence.contains("io-cli") && sentence.contains("0.29.0"),
+            "`{which}::OLDER_BINARY` must name the io-cli release that first \
+             understood the key, which is the fact that does not move: {sentence}",
+        );
+    }
 }

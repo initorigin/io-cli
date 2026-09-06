@@ -880,6 +880,24 @@ pub fn fetched(
 pub const NOWHERE: &str =
     "io has no home directory of its own, so there is nowhere to keep a marketplace";
 
+/// What io-cli says when [`matching`] found nothing.
+///
+/// **A search that prints nothing is indistinguishable from a search that did not
+/// run**, and the two are worth different next moves: one is "no bundle is called
+/// that", the other is "the command is broken or the marketplace is empty". An
+/// operator staring at a returned prompt has to guess which, and the guess that
+/// costs them the most — `plugin search` is quietly broken — is the one a silent
+/// answer invites.
+///
+/// A function beside [`NOWHERE`] for the same reason that is a constant: two
+/// surfaces say it, and the sentence they say has to be one sentence. It carries
+/// the term back because a shell scrolls, and an answer that does not repeat the
+/// question is an answer to whichever search the reader last remembers typing.
+#[must_use]
+pub fn nothing_matched(text: &str) -> String {
+    format!("no bundle in any marketplace matches `{text}`")
+}
+
 /// How an act ended.
 ///
 /// **Three endings and not a `bool`, because the two that did not change the disk

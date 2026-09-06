@@ -327,6 +327,57 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         "the dial line, carrying the host as the command asked for it, the port, and whether the \
          policy permitted it",
     ),
+    // **0.38.2 — the three kinds io-harness 0.80.0 and 0.81.0 added, arriving
+    // together on one pin bump.** None of them fails to compile: `EventKind` is
+    // `#[non_exhaustive]`, so a kind with no row falls through the wildcard and is
+    // drawn by nothing, silently. This table is the only thing that notices, and
+    // it noticed all three the moment the pin moved.
+    //
+    // **`context_ceiling` is a status field and not a line**, because the number
+    // it carries is a denominator rather than an event: `ctx N%` is the assembled
+    // request over exactly this ceiling, and until io-harness 0.81.0 the contract
+    // was the only thing that knew it. `Status::note_ceiling` takes it and
+    // `context::window` divides by it, so the share and the `/context` page move
+    // together — they disagreed once, on one screen, and the fix then was to make
+    // them one expression. A line would be a row per run restating a number
+    // already on the line, and the one case worth acting on — `source:
+    // "fallback"`, the harness guessing — is worth a release that renders it
+    // rather than a row that mentions it.
+    (
+        "context_ceiling",
+        Disposition::Status,
+        "the `ctx` field's denominator, and the `/context` page's total, which are one expression \
+         so that they cannot disagree",
+    ),
+    // **`step_usage` is silent for exactly `step_attributed`'s reason**, and it is
+    // the same shape of fact: a breakdown emitted beside every committed step,
+    // whose numbers no surface in this release renders. The cached-versus-fresh
+    // split it carries is the answer to a real complaint — the running `tok`
+    // figure reads as though every re-sent catalogue were paid in full — and
+    // answering it is a footer this release does not build. Recorded as a close
+    // call, like its sibling, rather than as an obvious silence.
+    (
+        "step_usage",
+        Disposition::Silent,
+        "`io exec --json`, which forwards it verbatim, and the durable trace; the fresh-versus-\
+         cached split it carries is what the footer's `tok` figure does not yet separate, and \
+         separating it is a release rather than a row",
+    ),
+    // **`image_attached` is silent because the picture it announces is one this
+    // crate did not hand over.** `src/picture.rs` already draws every image the
+    // operator attached, at the moment they attach it; this event fires for one
+    // that reached the run through an MCP reply, a browser screenshot or
+    // `view_image`, which is plumbing inside io-harness that emitted nothing at
+    // all before 0.81.0. Drawing it is a renderer, and a renderer is the roadmap's
+    // work rather than a patch's. A line naming a picture without showing it would
+    // be the class of sentence this release exists to delete.
+    (
+        "image_attached",
+        Disposition::Silent,
+        "`io exec --json`, which forwards it verbatim, and the durable trace; the image reached \
+         the run inside io-harness rather than through the operator's own attachment command, \
+         and no surface in this release draws one this crate did not hand over",
+    ),
     (
         "finished",
         Disposition::Line,

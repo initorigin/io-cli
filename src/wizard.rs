@@ -19,6 +19,8 @@
 //! catalogue — are handed back to the driver rather than performed here, so this
 //! whole flow is drivable from a test with a scripted key sequence.
 
+use std::path::PathBuf;
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use io_harness::ProviderSpec;
 use ratatui::layout::Rect;
@@ -197,9 +199,36 @@ pub struct Wizard {
     /// variable also keeps the theme step drivable from a test that never has to
     /// set a process-wide variable.
     no_color: bool,
+    /// The configuration file already in force, when there is one.
+    ///
+    /// **The welcome screen claimed a first run unconditionally (0.38.1).** It
+    /// said "No configuration found, so this is the first run" to an operator
+    /// running `io setup` over a 36 KB `io.toml`, which the 2026-09-05 field test
+    /// found and which is worse than merely wrong: the sentence is what tells
+    /// somebody nothing of theirs is at stake, and the wizard goes on to write
+    /// that exact file.
+    ///
+    /// Set through [`Wizard::over`] rather than through `new`, because `new` has
+    /// fifteen call sites in the suite and one in the driver, and a parameter
+    /// added for the driver's benefit would be `None` at every other one anyway.
+    /// The default is the first-run wording, so the honest reading is something
+    /// the one real caller supplies — and
+    /// `f8_the_wizard_is_told_what_configuration_is_already_in_force` holds it to
+    /// that, because nothing under `tests/` links the driver.
+    existing: Option<PathBuf>,
 }
 
 impl Wizard {
+    /// What configuration this wizard is about to write over, if any.
+    ///
+    /// See the field: this is the driver's job to supply, and the gate over
+    /// `src/main.rs` is what makes it not optional in practice.
+    #[must_use]
+    pub fn over(mut self, existing: Option<PathBuf>) -> Self {
+        self.existing = existing;
+        self
+    }
+
     pub fn new(theme: Theme) -> Self {
         Self {
             step: Step::Welcome,
@@ -224,6 +253,7 @@ impl Wizard {
             rejection: None,
             env_key_present: false,
             no_color: !theme.coloured,
+            existing: None,
         }
     }
 
@@ -397,11 +427,19 @@ impl Wizard {
                 .map(|kind| Row::with_detail(kind.label(), kind.detail()))
                 .collect(),
         ));
+        // **What is at stake, said correctly (0.38.1).** The first line claimed a
+        // first run whatever was on disk, so an operator running `io setup` over
+        // a configuration they had spent months on was told nothing of theirs was
+        // involved — and then the wizard wrote that same file. Naming the file is
+        // also more useful than the old sentence ever was on a genuine first run,
+        // where "no configuration found" and "this is the first run" say the same
+        // thing twice.
+        let opening = match &self.existing {
+            Some(path) => format!("Configuration in force: {}.", path.display()),
+            None => "No configuration found, so this is the first run.".to_string(),
+        };
         Progress::Commit(vec![
-            Line::from(Span::styled(
-                "No configuration found, so this is the first run.",
-                self.theme.style(Tone::Normal),
-            )),
+            Line::from(Span::styled(opening, self.theme.style(Tone::Normal))),
             Line::from(Span::styled(
                 "Nothing is written until the last screen says so.",
                 self.theme.style(Tone::Muted),

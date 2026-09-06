@@ -28,11 +28,11 @@ With no subcommand, `io` opens an interactive session.
 | `io exec "<goal>"` | Runs one goal to completion with no terminal interaction |
 | `io resume` | Carries on a run that stopped for a question, a plan or an interrupted call; `--list` shows what is waiting |
 | `io mcp …` | Manage MCP servers without opening a session |
-| `io plugin …` | Manage capability bundles and marketplaces |
+| `io plugin …` | Manage capability bundles and marketplaces — the verbs are `add`, `install`, `list`, `search`, `remove` and `marketplace`. `io plugin marketplace add <owner>/<repo>` clones an index, `io plugin marketplace list` and `remove` are its other two, and `io plugin add <name>` installs a bundle out of one |
 | `io config …` | Read and write configuration keys |
 | `io skill …` | Add, list and remove skills |
-| `io acp` | Serves the Agent Client Protocol on stdin and stdout, for an editor |
-| `io upgrade` | Prints the command that updates this binary, for the way it was installed |
+| `io acp` | Serves the Agent Client Protocol (ACP) on stdin and stdout, for an editor — an ACP client such as Zed or a JetBrains IDE spawns it; see [From an editor](guide/editors.md) |
+| `io upgrade` | Prints the command that updates this binary, for the way it was installed: `brew upgrade io` from the tap this repository is, `scoop update io` from the bucket, and the installer line from a script install. It prints and does not run |
 
 `--plain` reaches an interactive session and stops there. `io exec` builds no theme, draws
 nothing and animates nothing already, so there is no second thing for the flag to switch off.
@@ -62,7 +62,20 @@ to the existing `3` would have moved exactly the runs `6` was invented for.
 | `3` | CEILING | A step, time, cost or budget ceiling was reached, and nothing judged the work |
 | `4` | PAUSED | The run is waiting on a question, a plan, an approval or an interrupted call — resumable with `io resume`, except an approval |
 | `5` | UNFINISHED | The run ended in a state this table does not name |
-| `6` | UNVERIFIED | The work was judged by a verification gate and did not hold up |
+| `6` | UNVERIFIED | The work was judged and did not hold up — a verification gate that failed, or a run that never satisfied its output schema |
+
+**Two different failures reach `6`, and a caller that has to tell them apart reads stderr rather
+than the code.** A verification gate is `[app.io-cli.gates]`, this crate's own key, and a failing
+one is io-harness's `VerificationFailed`. **The schema contract is io-harness's `[run]
+output_schema`** — io-cli defines none and sets none, and `Config::apply_to` applies the operator's
+to a session turn and to both headless doors alike — and a run that never produces the shape it
+asks for is `RunOutcome::SchemaUnsatisfied`. Both mean the same thing, which is why they share a
+code: the work produced an answer, something checked it, and it did not hold up. The line
+`io exec` writes to stderr is what separates them, and the schema one says the run *never produced
+the shape its output schema asked for*. Neither is a ceiling — reporting either as `3` would send
+an operator to raise `[run] max_steps`, which buys more attempts at the same failure. Over ACP
+both are `max_turn_requests`, because such a run exhausted the attempts it was allowed rather than
+refusing anything.
 
 Exit `4` names the `question_id`, `plan_id` or `attempt_id` that `io resume` needs — for three of
 the four pauses. **An approval is the fourth and it names no invocation**, because there is none:
@@ -209,6 +222,13 @@ something** — the session's tool mask — which is admitted because the moment
 withheld is the moment you watch the agent reach for it. It passes the rule above rather than
 bending it: no file is written, nothing is reassigned, and the mask reaches the **next** turn
 because this one's contract was built before the keystroke.
+
+**The mask changes what the agent may call and not what a turn costs.** io-harness sends the same
+catalogue either way and io adds one sentence naming what is withheld, so a masked request is the
+longer of the two. `/context allow <tool>` takes one name back and `/context allow` on its own
+clears the mask; a name that matches nothing the last request carried is kept, because io-harness
+keeps an unknown name deliberately so a mask stays portable between builds, and io says so on the
+line.
 
 **`/config` is admitted bare and refused the moment it carries a word.** Through 0.32.0 it was
 refused in every form, because the bare list carried a row that re-read the provider's catalogue,

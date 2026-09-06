@@ -434,12 +434,18 @@ fn f9_running_twice_moves_nothing_the_second_time() {
         second.kept.is_empty(),
         "and nothing to keep, because the source is gone"
     );
-    assert_eq!(
-        second.lines().len(),
-        1,
-        "a run that moved nothing reports the home and nothing else"
+    // **And says nothing at all (0.38.2).** This asserted the opposite — one line,
+    // naming the home — which is the line the field test met on every single
+    // invocation of every subcommand, for a directory that had existed since the
+    // operator's first run. A report is owed for work that happened; a second
+    // adoption does no work. The line is now drawn only where something was
+    // created or moved, which the F8 arm in this file holds directly and this arm
+    // holds on the idempotent path.
+    assert!(
+        second.lines().is_empty(),
+        "a run that moved nothing has nothing to report: {:?}",
+        second.lines(),
     );
-    assert!(second.lines()[0].contains(".io-cli"));
 }
 
 /// **N3.** The home belongs to the operator alone. A credential sits in the file
@@ -502,4 +508,73 @@ fn the_origin_word_is_the_variable_the_harness_reads() {
         Origin::ConfigHome.word(),
         io_harness::config::CONFIG_HOME_VAR
     );
+}
+
+/// **F8 — the home line is drawn when this run did something, and not otherwise.**
+///
+/// It was last and unconditional, on the reasoning that a run which moved nothing
+/// is the product answering "where does it live" without being asked. What the
+/// 2026-09-05 field test found is that almost every run moves nothing — the
+/// migration happens once, ever — so `io keeps its files in …` printed above the
+/// output of every `io config get`, every `io mcp list`, every invocation in a
+/// shell loop. Answering an unasked question once is a courtesy; answering it
+/// every time is noise on a surface a script reads.
+///
+/// The four rows are the whole rule. The last is the one that matters: an adopted
+/// home with nothing to report says **nothing at all**, not a shorter something.
+///
+/// Sabotage: drop the condition in `Report::lines` and the last row fails; drop
+/// `created` from it and the first row fails.
+#[test]
+fn f8_the_home_line_is_drawn_only_when_this_run_created_or_moved_something() {
+    let home = PathBuf::from("/tmp/io-cli-home");
+    let report = |created: bool, moved: bool| home::Report {
+        home: home.clone(),
+        moved: if moved {
+            vec![(PathBuf::from("/old/io.toml"), home.join("io.toml"))]
+        } else {
+            Vec::new()
+        },
+        kept: Vec::new(),
+        blocked: None,
+        created,
+    };
+    let says_home = |r: &home::Report| {
+        r.lines()
+            .iter()
+            .any(|line| line.contains("keeps its files in"))
+    };
+
+    assert!(
+        says_home(&report(true, false)),
+        "the run that made the home is the one invocation that should say where it is",
+    );
+    assert!(
+        says_home(&report(false, true)),
+        "a file moved is a migration, and a migration names the destination",
+    );
+    assert!(
+        says_home(&report(true, true)),
+        "created and moved is still one report",
+    );
+    assert!(
+        !says_home(&report(false, false)),
+        "an ordinary run moves nothing and made nothing, and printing the home \
+         there is the noise on every invocation this criterion exists to remove",
+    );
+    assert!(
+        report(false, false).lines().is_empty(),
+        "and it says nothing at all rather than something shorter",
+    );
+
+    // The kept case is a migration too — a file left behind is something the
+    // operator has to know about, and the home is where the one in force lives.
+    let kept = home::Report {
+        home: home.clone(),
+        moved: Vec::new(),
+        kept: vec![(PathBuf::from("/old/io.toml"), home.join("io.toml"))],
+        blocked: None,
+        created: false,
+    };
+    assert!(says_home(&kept));
 }

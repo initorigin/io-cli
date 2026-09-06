@@ -81,6 +81,16 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
         Update::None,
         "the client already knows: it sent the prompt that started this",
     ),
+    // 0.81.0, declared immediately after `started` and placed there, per this
+    // table's ordering rule.
+    (
+        "context_ceiling",
+        Update::None,
+        "the window this run assembles inside is io-cli's own status line and its \
+         `/context` page; ACP has no session-capacity notification, and the \
+         nearest thing — a plan or an agent message — would put a number in the \
+         conversation that is not part of it",
+    ),
     (
         "recovery_paused",
         Update::ToolCallUpdate,
@@ -97,6 +107,22 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
         Update::None,
         "a per-step timing breakdown, which ACP has no vocabulary for; `io exec \
          --json` and `Store::step_attributions` carry it, as `triage` records",
+    ),
+    // Both 0.81.0, in declaration order: `step_usage` then `image_attached`,
+    // between `step_attributed` and `tool_call`.
+    (
+        "step_usage",
+        Update::None,
+        "a per-step token breakdown, which ACP has no vocabulary for either — and \
+         for the same reason as its neighbour above rather than a new one",
+    ),
+    (
+        "image_attached",
+        Update::None,
+        "the image was handed to the run inside io-harness — an MCP reply, a \
+         browser screenshot, `view_image` — and is already part of whatever \
+         `tool_call` produced it. A second notification carrying the same picture \
+         would draw it twice in a client that renders both",
     ),
     (
         "tool_call",
@@ -432,6 +458,18 @@ pub const TOOL_KINDS: &[(&str, &str)] = &[
     ("ask_question", "other"),
     ("ask_questions", "other"),
     ("send_message", "other"),
+    // 0.81.0, and `other` is decided rather than defaulted, on the same standard
+    // as the three above. `expand_tools` asks the harness to put a withheld tool
+    // family into the next step's catalogue: it touches no file, runs no program
+    // and fetches nothing, so seven of the nine are simply wrong. `think` is the
+    // near miss and is the one worth arguing — a client folds that kind by
+    // default, which is the right *treatment* for bookkeeping — but it would file
+    // a request about the run's own shape beside `propose_plan` and `todo_write`,
+    // where a reader opening the fold is looking for the model's reasoning about
+    // the task and would find a capability request instead. Declared
+    // unconditionally by `tools/mod.rs`, so the row is needed whether or not a run
+    // ever turns tiering on; this crate does not set `tool_tiers`.
+    ("expand_tools", "other"),
 ];
 
 /// Is `name` a tool this adapter has classified deliberately?

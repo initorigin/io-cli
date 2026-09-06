@@ -300,3 +300,125 @@ fn n1_the_driver_is_the_only_thing_that_reads_a_clock() {
          watching a string that is no longer written anywhere.",
     );
 }
+
+/// Every test name this repository's own prose cites is a test that exists.
+///
+/// **N6, and it is a criterion because 0.38.2 found one that was not.** The doc
+/// comment on `Wizard::existing` said
+/// "`f8_the_wizard…` holds it to that, because nothing under `tests/` links the
+/// driver" — naming a gate that had never been written. Every *other* thing about
+/// that feature was covered, so the suite was green, and the one line in the
+/// driver that made the feature work could have been deleted with nothing going
+/// red and a comment beside it asserting otherwise.
+///
+/// That is worse than an uncovered mechanism. An uncovered mechanism is a gap
+/// somebody may still find; a comment claiming coverage is the reason nobody
+/// looks. It is the same class as a stale citation, and this release exists to
+/// delete that class — so shipping the class in a new spelling would be its own
+/// failure.
+///
+/// **The convention is what makes this checkable.** Tests here are named
+/// `f<n>_…`, `n<n>_…` or `o<n>_…` after the acceptance criterion they hold, so a
+/// token in that shape is a test name and nothing else — no variable, no field and
+/// no function in `src/` is spelled that way. Anything matching it must resolve to
+/// a `fn` under `tests/`.
+///
+/// Sabotage: put a criterion-shaped name that no test defines into any comment —
+/// spelled out here would fail this gate from inside its own documentation, which
+/// is the shape working.
+#[test]
+fn n6_no_comment_cites_a_test_that_does_not_exist() {
+    let tests = test_sources();
+    assert!(
+        tests.len() > 50,
+        "the walk found only {} test files, which means it is not walking",
+        tests.len(),
+    );
+
+    // Every test this repository actually defines.
+    //
+    // **Not `strip_prefix("fn ")`.** That was the first draft and it reported
+    // nineteen live tests as missing: `#[tokio::test] async fn` and `pub fn` both
+    // put a word in front, so every asynchronous test in the suite looked
+    // undefined. A gate whose first run produces nineteen findings is far more
+    // likely to be wrong about its own instrument than to have found nineteen
+    // defects, and it was.
+    //
+    // **Both trees, not just `tests/`.** The second draft still reported fourteen,
+    // and every one was a `#[cfg(test)] mod tests` unit test living in `src/` —
+    // `src/app.rs` alone holds nine. A test in the crate is a test that exists, and
+    // a citation of one is not a stale claim.
+    //
+    // Comment lines are skipped so that `// fn f99_…` cannot define a test by
+    // mentioning one, which would quietly make this gate permissive.
+    let sources: Vec<(PathBuf, String)> = crate_sources().into_iter().chain(tests).collect();
+    let mut defined: Vec<String> = Vec::new();
+    for (_, source) in &sources {
+        for line in source.lines() {
+            let line = line.trim_start();
+            if line.starts_with("//") {
+                continue;
+            }
+            let Some(at) = line.find("fn ") else {
+                continue;
+            };
+            if let Some(name) = line[at + 3..].split(['(', '<']).next() {
+                defined.push(name.trim().to_string());
+            }
+        }
+    }
+
+    // A token is a criterion-named test if it is `f`/`n`/`o`, then digits, then an
+    // underscore, then more. `f2_x` is too short to be one of this repository's
+    // names and is excluded rather than guessed at.
+    // The length test comes first and is not decoration: splitting on delimiters
+    // yields empty strings between consecutive ones, and `word[1..]` on an empty
+    // string panics rather than answering false.
+    let cited_shape = |word: &str| {
+        if word.len() <= 12 || !matches!(word.as_bytes()[0], b'f' | b'n' | b'o') {
+            return false;
+        }
+        let digits = word[1..].chars().take_while(char::is_ascii_digit).count();
+        digits > 0
+            && word[1 + digits..].starts_with('_')
+            // A citation broken across two comment lines leaves a token ending in
+            // `_`, which is half a name rather than a missing test.
+            && word.ends_with(|c: char| c.is_ascii_alphanumeric())
+    };
+
+    // **A prefix counts, and a deleted test is allowed to be named.** Both fell out
+    // of running this for the first time, and neither is a loophole:
+    //
+    // * prose elides a long name with an ellipsis —
+    //   ``f11_the_permitted_spawn_set_is_exact_paths…`` in `tests/dependencies.rs`
+    //   — and the token before the ellipsis is a prefix of the real test. The claim
+    //   is true; only the spelling is short.
+    // * `tests/events.rs` records that a test **was deleted** and why. Naming it is
+    //   the opposite of claiming it holds something, and losing that sentence would
+    //   cost the reason the deletion was right.
+    //
+    // Anything else is a comment asserting a guarantee nothing enforces.
+    let mut missing: Vec<String> = Vec::new();
+    for (path, source) in &sources {
+        for line in source.lines() {
+            if line.contains("deleted") {
+                continue;
+            }
+            for word in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if cited_shape(word) && !defined.iter().any(|name| name.starts_with(word)) {
+                    let where_ = format!("{}: {word}", path.display());
+                    if !missing.contains(&where_) {
+                        missing.push(where_);
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these name a test that does not exist. A comment claiming a guarantee \
+         nothing enforces is the reason nobody goes looking for the gap:\n{}",
+        missing.join("\n"),
+    );
+}
