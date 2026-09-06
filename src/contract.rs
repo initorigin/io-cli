@@ -150,9 +150,35 @@ pub const GATED_MAX_STEPS: u32 = 40;
 /// a `[run] max_steps` in the file has already overwritten it by the time this
 /// runs — the same reading `crate::status` takes of the same field, rather than a
 /// second question put to the configuration.
+///
+/// **It has one collision and it is stated rather than hidden: `[run] max_steps =
+/// 1000` reads as "no cap set".** `Config::apply_to` calls `with_max_steps`
+/// unconditionally when the key is present, so an explicit thousand is
+/// indistinguishable from the floor, and a gated run configured that way takes
+/// forty. io-harness's `run` section is private, so there is no way to ask
+/// whether the key was written — only what it produced. The cost is bounded and
+/// one-directional: an operator who meant a thousand gets forty and sees exit `3`
+/// naming the ceiling, which is diagnosable and one edit from fixed; any other
+/// number, including `1001`, behaves exactly as written. Asserted as a row in
+/// `f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap` so it is a chosen
+/// cost rather than an unnoticed one. Found by the adversarial review.
 #[must_use]
-pub fn gated_bound(config: &Config, contract: TaskContract) -> TaskContract {
-    let ungated = criterion_of(config).is_none();
+pub fn gated_bound(contract: TaskContract) -> TaskContract {
+    // **The contract's own criterion, never the configuration's.** The first
+    // draft asked `criterion_of(config)`, and the adversarial review found that
+    // it answers a different question than the one that matters:
+    // `configured` applies the criterion through `criterion_for`, which
+    // additionally returns `None` when there is no provider spec or when a
+    // review criterion's reviewer will not build. `criterion_for` is therefore a
+    // strict subset, and the gap is one-directional — a `rubric` whose reviewer
+    // fails leaves the run **ungated** (`exec` prints a notice saying exactly
+    // that) while a config-derived test would still have capped it at forty. An
+    // ungated run truncated to forty steps is a new failure mode invented for a
+    // misconfiguration that previously only cost the gate.
+    //
+    // Reading `contract.verify` cannot diverge: it is the gate that will
+    // actually run, put there by the same call that built everything else here.
+    let ungated = matches!(contract.verify, io_harness::Verification::None);
     let budgeted = contract.max_duration.is_some() || contract.max_tokens.is_some();
     if ungated || budgeted || contract.max_steps != MAX_STEPS {
         return contract;
@@ -631,7 +657,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
 /// is not there — it returns `Error::Config("skills directory … does not exist")`
-/// (`io-harness-0.78.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// (`io-harness-0.79.0/src/skills.rs`), and `TaskContract::discover_skills`
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
@@ -656,7 +682,7 @@ fn default_skills() -> Option<PathBuf> {
 ///
 /// **One expansion for two keys, applied after both have had their say.**
 /// io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}` and nothing else
-/// (`substitute`, `io-harness-0.78.0/src/config.rs:2950` — there is no tilde
+/// (`substitute`, `io-harness-0.79.0/src/config.rs:3036` — there is no tilde
 /// branch anywhere in it, and 0.71.0 narrowed the forms rather than widening
 /// them: a plugin manifest now refuses all three), so a `~` an operator wrote in
 /// `[run] skills` or `[app.io-cli] skills`

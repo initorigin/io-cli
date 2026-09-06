@@ -608,21 +608,25 @@ fn the_kind_name_is_the_serde_tag() {
     );
 }
 
-#[test]
-fn f8_this_release_has_seen_every_kind_io_harness_emits() {
-    // The drift check itself moved to `tests/triage.rs`, which compares the
-    // locked harness's declared kinds against the disposition table rather than
-    // against a pair of lists nothing behind them had to agree with. What is
-    // left here is the count, because this file's own fixtures are written
-    // against it.
-    let declared = support::harness_event_kinds();
-    assert_eq!(
-        declared.len(),
-        53,
-        "the locked io-harness declares fifty-three event kinds; found {}",
-        declared.len(),
-    );
-}
+// **`f8_this_release_has_seen_every_kind_io_harness_emits` was deleted in
+// 0.38.1, and deleting it is the fix rather than bumping it.**
+//
+// Its own comment already said the drift check had moved to `tests/triage.rs`,
+// and what it kept was a bare `53`. That number asserted nothing this suite does
+// not assert better one file over: `the_table_names_every_kind_the_locked_harness_declares`
+// compares the locked harness's declared kinds against the disposition table by
+// NAME, so a kind io-harness adds fails there saying *which* kind is new. This
+// one failed saying a number had moved — the least useful half of the same fact,
+// and the half a reader repairs by editing the number.
+//
+// It is the fourth such literal this release found. Three were named by the
+// dependency audit before the pin moved; this one and one in `tests/triage.rs`
+// were found only by running the suite, which is the argument for running it
+// rather than trusting an audit of what a pin *should* touch.
+//
+// The stated reason for keeping it — "this file's own fixtures are written
+// against it" — is what a count cannot check. A fixture that stopped matching a
+// kind fails on the fixture, not on a total.
 
 /// **F8.** The two facts no other core records, in the order a reader needs them,
 /// asserted by position. A `contains` assertion is green when the sentence is

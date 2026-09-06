@@ -2311,10 +2311,7 @@ fn f1_the_session_door_spells_a_config_value_through_the_one_speller() {
     let driver = std::fs::read_to_string("src/main.rs").expect("this crate's driver is readable");
     let code = code_of(&driver.replace("\r\n", "\n"));
 
-    for needle in [
-        "configure::source_for(",
-        "configure::composer_words(",
-    ] {
+    for needle in ["configure::source_for(", "configure::composer_words("] {
         assert!(
             code.contains(needle),
             "`{needle}` has no call site in src/main.rs, so the session writes a \

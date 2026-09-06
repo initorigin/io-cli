@@ -499,10 +499,19 @@ fn the_dispositions_are_the_three_the_contract_names() {
     // ties `TRIAGE.len()` to the locked harness, so the two together still say
     // "one of three, for every kind io-harness declares" without either one going
     // stale on a pin.
+    // **What this can and cannot fail on, said plainly.** With three variants and
+    // no other way for a row to exist, the sum is a near-tautology: it fires only
+    // if `Disposition` grows a fourth variant and a row uses it. That is worth
+    // exactly what it costs, and the message says so rather than claiming to
+    // check "every kind" — the tie to the harness's declared set lives in
+    // `the_table_names_every_kind_the_locked_harness_declares` and in the row
+    // count below, which is where a reader should look for it.
     assert_eq!(
         lines + status + silent,
         TRIAGE.len(),
-        "every kind is exactly one of the three: {lines} lines, {status} status, {silent} silent",
+        "a row carries a disposition outside the three this table counts — \
+         {lines} lines, {status} status, {silent} silent, {} rows",
+        TRIAGE.len(),
     );
     // The release's own claim, and the reason it exists: most kinds are not
     // worth a line, and until 0.11.0 thirty-seven of them got one anyway.

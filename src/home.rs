@@ -9,7 +9,7 @@
 //! This module names one. It is deliberately **not** a second configuration
 //! system: io-harness resolves `$IO_CONFIG`, then `$IO_CONFIG_HOME`, then the
 //! platform's own place, reading the environment at call time
-//! (`io-harness-0.78.0/src/config.rs:2241`, the Windows branch at `:2259`), and
+//! (`io-harness-0.79.0/src/config.rs:2311`, the Windows branch at `:2329`), and
 //! there is no caller-supplied home
 //! anywhere in `Config`'s public surface — no `discover_in`, no builder. So the
 //! one lever is `$IO_CONFIG_HOME`, set once, before the first

@@ -291,18 +291,16 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
          the first step",
     ),
     ("contained", Disposition::Status, "the containment field"),
-    (
-        "dialed",
-        Disposition::Line,
-        "the dial line, carrying the host as the command asked for it, the port, and whether the \
-         policy permitted it",
-    ),
     // **0.79.0 — a kind this crate cannot receive, dispositioned anyway.**
-    // `EventKind::Program` is declared unconditionally in `observe.rs`, but every
-    // site that emits it is behind io-harness's `codeact` feature, which this
-    // crate does not enable. So the row exists because the table is total over
-    // what the harness *declares*, and the disposition is the one a run would
-    // get if the feature were ever turned on.
+    // Placed between `contained` and `dialed` because that is where
+    // `EventKind` declares it, and this table's whole ordering rule is that it
+    // can be read down the side of `observe.rs` when the pin moves.
+    //
+    // `EventKind::Program` is declared unconditionally in `observe.rs`, but
+    // every site that emits it is behind io-harness's `codeact` feature, which
+    // this crate does not enable. So the row exists because the table is total
+    // over what the harness *declares*, and the disposition is the one a run
+    // would get if the feature were ever turned on.
     //
     // Silent rather than a line, and the discovery half is why: the event is
     // emitted once before the first step saying `available` or `withheld`, and
@@ -322,6 +320,12 @@ pub const TRIAGE: &[(&str, Disposition, &str)] = &[
         "`io exec --json`, which forwards it verbatim, and the durable trace; no run this crate \
          drives emits it, because every emitting site is behind io-harness's `codeact` feature and \
          this crate does not enable it",
+    ),
+    (
+        "dialed",
+        Disposition::Line,
+        "the dial line, carrying the host as the command asked for it, the port, and whether the \
+         policy permitted it",
     ),
     (
         "finished",
