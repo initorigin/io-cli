@@ -51,7 +51,7 @@ posture on the next.](assets/screenshot.png)
 | **Approvals in place** | A write stops the run and shows the diff it proposes; `y`, `a` or `n`, answered where it was asked |
 | **A fan-out you can watch** | Contained turns spawn children under one shared ceiling; `Ctrl+F` shows the tree and what it is costing |
 | **Your file, in force** | Every section of `io.toml` bounds a session turn as it bounds `io exec`; the budgets in force are on the status line with what is left of them, and `/status` commits the whole state — policy layers, sandbox backend, caps, budgets, connections — into the scrollback |
-| **Undo** | `Esc Esc` at an empty prompt rewinds the last turn — its files, its memory and the conversation head |
+| **Undo** | `Esc` at an empty prompt asks whether to rewind the last turn — its files, its memory and the conversation head |
 | **Conversations that survive** | `/resume` reopens an earlier session and answers whatever its last run stopped on, `/fork` continues from an earlier turn, `/clear` starts fresh without leaving |
 | **A paused run, answered** | A question, a plan or an interrupted call is decided where it was left and the run carries on from the step it stopped at — from a session, or from a script with `io resume` |
 | **Everything it asks, in one place** | Several questions asked at once arrive as one overlay, answered one at a time and sent together; an offer may explain itself and preview what taking it would do; `Space` marks where a question takes more than one answer |

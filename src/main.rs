@@ -4594,20 +4594,22 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             // The first `Esc`. Nothing has changed yet; this says what the second
             // one would change, in the turn's own words, so a confirmation is a
             // confirmation of something specific rather than of a keystroke.
-            Command::ArmRewind => match io_cli::rewind::preview(&session, &store) {
-                Some(about) => app.say(
-                    Tone::Warning,
-                    io_cli::rewind::armed_line(&about, &app.theme.glyphs),
-                ),
+            // **The chord asks, and it asks with `/undo`'s own picker.** Both
+            // reach `undo::confirm_turn`, so the word and the keystroke cannot
+            // come to mean different things; the answer is delivered by
+            // `Pick::UndoRun`, which is where the operator's files actually
+            // change. Through 0.38.2 this arm called `undo_whole_turn` directly,
+            // with an armed footer line as the only warning.
+            Command::Rewind => match io_cli::rewind::preview(&session, &store) {
+                Some(about) => {
+                    let (title, rows) = io_cli::undo::confirm_turn(io_cli::rewind::armed_line(
+                        &about,
+                        &app.theme.glyphs,
+                    ));
+                    picker = Some((Picker::new(title, rows), Pick::UndoRun));
+                }
                 None => app.say(Tone::Muted, "there is no turn to undo"),
             },
-            // The second. This is where the operator's files change.
-            // **Through `observing` since 0.27.0, which is what finally emits
-            // `EventKind::Rewound`.** The call was `rewind_run`, whose observed
-            // twin is the only thing that emits it.
-            Command::Rewind => {
-                undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
-            }
             Command::Slash(text) => match commands::parse(&text, app.keys(), &app.theme) {
                 // Rewritten into a `Command::Submit` above, for the reason
                 // `/commit` is: invoking a skill hands work to the agent, so it
@@ -6414,34 +6416,18 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 },
                             ));
                         }
-                        // The bare form confirms like the other two rather than
-                        // arming like the chord. The arming is a property of a
-                        // *keystroke* — one press to warn, a second to act — and
-                        // a typed command has already been deliberate once. Both
-                        // paths end in the same `rewind::last_turn`, so the word
-                        // and the chord can never disagree about what an undo is.
+                        // **The word and the chord raise the same picker**, from
+                        // one construction in `undo::confirm_turn`. Through
+                        // 0.38.2 only this half confirmed and the chord armed
+                        // instead; see that function for what the field test did
+                        // to the arming.
                         io_cli::undo::Grain::Run => {
                             match io_cli::rewind::preview(&session, &store) {
                                 Some(about) => {
-                                    let title =
-                                        io_cli::rewind::armed_line(&about, &app.theme.glyphs);
-                                    picker = Some((
-                                        Picker::new(
-                                            title,
-                                            vec![
-                                                Row::with_detail(
-                                                    io_cli::store::LEAVE_IT,
-                                                    "the turn stands",
-                                                ),
-                                                Row::with_detail(
-                                                    "undo the whole turn",
-                                                    "its files, its notes, its queued children \
-                                                     and the conversation head",
-                                                ),
-                                            ],
-                                        ),
-                                        Pick::UndoRun,
-                                    ));
+                                    let (title, rows) = io_cli::undo::confirm_turn(
+                                        io_cli::rewind::armed_line(&about, &app.theme.glyphs),
+                                    );
+                                    picker = Some((Picker::new(title, rows), Pick::UndoRun));
                                 }
                                 None => app.say(Tone::Muted, "there is no turn to undo"),
                             }

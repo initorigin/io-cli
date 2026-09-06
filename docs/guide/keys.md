@@ -12,7 +12,7 @@
 | `Ctrl+D` | exit, on an empty prompt |
 | `Shift+Tab` | cycle the permission posture, from the next turn |
 | `Ctrl+L` | clear the viewport, never the scrollback |
-| `Esc Esc` | at an empty prompt, undo the last turn — its files and all |
+| `Esc` | at an empty prompt, ask whether to undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `Ctrl+F` | show the fleet: the children this turn has spawned |
 | `y / a / n` | answer an approval: allow once, allow this session, deny |
@@ -120,7 +120,7 @@ rewind = "ctrl+r ctrl+r"
 | `posture` | `Shift+Tab` |
 | `clear` | `Ctrl+L` |
 | `transcript` | `Ctrl+T` |
-| `rewind` | `Esc Esc` |
+| `rewind` | `Esc` |
 | `fleet` | `Ctrl+F` |
 
 A binding is a chord, or two chords separated by a space. Modifiers are `ctrl`,

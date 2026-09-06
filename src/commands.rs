@@ -83,8 +83,8 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Ctrl+L", "clear the viewport, never the scrollback"),
     (
-        "Esc Esc",
-        "at an empty prompt, undo the last turn — its files and all",
+        "Esc",
+        "at an empty prompt, ask whether to undo the last turn — its files and all",
     ),
     (
         "Ctrl+T",

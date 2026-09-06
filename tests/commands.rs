@@ -734,11 +734,15 @@ fn the_key_table_covers_every_key_this_release_binds() {
         "Ctrl+C",
         "Ctrl+D",
         "Ctrl+L",
+        // **One row since 0.39.0, where there were two.** `Esc` stops a turn and
+        // closes a picker, and at an empty prompt it is also the rewind — the one
+        // key in this product that changes the operator's files on io-cli's own
+        // initiative rather than the agent's. That used to be spelled `Esc Esc`,
+        // one press to warn in the scrollback and a second to act. The 2026-09-05
+        // field test pressed the first to dismiss a picker, never read the footer
+        // as a question, and lost two files to the second; the consent is a
+        // confirmation the driver raises now, so there is one chord and one row.
         "Esc",
-        // The one key in this product that changes the operator's files on
-        // io-cli's own initiative rather than the agent's, which is why it is two
-        // presses and why it is documented as two.
-        "Esc Esc",
         "Shift+Tab",
         "Ctrl+T",
         // 0.8.0. It has a key as well as `/fleet` because the moment it is worth

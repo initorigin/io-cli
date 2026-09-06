@@ -3,7 +3,7 @@
 //! The session's own keys were a `match` on a `KeyEvent` written into
 //! [`crate::app::App::key`], which is fine until somebody's terminal eats
 //! `Ctrl+L`, or their muscle memory says `Ctrl+R` for the thing this product
-//! spells `Esc Esc`. This module is the indirection that fixes that, and it is
+//! spells `Esc`. This module is the indirection that fixes that, and it is
 //! deliberately the smallest one that does: a table of chords, a lookup, and a
 //! way to render the table that is *in force* rather than the one that shipped.
 //!
@@ -347,7 +347,21 @@ impl Action {
             Self::Posture => "shift+tab",
             Self::Clear => "ctrl+l",
             Self::Transcript => "ctrl+t",
-            Self::Rewind => "esc esc",
+            // **One chord since 0.39.0, and the consent moved rather than went
+            // away.** It was `esc esc` — the first press armed and wrote what it
+            // would undo into the scrollback, the second acted — and that is a
+            // warning only for an operator who pressed the key meaning to undo.
+            // The 2026-09-05 field test pressed it to dismiss a picker, never
+            // read the footer as a question, and lost two files to the next
+            // press. The rewind now raises `/undo`'s own confirmation, which is a
+            // surface that waits for an answer rather than a line that has
+            // already scrolled.
+            //
+            // A two-chord binding is still a two-chord binding for anyone who
+            // writes one: `Hit::Arm` is returned whenever a binding has a second
+            // chord, and that machinery is untouched. What changed is that this
+            // action's consent no longer depends on it.
+            Self::Rewind => "esc",
             // It displaces the composer's forward-char, which the right arrow
             // already does — the same trade `Ctrl+T` already makes against its
             // transpose-chars, and the reason both are rebindable. The keymap it
