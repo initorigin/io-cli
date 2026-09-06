@@ -417,6 +417,52 @@ mod unix {
         io.wait_for("no turn to undo");
     }
 
+    /// **F8 — `io exec` without `--json` narrates, and stdout stays clean.**
+    ///
+    /// The source gate in `tests/exec.rs` holds `Narrating` to never naming
+    /// stdout, which makes the mistake impossible. This is the other half: a real
+    /// process, on a real terminal, whose commentary an operator would actually
+    /// see.
+    ///
+    /// The run cannot complete — the configured provider is an address nothing
+    /// serves — and that is exactly the case worth asserting. A headless run that
+    /// fails after doing some work is when an operator most needs to know what it
+    /// did, and before 0.39.0 this path printed nothing on the way to its error.
+    #[test]
+    fn f8_a_headless_run_narrates_without_json() {
+        let home = tempfile::tempdir().expect("a home");
+        let workspace = tempfile::tempdir().expect("a workspace");
+        let config = home.path().join("io.toml");
+        std::fs::write(
+            &config,
+            "[[provider]]\nkind = \"compatible\"\nmodel = \"a-model\"\n\
+             base_url = \"http://127.0.0.1:9\"\napi_key = \"not-a-key\"\n",
+        )
+        .expect("the configuration");
+
+        // No pty needed: this door is not a terminal interface, and piping it is
+        // how a script reaches it. What the arm reads is the split between the
+        // two streams, which a pty would merge.
+        let out = Command::new(env!("CARGO_BIN_EXE_io"))
+            .arg("-C")
+            .arg(workspace.path())
+            .arg("exec")
+            .arg("say hello")
+            .env("IO_CONFIG", &config)
+            .env("IO_CONFIG_HOME", home.path())
+            .env("NO_COLOR", "1")
+            .env_remove("OPENROUTER_API_KEY")
+            .output()
+            .expect("io exec runs");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains('·'),
+            "the commentary reached stdout, which is the agent's reply and \
+             nothing else: {stdout:?}",
+        );
+    }
+
     /// **F4 — `Ctrl+D` at an empty prompt leaves, and the process actually ends.**
     ///
     /// The bounded-exit half of F4 that needs no provider. A session that draws

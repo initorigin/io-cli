@@ -40,7 +40,7 @@ use std::io::Write;
 use std::sync::Mutex;
 
 use io_harness::{
-    Config, DenyAll, ExecMode, Flow, Ignore, Observer, PlanVerdict, Policy, Provider, ProviderSpec,
+    Config, DenyAll, ExecMode, Flow, Observer, PlanVerdict, Policy, Provider, ProviderSpec,
     RecoveryDecision, RunEvent, RunOutcome, Session, Store, TaskContract, TurnResult,
 };
 
@@ -451,6 +451,67 @@ impl<W: Write + Send> Ndjson<W> {
     /// The writer back, for a test that needs to read what was written.
     pub fn into_inner(self) -> W {
         self.out.into_inner().expect("the stream is not poisoned")
+    }
+}
+
+/// What a headless run says about itself when nobody asked for JSON (0.39.0).
+///
+/// **`io exec` without `--json` was silent about everything it did**, and the
+/// README said otherwise: its own sentence is that `io exec` shows what it
+/// refused, which was true in a session and true in the JSON stream and false on
+/// the one path most operators reach first. A run that edited four files and was
+/// refused a fifth printed the answer and nothing else.
+///
+/// One line per tool call, and one per refusal. The tool call is drawn at the
+/// moment the run announces it — which is *before* it runs, because that is when
+/// io-harness emits it — so these lines read as a commentary on work in progress
+/// rather than as a summary afterwards. That is the right shape for the surface:
+/// a long headless run with no output at all is indistinguishable from a hung
+/// one.
+///
+/// **Everything goes to stderr, and stdout stays exactly what a script reads.**
+/// The whole contract of this door is that stdout carries the answer and nothing
+/// else, so a `$(io exec …)` is the agent's reply. A commentary line written
+/// there would corrupt every caller that has ever depended on it — which is why
+/// this type holds no writer and names `eprintln!` directly, rather than being
+/// generic over one the way [`Ndjson`] is: a writer parameter here is a way to
+/// pass stdout by mistake.
+pub struct Narrating;
+
+impl Observer for Narrating {
+    fn event(&self, event: &RunEvent) -> Flow {
+        match &event.kind {
+            // What it is about to do. `target` is io-harness's own — the path,
+            // the pattern or the tool's own name where the call names none of
+            // them — and it is not embroidered here.
+            io_harness::EventKind::ToolCall { name, target, .. } => {
+                if target == name {
+                    eprintln!("· {name}");
+                } else {
+                    eprintln!("· {name} {target}");
+                }
+            }
+            // **The line the README already promised.** A refusal is the one
+            // thing a headless run must not swallow: the operator's policy
+            // stopped the agent, and a run that reports only its answer leaves
+            // them reading a reply that quietly did less than it says.
+            io_harness::EventKind::Refused {
+                act, target, rule, ..
+            } => {
+                // The rule where one named it. Its absence is a fact too — an
+                // unnamed action in the grey tier is the *least* vouched-for
+                // kind, as the approval overlay's own note says — but a
+                // parenthesis explaining that belongs on a surface with room,
+                // and this one is a line in a log.
+                let named = match rule {
+                    Some(rule) => format!(" (rule {rule})"),
+                    None => String::new(),
+                };
+                eprintln!("· refused {act} {target}{named}");
+            }
+            _ => {}
+        }
+        Flow::Continue
     }
 }
 
@@ -881,7 +942,13 @@ impl WithProvider for Headless {
         }
 
         let json = Ndjson::new(std::io::stdout());
-        let observer: &dyn Observer = if self.args.json { &json } else { &Ignore };
+        // **`Ignore` is gone from this arm as of 0.39.0.** Without `--json` this
+        // door said nothing at all about what it was doing, while the README's
+        // own sentence promised it showed what it refused. `Narrating` writes
+        // that commentary to stderr; stdout is untouched on both paths, which is
+        // the whole contract of `io exec`.
+        let narrating = Narrating;
+        let observer: &dyn Observer = if self.args.json { &json } else { &narrating };
 
         // **The same composition the session arm builds, and it is here for the
         // reason the asymmetry this product deleted in 0.14.0 was a defect.** A
@@ -1607,7 +1674,12 @@ impl WithProvider for Resuming {
         }
 
         let json = Ndjson::new(std::io::stdout());
-        let observer: &dyn Observer = if self.json { &json } else { &Ignore };
+        // The same commentary `Headless` writes, for the reason the composition
+        // below is the same: a resumed run that went quiet where the first half
+        // spoke would leave an operator carrying work on with less to read than
+        // they had starting it.
+        let narrating = Narrating;
+        let observer: &dyn Observer = if self.json { &json } else { &narrating };
 
         // The same composition `Headless` builds, and for the same reason: a
         // `[[hook]]` that fired on the run and then went quiet the moment it was

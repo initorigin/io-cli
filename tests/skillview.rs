@@ -926,7 +926,7 @@ fn f10_a_folder_skill_installs_whole() {
         "and a nested one, because a skill's references are its own to arrange",
     );
     // The whole point of the layout: io-harness finds it.
-    let found = io_harness::Skills::discover(&skills::dir(&home)).expect("the home discovers");
+    let found = io_harness::Skills::discover(skills::dir(&home)).expect("the home discovers");
     assert!(
         found.get("reviewer").is_some(),
         "the installed folder is not a skill io-harness can see, which makes the \
