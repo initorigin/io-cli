@@ -1032,7 +1032,10 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     templates: Templates,
     theme: Theme,
     plain: bool,
-    containment: Option<io_harness::Containment>,
+    // Mutable since 0.39.0: `/contain on` with nothing configured offers to write
+    // a section, and an operator who accepts meant the next turn rather than the
+    // next session.
+    mut containment: Option<io_harness::Containment>,
     // Mutable for the reason `config` is, and it is the half a reload forgets:
     // this is derived from `config` ONCE at startup, so refreshing only the
     // `Config` would leave every `[app.io-cli]` answer stale while the rest of
@@ -4325,6 +4328,56 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 undo_whole_turn(&mut app, screen, &mut session, &store, &seen)?;
                             }
                         }
+                        // **One inline table, not four dotted writes.** `Edit::set`
+                        // takes TOML source, so the whole section lands as one
+                        // value — which is also what an operator opening the file
+                        // afterwards will want to read, rather than four lines
+                        // that have to be assembled in the head.
+                        //
+                        // User scope: `[app.io-cli]` is this crate's own section,
+                        // and a fan-out is a property of how this operator works
+                        // rather than of the repository they are in.
+                        //
+                        // `configure::write` round-trips through
+                        // `Config::discover` and undoes the write if io-harness
+                        // refuses it, so a section this crate composed wrongly
+                        // cannot leave a session unable to start.
+                        Pick::ContainDefault(caps) => {
+                            if io_cli::store::acts(index) {
+                                let inline = format!(
+                                    "{{ max_total_agents = {}, max_concurrent_agents = {}, \
+                                     max_depth = {}, max_total_tokens = {} }}",
+                                    caps.max_total_agents,
+                                    caps.max_concurrent_agents,
+                                    caps.max_depth,
+                                    caps.max_total_tokens,
+                                );
+                                let edit =
+                                    io_cli::edit::Edit::set("app.io-cli.containment", inline);
+                                match io_cli::configure::write(
+                                    session.root(),
+                                    io_harness::config::Scope::User,
+                                    &[edit],
+                                ) {
+                                    Ok(()) => {
+                                        // In force now rather than at the next
+                                        // start. An operator who typed
+                                        // `/contain on` and was asked a question
+                                        // meant the turn after it, not the
+                                        // session after that.
+                                        containment = Some(caps.clone());
+                                        contained = true;
+                                        let notice =
+                                            settings::contained_notice(caps, app.theme.glyphs.dash);
+                                        app.record(Tone::Muted, notice);
+                                    }
+                                    Err(error) => app.record(
+                                        Tone::Error,
+                                        format!("the section was not written: {error}"),
+                                    ),
+                                }
+                            }
+                        }
                         Pick::Export { path, content } => {
                             if io_cli::store::acts(index) {
                                 let effective = approval::session_policy(
@@ -6181,11 +6234,26 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                     // with the key that closes it, rather than as a refusal —
                     // the caps are what the fan-out runs under and there is no
                     // safe default for somebody else's token ceiling.
+                    // **`/contain on` with nothing configured offers to write one
+                    // (0.39.0).** This arm named four keys and stopped —
+                    // technically correct, and it asked an operator to choose a
+                    // token ceiling for a mode they had not tried, out of a
+                    // documentation page they were not reading. The offer is a
+                    // starting point rather than a homework assignment, and every
+                    // number on it is visible on the row that acts.
+                    (None, Some(true)) => {
+                        let caps = settings::offered_containment();
+                        let (title, rows) = settings::containment_offer(&caps);
+                        picker = Some((Picker::new(title, rows), Pick::ContainDefault(caps)));
+                    }
+                    // Switching *off* something that is not on, and asking what is
+                    // in force when nothing is. Neither is a moment to offer a
+                    // configuration change: the first is already true and the
+                    // second is a question.
                     (None, _) => app.record(
                         Tone::Muted,
                         "no [app.io-cli.containment] in the configuration, so a turn here \
-                         cannot fan out. Set max_total_agents, max_concurrent_agents, \
-                         max_depth and max_total_tokens to turn it on.",
+                         cannot fan out. `/contain on` offers to write one.",
                     ),
                     (Some(caps), None) => {
                         let where_it_is = if contained {
@@ -9642,6 +9710,13 @@ enum Pick {
     /// reads the head itself, and a run id carried from before the confirmation
     /// could name a turn another `io` has since moved off the head.
     UndoRun,
+    /// A confirmation over writing a first `[app.io-cli.containment]` (0.39.0).
+    ///
+    /// Carries the caps it will write, so the section that lands is the one whose
+    /// four numbers were on the row the operator chose — the same rule the export
+    /// confirmation below follows, and for the same reason: a value rebuilt on
+    /// acceptance is a value nobody agreed to.
+    ContainDefault(io_harness::Containment),
     /// A confirmation over one export, carrying the bytes it will write.
     ///
     /// The content is built before the confirmation and carried rather than

@@ -333,6 +333,84 @@ pub const REFERENCE_CATALOGUE_KEY: &str = "app.io-cli.reference_catalogue";
 /// io-harness's spawn loop, so this is the only turn that can fan out. A notice
 /// that sold the mode on anything else was talking an operator into a fan-out to
 /// get capabilities their session already had.
+/// The caps `/contain on` offers to write when nothing is configured (0.39.0).
+///
+/// **Small on purpose, and every number is defensible out loud.** Until this
+/// release `/contain on` with no `[app.io-cli.containment]` named four keys and
+/// stopped — technically correct, and it asked an operator to pick a token
+/// ceiling for a mode they had not tried, out of a documentation page they were
+/// not reading. The four keys are still what the section holds; what changed is
+/// that io offers a starting point rather than a homework assignment.
+///
+/// - **Four agents in the tree.** A root and three children. Enough for a
+///   fan-out to be worth having and small enough that a mistake is legible.
+/// - **Two at once.** The number that makes it a fan-out rather than a queue,
+///   and the one that keeps a runaway visible on `/fleet` rather than
+///   overwhelming it. This throttles rather than refuses, so a third child waits
+///   instead of failing.
+/// - **One deep.** Children, and no grandchildren. Depth is where a tree stops
+///   being something an operator can hold in their head, and every tier
+///   multiplies how many agents may be working at once.
+/// - **A token ceiling the whole tree draws down together.** This is the number
+///   that has to exist for the offer to be honest — a fan-out with no aggregate
+///   ceiling is the one shape of this feature that can spend without a bound
+///   anybody chose.
+///
+/// **Not a default.** Nothing applies these unless the operator says yes, and the
+/// absent section still means the fan-out is off — which is what keeps a session
+/// that never typed `/contain` on exactly the turn it was before.
+#[must_use]
+pub fn offered_containment() -> io_harness::Containment {
+    io_harness::Containment {
+        max_total_agents: 4,
+        max_concurrent_agents: 2,
+        max_depth: 1,
+        max_total_tokens: 200_000,
+        // Both left unset, and for different reasons. A cost ceiling is
+        // documented by io-harness as **reserved and not enforced** — it has no
+        // price telemetry, so any figure it compared against would be one it
+        // invented — and offering an operator a number that does nothing is worse
+        // than offering none. A duration is a real ceiling and is not io's to
+        // guess: how long a fan-out may take is a property of the work, and the
+        // token ceiling above is the bound that stops a runaway.
+        max_total_cost: None,
+        max_total_duration: None,
+    }
+}
+
+/// The confirmation `/contain on` raises when nothing is configured (0.39.0).
+///
+/// Row 0 declines, like every other confirmation in this product, and
+/// `tests/contain.rs` asserts that by index rather than by reading the words.
+///
+/// **The caps are spelled out in the row that acts**, not summarised. This writes
+/// to the operator's configuration file and turns on a mode that spends tokens on
+/// their behalf across a tree of agents; "write a default" as the label would be
+/// asking them to agree to a number they were never shown.
+#[must_use]
+pub fn containment_offer(caps: &io_harness::Containment) -> (String, Vec<crate::picker::Row>) {
+    (
+        "Nothing here configures a fan-out. Write one?".to_string(),
+        vec![
+            crate::picker::Row::with_detail(
+                crate::store::LEAVE_IT,
+                "this turn goes on doing the work itself",
+            ),
+            crate::picker::Row::with_detail(
+                format!(
+                    "write [app.io-cli.containment] — {} agents, {} at once, {} deep, {} tokens",
+                    caps.max_total_agents,
+                    caps.max_concurrent_agents,
+                    caps.max_depth,
+                    caps.max_total_tokens,
+                ),
+                "into your own configuration file; `/config` edits it afterwards and \
+                 `/contain off` switches it back without removing it",
+            ),
+        ],
+    )
+}
+
 pub fn contained_notice(caps: &io_harness::Containment, dash: &str) -> String {
     format!(
         "contained {dash} up to {} agents, {} at once per tier, {} deep, {} tokens for the \
