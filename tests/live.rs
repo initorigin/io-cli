@@ -4404,3 +4404,74 @@ fn live_o3_a_gated_run_that_cannot_pass_exits_six() {
         "stderr must say the gate is what ended this: {stderr}",
     );
 }
+
+/// **F16/O3 — the ceiling a real run announces is the model's window, not 24,000.**
+///
+/// **This is the release's headline and the only arm that can decide it.** 0.38.2
+/// built the whole path — all four wrappers delegating, three surfaces reading the
+/// announced ceiling — and shipped it inert, because in io-harness 0.81.0 only
+/// `Compatible` answered `context_window` and only from a catalogue nothing
+/// primed. Every provider this crate could construct assembled under a flat
+/// 24,000 and `US-IO-CLI-0.38.2-I01` had to withdraw the claim. So an offline gate
+/// asserting the plumbing is exactly what was green through that release, and
+/// nothing but a live run against a real provider can tell this release apart
+/// from the last one.
+///
+/// The number is not asserted, and that is deliberate. It is whatever the model
+/// the fixture names actually declares, which moves when the catalogue moves. What
+/// is asserted is what the release claims: that the rung is no longer the
+/// fallback, and that the ceiling is no longer io-harness's old flat constant.
+///
+/// Nothing is written and no tool is reached — the ceiling is announced beside
+/// `Started`, before the first step — so this is the cheapest arm in the file.
+#[tokio::test]
+#[ignore = "live: needs OPENROUTER_API_KEY"]
+async fn live_f16_the_announced_ceiling_is_the_models_window() {
+    let key = key();
+    let dir = tempfile::tempdir().expect("a workspace");
+    let root = dir.path();
+
+    let store = Store::open(root.join("runs.db")).expect("a store");
+    let mut session = Session::open(&store, root).expect("a session");
+    let provider = io_harness::OpenRouter::new(&key, model());
+    let policy = workspace_policy();
+    let (_steer, inbox) = Steer::channel();
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let observer = Collector {
+        events: Arc::clone(&collected),
+    };
+
+    let _ = session
+        .turn_steered(
+            "Reply with the single word ok.",
+            &provider,
+            &store,
+            &policy,
+            &DenyAll,
+            &observer,
+            &inbox,
+        )
+        .await;
+
+    let events = collected.lock().expect("not poisoned");
+    let announced = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ContextCeiling { max_tokens, source } => Some((*max_tokens, source.clone())),
+            _ => None,
+        })
+        .expect("a real run announces its ceiling once, beside Started");
+
+    let (max_tokens, source) = announced;
+    assert_ne!(
+        source, "fallback",
+        "the run took the fallback rung, so nothing sized this provider — which is \
+         exactly the state 0.38.2 shipped and this release exists to end. \
+         ceiling: {max_tokens}",
+    );
+    assert_ne!(
+        max_tokens, 24_000,
+        "the ceiling is io-harness's old flat constant, announced as `{source}`",
+    );
+    println!("live ceiling: {max_tokens} tokens, source {source}");
+}
