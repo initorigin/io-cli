@@ -164,6 +164,20 @@ pub enum McpVerb {
     /// not a *cheap* read — it spawns or dials a real server — but nothing about
     /// the operator's files changes, which is what a `Plan` is about.
     Probe { id: String },
+    /// Serve **this install's own tools** to somebody else over MCP on stdio, and
+    /// keep serving until the client closes its end (0.39.0).
+    ///
+    /// **The other verbs here manage servers io talks to; this one makes io a
+    /// server.** It is on this surface anyway because the surface is MCP rather
+    /// than because the direction is the same, and because an operator looking for
+    /// anything to do with MCP looks at `io mcp`.
+    ///
+    /// A read like [`Probe`](McpVerb::Probe), and more so: it writes no
+    /// configuration, so [`plan`] answers `None` and each door runs it. Unlike
+    /// every other verb it never returns on its own — stdin closing is what ends
+    /// it — and it owns stdout completely from the moment it starts, because
+    /// stdout *is* the protocol.
+    Serve,
 }
 
 /// What `/plugin` and `io plugin` can be asked to do.
@@ -458,6 +472,15 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
                 id: args.one_word("mcp probe", "the id of a configured server")?,
             }))
         }
+        ("mcp", Some("serve")) => {
+            // No scope and no words. The root is `-C`'s and the policy is the
+            // one this install resolved — a server that took either as an
+            // argument would be a way to serve a workspace under a posture the
+            // operator's own configuration does not grant.
+            args.no_scope("mcp serve")?;
+            args.nothing("mcp serve")?;
+            Ok(Request::Mcp(McpVerb::Serve))
+        }
         ("mcp", Some("remove")) => {
             args.no_scope("mcp remove")?;
             args.only("mcp remove", &[])?;
@@ -559,7 +582,7 @@ pub fn parse(tokens: &[String]) -> Result<Request, String> {
 /// documentation this whole module's refusals exist to save.
 fn verbs(surface: &str) -> &'static str {
     match surface {
-        "mcp" => "`add`, `list`, `get`, `edit`, `enable`, `disable`, `probe` and `remove`",
+        "mcp" => "`add`, `list`, `get`, `edit`, `enable`, `disable`, `probe`, `serve` and `remove`",
         // `remove` takes the same two readings `add` does — a directory, or the
         // name of a bundle — and says so here, because an operator who was refused
         // is being told what to type next and `remove <path>` alone would send the
@@ -715,6 +738,11 @@ pub fn plan(
         // probe does. `Ok(None)` is the honest answer and it is the same one every
         // read verb here gives.
         Request::Skill(_) => return Ok(None),
+        // Serving writes nothing either, and is the furthest thing here from a
+        // plan: it never returns on its own. `Ok(None)` for the probe's reason —
+        // nothing about the operator's files changes, which is what a `Plan` is
+        // about — and the door runs it.
+        Request::Mcp(McpVerb::Serve) => return Ok(None),
         Request::Mcp(McpVerb::Add { server, scope }) => Plan {
             scope: *scope,
             edits: vec![crate::servers::add(server)],

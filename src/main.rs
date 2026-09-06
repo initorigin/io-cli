@@ -10240,6 +10240,40 @@ async fn manage_main(
             // server from a dead one only by parsing the sentence above.
             return Ok(io_cli::exec::probe_code(&probe));
         }
+        // **`io mcp serve` — this install's own tools, offered to somebody else
+        // (0.39.0).** The other verbs on this surface manage servers io talks to;
+        // this one makes io a server, over the same protocol, on stdio.
+        //
+        // **Stdout is the protocol from this line on.** Everything io says about
+        // itself — which tools it serves, which it does not, under what policy —
+        // is written to stderr before the loop starts, because one
+        // human-readable byte on stdout corrupts the stream for the client that
+        // borrowed this boundary. That is the same rule `io acp` follows and it
+        // is the reason this arm returns rather than falling through to the
+        // `println!` verbs below it.
+        //
+        // **The policy is the one this install resolved**, not a wider one: the
+        // whole reason another agent would borrow this boundary is that it can
+        // see it, so serving under anything other than the operator's own rules
+        // would make the borrowing pointless and the disclosure a lie.
+        io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::Serve) => {
+            let store = io_cli::settings::store_path().ok_or("no place to keep the run store")?;
+            let policy = config.policy().unwrap_or_default();
+            // Named for the product an operator configured, not for the library
+            // inside it. A client's server list is where this name is read, and
+            // `io-harness` there would send somebody looking for the wrong
+            // documentation.
+            let served = io_harness::McpServerConfig::new(root, &store)
+                .with_policy(policy)
+                .with_server_name("io");
+            for line in io_cli::servers::serving(&served) {
+                eprintln!("{line}");
+            }
+            io_harness::serve_mcp(served)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(io_cli::exec::OK);
+        }
         _ => {}
     }
     // **Resolved only for the one verb that needs it.** `Config::plugins()` is a

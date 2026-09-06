@@ -1208,6 +1208,100 @@ fn f10_a_typed_value_becomes_the_toml_its_key_needs() {
 /// the instrument `tests/contract.rs` and `tests/context_share.rs` already use for
 /// exactly this. Two properties: the edit row exists at all, and the write is
 /// aimed at the scope the lookup returned rather than at a scope somebody picked.
+/// **F14 — the server says what it serves, and says it where it cannot corrupt
+/// the protocol.**
+///
+/// A server another agent borrows is only worth borrowing if it can be seen: the
+/// whole argument for handing somebody else this install's tools is that they
+/// arrive under this install's policy, gated and journalled. A server that
+/// started silently would be asking a client to trust a boundary it has no way to
+/// inspect.
+///
+/// The unserved set is the half a reader is most likely to be surprised by. A
+/// borrowed boundary that quietly declined to offer `spawn` would look like a
+/// broken server rather than a bounded one — and it is io-harness's own
+/// `MCP_SERVER_UNSERVED` rather than a list written here, because a second copy
+/// goes stale the first time the harness moves a name.
+#[test]
+fn f14_serving_names_the_root_the_policy_and_what_it_will_not_serve() {
+    let root = std::path::Path::new("/some/workspace");
+    let config = io_harness::McpServerConfig::new(root, std::path::Path::new("/some/runs.db"));
+
+    let said = io_cli::servers::serving(&config).join("\n");
+
+    assert!(
+        said.contains("/some/workspace"),
+        "the root it serves: {said}"
+    );
+    assert!(
+        said.contains(io_harness::MCP_SERVER_PROTOCOL_VERSION),
+        "the protocol version a client negotiates against: {said}",
+    );
+    // **The boundary in the product's own words, not a `Debug` of the policy.**
+    // Driving the real argv door is what settled this: the first version printed
+    // every layer, rule and pattern on one line — hundreds of columns of
+    // `Rule { act: Read, effect: Deny, pattern: ".env" }` — which is a wall a
+    // reader scrolls past rather than a disclosure. What a client needs is which
+    // of the three postures they are borrowing.
+    let posture = io_cli::settings::Posture::of(&config.policy().defaults)
+        .expect("a default policy is one of the three postures");
+    assert!(
+        said.contains(posture.label()) && said.contains(posture.detail()),
+        "the boundary has to be readable, and this is where a client learns \
+         whether a write will stop and ask: {said}",
+    );
+    assert!(
+        !said.contains("Rule {"),
+        "the policy is dumped rather than described: {said}",
+    );
+
+    for withheld in io_harness::MCP_SERVER_UNSERVED {
+        assert!(
+            said.contains(withheld),
+            "`{withheld}` is not served and the disclosure does not say so, so a \
+             client meets a bounded server as a broken one: {said}",
+        );
+    }
+}
+
+/// **F14 — nothing the server says about itself is written to stdout.**
+///
+/// Stdout is the JSON-RPC stream from the moment the loop starts, and one
+/// human-readable byte on it corrupts the protocol for the client that borrowed
+/// this boundary. Every other verb on this surface prints its answer with
+/// `println!`, so this arm is guarding against the most natural mistake in the
+/// file rather than an exotic one — `io mcp list` is eight lines away and is
+/// supposed to use stdout.
+///
+/// Sabotage: change the `eprintln!` in the serve arm to `println!`. Only this
+/// fails.
+#[test]
+fn f14_the_serve_arm_writes_nothing_to_stdout() {
+    let driver = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("the driver is readable");
+
+    let start = driver
+        .find("McpVerb::Serve) => {")
+        .expect("the serve arm is in the driver");
+    let end = driver[start..]
+        .find("\n        _ => {}")
+        .map(|at| start + at)
+        .expect("the arm ends");
+    let arm = &driver[start..end];
+
+    assert!(
+        arm.contains("eprintln!"),
+        "the disclosure has to be on stderr: {arm}",
+    );
+    assert!(
+        !arm.contains("println!") || !arm.replace("eprintln!", "").contains("println!"),
+        "the serve arm writes to stdout, which is the protocol from the moment \
+         the loop starts: {arm}",
+    );
+}
+
 #[test]
 fn f10_the_driver_writes_into_the_scope_the_lookup_found() {
     let driver = std::fs::read_to_string(

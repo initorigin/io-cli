@@ -877,6 +877,62 @@ fn decided_by(rule: Option<&str>, layer: Option<&str>) -> String {
 /// server definition put there. Getting it wrong is a refusal rather than a
 /// corruption — [`crate::edit::apply`] reads its own result back — but a
 /// refusal an operator cannot act on is still a verb that does not work.
+/// What `io mcp serve` says about itself, before stdout becomes the protocol
+/// (0.39.0).
+///
+/// **A server another agent borrows is only worth borrowing if it can be seen.**
+/// The whole argument for handing somebody else this install's tools is that they
+/// arrive under this install's policy, gated and journalled — so a server that
+/// started silently would be asking a client to trust a boundary it has no way to
+/// inspect. These lines are that inspection: the root, the policy in force, and
+/// which of io-harness's tools are served and which are not.
+///
+/// **Every line goes to stderr and the caller is what writes them**, because
+/// stdout is the JSON-RPC stream from the moment the loop starts and one
+/// human-readable byte on it corrupts the protocol for the client.
+///
+/// The unserved set is io-harness's own `MCP_SERVER_UNSERVED` rather than a list
+/// written here. It is the half a reader is most likely to be surprised by — a
+/// borrowed boundary that quietly declined to offer `spawn` or `ask_question`
+/// would look like a broken server rather than a bounded one — and a second copy
+/// of it here would go stale the first time the harness moved a name.
+pub fn serving(config: &io_harness::McpServerConfig) -> Vec<String> {
+    let mut lines = vec![
+        format!("io: serving {} over MCP on stdio", config.root().display()),
+        format!(
+            "io: protocol {}, as `{}`",
+            io_harness::MCP_SERVER_PROTOCOL_VERSION,
+            config.server_name(),
+        ),
+        // **The posture in the words the rest of the product uses, and not a
+        // `Debug` of the policy.** Driving the real argv door is what caught
+        // that: the first version printed every layer, every rule and every
+        // pattern on one line — hundreds of columns of `Rule { act: Read, effect:
+        // Deny, pattern: ".env" }` — which is not a disclosure, it is a wall a
+        // reader scrolls past.
+        //
+        // `Posture::of` answers `None` for a policy that is not one of the three,
+        // which is allowed and is why the fallback says so rather than guessing.
+        // A configuration file can express far more than three postures, and
+        // naming one of them anyway would put a true-looking word beside a
+        // boundary it does not describe.
+        match crate::settings::Posture::of(&config.policy().defaults) {
+            Some(posture) => format!("io: {} — {}", posture.label(), posture.detail()),
+            None => "io: under this install's own policy, which is not one of the three \
+                     postures — `io mcp get` and the configuration file are what describe it"
+                .to_string(),
+        },
+    ];
+    if !io_harness::MCP_SERVER_UNSERVED.is_empty() {
+        lines.push(format!(
+            "io: not served{}{}",
+            " — ",
+            io_harness::MCP_SERVER_UNSERVED.join(", "),
+        ));
+    }
+    lines
+}
+
 pub fn quoted(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
