@@ -3109,3 +3109,60 @@ fn o13_the_turns_own_figure_is_provisional_on_the_same_terms() {
         .expect("provisional")
         .starts_with('~'));
 }
+
+/// **F9 — the footer says how much of the bill was cached.**
+///
+/// `52k tok` reads as though every re-sent catalogue were paid for in full, and
+/// for most sessions most of it was not: the 2026-09-05 field test moved the
+/// figure from 8.1k to 52k over four one-word turns at a spend of $0.0001 each.
+/// The tokens were real; the implication was not. An operator deciding whether to
+/// `/clear` reads this field.
+///
+/// Sabotage: drop the `cached` branch from `token_field`. Only this fails.
+#[test]
+fn f9_the_token_field_says_how_much_was_read_from_the_cache() {
+    let mut status = Status::new("a-model");
+    status.tokens = Some(52_000);
+
+    assert_eq!(
+        status.token_field().as_deref(),
+        Some("52.0k tok"),
+        "with nothing reported there is nothing to draw, and a `0 cached` on \
+         every uncached turn would be furniture",
+    );
+
+    status.note_step_usage(30_000);
+    status.note_step_usage(14_000);
+    let field = status.token_field().expect("a figure");
+    assert!(
+        field.contains("44.0k cached"),
+        "the cache reads accumulate across the session; one step's figure drawn \
+         as the conversation's would be a different number every turn: {field}",
+    );
+    assert!(
+        field.starts_with("52.0k tok"),
+        "the cached figure is inside the total and must not be added to it — \
+         io-harness puts `cache_read_tokens` inside `prompt_tokens`: {field}",
+    );
+}
+
+/// **F9 — a cache figure belongs to the conversation that earned it.**
+///
+/// `forget_run` is reached by `/clear`, `/resume`, `/fork` and a rewind. A figure
+/// carried across would tell a new conversation it was mostly cached before it
+/// had sent anything.
+#[test]
+fn f9_the_cache_figure_is_forgotten_with_the_run() {
+    let mut status = Status::new("a-model");
+    status.tokens = Some(1_000);
+    status.note_step_usage(900);
+    assert!(status.token_field().expect("a figure").contains("cached"));
+
+    status.forget_run();
+    status.tokens = Some(1_000);
+    assert_eq!(
+        status.token_field().as_deref(),
+        Some("1.0k tok"),
+        "the previous conversation's cache followed the new one",
+    );
+}

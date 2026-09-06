@@ -352,6 +352,31 @@ pub struct Status {
     /// not. [`crate::context::window`] falls back to the contract there, which is
     /// the pre-0.38.2 expression byte for byte.
     pub ceiling: Option<u64>,
+    /// How much of this session's prompt tokens the provider read from its cache
+    /// (0.39.0).
+    ///
+    /// **The footer's `tok` figure reads as though every re-sent catalogue were
+    /// paid for in full, and for most sessions most of it was not.** The
+    /// 2026-09-05 field test moved the number from 8.1k to 52k over four
+    /// one-word turns at a spend of $0.0001 each; the tokens were real and the
+    /// implication that they cost what fresh tokens cost was not. An operator
+    /// deciding whether to `/clear` reads this figure, and until 0.39.0 it told
+    /// them to.
+    ///
+    /// From io-harness 0.81.0's `EventKind::StepUsage`, which is a **separate
+    /// event** rather than a field on `Finished` or `Step` — a step no provider
+    /// answered emits nothing at all rather than four zeroes, which is why this
+    /// is an `Option` and not a counter starting at zero.
+    ///
+    /// A **subset** of `tokens`, never an addition to it: io-harness's own
+    /// `Usage` documentation is explicit that `cache_read_tokens` is already
+    /// inside `prompt_tokens`, and `src/cost.rs` has carried that note since it
+    /// was written. Adding them would over-report every cached turn, which is
+    /// most of them.
+    ///
+    /// Accumulated across the session and cleared by [`Status::forget_run`] with
+    /// the rest — a conversation that was put down took its cache with it.
+    pub cached: Option<u64>,
     /// Which rung decided [`Status::ceiling`], in io-harness's own word (0.39.0).
     ///
     /// `EventKind::ContextCeiling` has carried this since io-harness 0.81.0 and
@@ -680,6 +705,7 @@ impl Status {
             cost: None,
             context: None,
             ceiling: None,
+            cached: None,
             ceiling_source: None,
             containment: None,
             boundary: None,
@@ -768,6 +794,11 @@ impl Status {
         // line elsewhere in this function: a rung left behind by a cleared
         // ceiling would describe the previous run's model on this run's page.
         self.ceiling_source = None;
+        // Beside the token count it qualifies. A conversation that was put down
+        // took its provider-side cache with it, and carrying the figure forward
+        // would say a new conversation was mostly cached before it had sent
+        // anything.
+        self.cached = None;
         self.containment = None;
         // Beside the containment word it qualifies, and for the same reason: a
         // measurement belongs to the run that took it, and carrying it onto the
@@ -1297,16 +1328,51 @@ impl Status {
     ///
     /// The estimate is added to the settled session total rather than replacing
     /// it, so the number only ever moves the way the spend does.
+    /// **And how much of it was cached (0.39.0).** `52k tok · 44k cached` is a
+    /// different fact from `52k tok`, and it is the one an operator deciding
+    /// whether to `/clear` actually needs: the tokens are real, and most of them
+    /// were read from the provider's cache at a fraction of the price. Appended
+    /// to this field rather than given a column of its own, because the footer
+    /// already carries seventeen and because the two numbers mean nothing apart.
+    ///
+    /// Drawn only when there is a cache read to report. A `0 cached` on every
+    /// uncached turn would be furniture, and on a provider that reports no usage
+    /// at all it would be a claim this crate cannot make.
+    ///
+    /// The cached figure is **not** added to the total: it is already inside it.
     pub fn token_field(&self) -> Option<String> {
         match (self.tokens, self.streaming) {
             (None, None) => None,
             (settled, streaming) => {
                 let total = settled.unwrap_or(0).saturating_add(streaming.unwrap_or(0));
-                Some(match streaming {
+                let counted = match streaming {
                     Some(_) => format!("~{} tok", format_tokens(total)),
                     None => format!("{} tok", format_tokens(total)),
+                };
+                Some(match self.cached.filter(|cached| *cached > 0) {
+                    Some(cached) => format!("{counted} · {} cached", format_tokens(cached)),
+                    None => counted,
                 })
             }
+        }
+    }
+
+    /// What a step's usage says about how much of the prompt was cached
+    /// (0.39.0).
+    ///
+    /// **Accumulated, not replaced.** `EventKind::StepUsage` describes one step,
+    /// and the figure beside it in the footer is the session's total — so a
+    /// setter that assigned would report the last step's cache read as though it
+    /// were the conversation's.
+    ///
+    /// `cache_write_tokens` is deliberately not added in. It is a different
+    /// thing charged at a different rate, and io-harness reports it as
+    /// `Option<u64>` precisely because `None` means *not reported* rather than
+    /// *none written* — folding an unknown into a total is how a number stops
+    /// meaning anything.
+    pub fn note_step_usage(&mut self, cache_read: u64) {
+        if cache_read > 0 {
+            self.cached = Some(self.cached.unwrap_or(0).saturating_add(cache_read));
         }
     }
 
