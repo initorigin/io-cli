@@ -96,7 +96,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "y / a / n",
-        "answer an approval: allow once, allow this session, deny",
+        "choose an approval's answer: allow once, allow this session, deny — `Enter` gives it",
     ),
     (
         "Esc",

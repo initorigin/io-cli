@@ -2109,15 +2109,26 @@ fn f11_asking_for_the_default_explicitly_changes_nothing() {
 ///
 /// Sabotage: add a key to `CATALOGUE` — under which only this fails, and it
 /// fails by saying a release that promised to add no configuration added one.
+///
+/// **0.40.0 is the release that moved it, and it moved it by thirteen.** The
+/// number stays written out and the reason is written beside it, because the
+/// point of the gate is that growing this surface is a decision recorded here
+/// rather than a line added elsewhere. Each of the thirteen was already
+/// reachable by hand-editing the file and each was mis-typed by the shell door;
+/// none of them is new configuration. `browser.binary` is deliberately not among
+/// them — it is on `configure::EXCLUDED`, which `tests/docs.rs` holds to covering
+/// every leaf this list does not.
 #[test]
-fn n3_this_release_adds_no_configuration_key() {
-    let before_0_27_0 = 37;
+fn n3_the_key_catalogue_grows_only_when_a_release_says_so() {
+    let through_0_39_0 = 37;
+    let added_by_0_40_0 = 13;
     assert_eq!(
         io_cli::configure::CATALOGUE.len(),
-        before_0_27_0,
-        "0.27.0 adds three commands and no keys; a different number here means a \
-         release that promised an operator nothing would change gave them \
-         something to configure",
+        through_0_39_0 + added_by_0_40_0,
+        "a different number here means a release changed what an operator has to \
+         configure without saying so. 0.40.0 added thirteen rows — \
+         `reference_catalogue`, `prices.models`, the five browser keys it offers \
+         and the six containment ceilings.",
     );
 }
 
