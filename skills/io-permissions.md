@@ -42,10 +42,13 @@ project on this machine), the project's own `io.toml` (committed, everyone who
 clones it), and `io.local.toml` beside it (this checkout, not committed).
 
 "In this repository" means the project file or the local one, never the user
-file. io-harness **refuses** a project-scoped change that widens the boundary,
-in its own words, and accepts the same value in `io.local.toml` — the rule is
-about which file, not which value. So an uncommitted widening belongs in
-`io.local.toml` and there is no argument to have about it.
+file. io-harness **refuses** a change that widens the boundary from either of
+them, in its own words — the rule is about which file, not which value, and since
+io-harness 0.74.0 `io.local.toml` is on the refused side too, because it is a
+path inside the workspace that the run's own agent can write to. **A widening
+therefore belongs in the user-scope file and nowhere else**, which is the one
+file no workspace can reach. Telling somebody to put it in `io.local.toml` sends
+them into a refusal.
 
 ## The surface
 

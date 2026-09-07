@@ -3472,3 +3472,180 @@ fn f9_plugin_search_with_no_match_says_nothing_matched() {
          agreeing only until one of them is edited",
     );
 }
+
+// ---------------------------------------------------------------------------
+// N2 — every sentence 0.40.0 corrected has a gate that names a phrase a reader
+// would act on
+// ---------------------------------------------------------------------------
+
+/// **N2 — the git guide names the identity a commit will carry.**
+///
+/// The page explained that the identity always resolves and that you are told
+/// which default io-harness will use, and never said what it is — so an operator
+/// could not know their history would carry `io-harness agent` until it did, at
+/// which point the one fact about a commit that cannot be corrected without
+/// rewriting history was already wrong.
+///
+/// **Read from `Identity::default()` rather than typed here**, the way
+/// `tests/commit.rs` already does it: a literal in this file is a second place
+/// for the string to live, and the wrong one would still pass.
+#[test]
+fn n2_the_git_guide_names_the_commit_identity_io_harness_will_use() {
+    let default = io_harness::Identity::default();
+    let page = guide("git");
+    for part in [&default.name, &default.email] {
+        assert!(
+            page.contains(part.as_str()),
+            "docs/guide/git.md says a repository with no identity is told which default \
+             io-harness will use and never names it. The default is `{}` <{}>, and until \
+             an operator has seen it they have no way to know what their history will \
+             carry.",
+            default.name,
+            default.email,
+        );
+    }
+}
+
+/// **N2 — the headless guide names the gated step cap.**
+///
+/// `contract::GATED_MAX_STEPS` bounds a gated headless run that budgeted nothing,
+/// it decides whether an unattended job finishes, and through 0.39.0 it appeared
+/// in no shipped document at all — the only place the number and its reasoning
+/// existed was a doc comment on the constant.
+#[test]
+fn n2_the_headless_guide_names_the_gated_step_cap() {
+    let page = guide("headless");
+    let cap = io_cli::contract::GATED_MAX_STEPS;
+    assert_eq!(
+        cap, 40,
+        "the cap moved and the word below is spelled out, so the assertion has to \
+         move with it rather than silently checking for the old number",
+    );
+    for needle in [&cap.to_string(), "forty"] {
+        assert!(
+            page.contains(needle),
+            "docs/guide/headless.md does not name the gated step cap ({needle}), which \
+             is what decides whether an unattended gated run finishes",
+        );
+    }
+    assert!(
+        page.contains("exits `3`"),
+        "a cap an operator meets has to name the exit code they will see",
+    );
+}
+
+/// **N2 — the headless guide warns that `reasoning` trails the step it explains.**
+///
+/// The `--json` stream relays io-harness's order faithfully and breaks nothing
+/// documented — the events carry `run_id` and `step`, so a reader that groups by
+/// step is right. A reader that assumes arrival order is chronological is not, and
+/// the screen ordering having been corrected in 0.38.1 is exactly what makes the
+/// stream's order surprising.
+#[test]
+fn n2_the_json_section_warns_that_reasoning_trails_its_step() {
+    let page = guide("headless");
+    assert!(
+        page.contains("`reasoning` event arrives *after* the `step`"),
+        "docs/guide/headless.md documents the JSON stream and does not say that a \
+         thought arrives after the step whose tokens it explains, so a consumer that \
+         renders in arrival order shows it under the wrong step",
+    );
+}
+
+/// **N2 — no shipped page still says a widening value is accepted in
+/// `io.local.toml`.**
+///
+/// Untrue since io-harness 0.74.0, which widening-checks that file always: it is a
+/// path inside the workspace root that the run's own agent can write to, so a
+/// single `write_file` of it would declare an argv the next discovery runs,
+/// outside the policy and outside the sandbox.
+///
+/// **`skills/io-permissions.md` is the one that mattered.** It is read by an agent
+/// and it is what advised the 2026-09-05 field tester into the refusal they hit —
+/// a page that sends somebody somewhere it knows they will be refused.
+#[test]
+fn n2_no_shipped_page_offers_the_local_file_as_the_place_to_widen() {
+    let mut pages = shipped_prose();
+    pages.push((
+        "docs/config.example.toml".to_string(),
+        read("docs/config.example.toml"),
+    ));
+
+    for (name, text) in &pages {
+        for stale in [
+            "accepted in `io.local.toml`",
+            "accepts the same value in `io.local.toml`",
+            "belongs in\n`io.local.toml`",
+            "in io.local.toml for this checkout",
+            "`--scope local` for this checkout",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{name} still offers `io.local.toml` as a place a widening value is \
+                 taken. io-harness has refused that file since 0.74.0, so the sentence \
+                 sends an operator into a refusal: {stale:?}",
+            );
+        }
+    }
+
+    // And the three pages that carry the rule say what it is now, so the negative
+    // sweep above cannot be satisfied by deleting the subject.
+    for name in [
+        "docs/guide/configuration.md",
+        "docs/config.example.toml",
+        "skills/io-permissions.md",
+    ] {
+        let text = read(name);
+        assert!(
+            text.contains("io.local.toml") && text.contains("0.74.0"),
+            "{name} explains where a widening value goes and does not say that \
+             `io.local.toml` has been refused since io-harness 0.74.0",
+        );
+    }
+}
+
+/// **N2 — no shipped page counts five refused pairs.**
+///
+/// There are thirteen, across twelve keys: the four `policy.defaults.*` acts, two
+/// sandbox flags, two `sandbox.mode` values and the five `sandbox.limits.*` zeroes.
+/// The count is io-harness's own `PROJECT_WIDENING`, and it is
+/// `tests/configure.rs`'s `f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another`
+/// that holds the *code* to it by driving every pair through the real refusal —
+/// this gate is only about the prose beside it, which had drifted eight pairs
+/// short and was gated by nothing at all.
+#[test]
+fn n2_no_shipped_page_counts_five_refused_widening_pairs() {
+    let mut pages = shipped_prose();
+    pages.push((
+        "docs/config.example.toml".to_string(),
+        read("docs/config.example.toml"),
+    ));
+
+    for (name, text) in &pages {
+        for stale in [
+            "exactly five (key, value) pairs",
+            "EXACTLY FIVE (KEY, VALUE) PAIRS",
+            "three of the five pairs",
+            "any of the five in",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{name} says there are five refused (key, value) pairs. There are \
+                 thirteen, and a reader who trusts the short list writes one of the \
+                 other eight into a file that then does not parse at all: {stale:?}",
+            );
+        }
+    }
+
+    // Lowercased on both sides: the example file shouts this sentence in capitals,
+    // which is its own convention for a rule with a cost, and a gate that forced
+    // one casing would be editing the page's voice rather than its facts.
+    for name in ["docs/guide/configuration.md", "docs/config.example.toml"] {
+        let text = read(name).to_lowercase();
+        assert!(
+            text.contains("thirteen (key, value) pairs"),
+            "{name} lists what a workspace file may not widen and does not say how \
+             many there are",
+        );
+    }
+}

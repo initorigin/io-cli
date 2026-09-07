@@ -108,25 +108,32 @@ an MCP server id — is addressed correctly too; it could only be written quoted
 and the path splitter cut it in half, which surfaced as an unexplainable "the edit
 would have produced a file that does not parse".
 
-**A project-scoped change that would widen the boundary is refused in
-io-harness's own words**, and the same value is accepted in `io.local.toml` —
-the rule is about which file, not which value. io-cli keeps no copy of those
-rules: it writes, asks io-harness to read the file back, and restores it exactly
-when the answer is no.
+**A change that would widen the boundary is refused, in io-harness's own words,
+from any file inside the workspace** — the project's `io.toml` and
+`io.local.toml` alike. The rule is about which file, not which value, and since
+io-harness 0.74.0 the local file is on the wrong side of it too: it sits in a
+root the run's own agent can write to, so a single `write_file` of it would
+declare an argv the next discovery runs, outside the policy and outside the
+sandbox. The user scope is the one file no workspace can reach. io-cli keeps no
+copy of those rules: it writes, asks io-harness to read the file back, and
+restores it exactly when the answer is no.
 
 **From 0.28.0 the row says so before it writes**, and that is worth a second
 mechanism rather than being left to the round trip, because the cost is not one
-key. There are exactly five (key, value) pairs a committed `io.toml` may not
-carry — `policy.defaults.exec = "allow"`, `policy.defaults.net = "allow"`,
-`sandbox.allow_network = true`, `sandbox.force_floor = false` and
-`sandbox.mode = "full-access"` — and io-harness's check runs *before* the file is
-deserialized, so choosing one of them in a project file does not get you a
-rejected setting: it gets you a configuration that no longer parses. The write is
-still verified by io-harness reading it back, and still rolled back to the exact
-bytes that were there. What the row adds is that the file is not written at all,
-and that the refusal says the whole file is what would have been refused. On
-`config set` it goes further and names the two scopes that will take the value:
-`--scope local` for this checkout, `--scope user` for yourself.
+key. There are thirteen (key, value) pairs across twelve keys that a file in the
+workspace may not carry — the four `policy.defaults.*` acts set to `"allow"`,
+`sandbox.allow_network = true`, `sandbox.force_floor = false`, `sandbox.mode` set
+to either `"full-access"` or `"workspace-write"`, and each of the five
+`sandbox.limits.*` set to `0`, which is what "no cap" means. io-harness's check
+runs *before* the file is deserialized, so choosing one of them in a workspace
+file does not get you a rejected setting: it gets you a configuration that no
+longer parses. The write is still verified by io-harness reading it back, and
+still rolled back to the exact bytes that were there. What the row adds is that
+the file is not written at all, and that the refusal says the whole file is what
+would have been refused. On `config set` it goes further and names the scope that
+will take the value: `--scope user`, for yourself. **From 0.40.0 the `/config`
+scope picker offers only that scope for such a key**, rather than offering three
+and letting the write refuse two of them.
 
 **`/mcp`** shows what is configured, which servers answered this session, how
 many tools each announced, how many distinct ones this session has asked for, and
@@ -452,10 +459,11 @@ file of that name, both are left where they are and the session says which one i
 in force. To keep the location you have, set `IO_CONFIG_HOME` to it before the
 first 0.15.0 run.
 
-One thing worth knowing: a **project** file may narrow the permission boundary
-and may never widen it, because a repository you cloned must not be able to grant
-itself permission. The wizard therefore writes the user-scope file, which is
-where widening is your own decision.
+One thing worth knowing: a file **inside the workspace** may narrow the
+permission boundary and may never widen it, because a repository you cloned must
+not be able to grant itself permission — and `io.local.toml` counts, since
+io-harness 0.74.0, because the agent can write to it. The wizard therefore writes
+the user-scope file, which is where widening is your own decision.
 
 The policy's own defaults are what `Shift+Tab` cycles; a posture chosen with the
 key lasts for the session and is not written back, because a keystroke that
@@ -508,11 +516,11 @@ decides what this machine may reach. A `[web]` table that did nothing in your
 terminal yesterday turns something on in it today, which is why the session says
 so at start in its own words rather than folding it into a list.
 
-**`[browser]` is refused in a project-scoped file**, by io-harness rather than by
-io-cli: it names a program to execute, and a project's `io.toml` arrives with a
-`git clone`. Write it in the user-scope file — the one `io setup` writes — where
-widening the boundary is your own decision. There is no project-scope route to a
-browser at all. io-cli's own `[app.io-cli.browser]` is read from either scope.
+**`[browser]` is refused in any file inside the workspace**, by io-harness rather
+than by io-cli: it names a program to execute, a project's `io.toml` arrives with
+a `git clone`, and `io.local.toml` is a path the agent can write. Write it in the
+user-scope file — the one `io setup` writes — where widening the boundary is your
+own decision. There is no workspace-scope route to a browser at all. io-cli's own `[app.io-cli.browser]` is read from either scope.
 
 `NO_COLOR` is read from the environment rather than from this file, and so is the
 locale behind `glyphs`. See [Reading it without seeing

@@ -758,7 +758,7 @@ pub fn contract(
     // operator watching either way; headless has neither, so the bound has to
     // ride the contract. See `contract::gated_bound` for why a gate takes away
     // every fallback `contract::MAX_STEPS` is safe because of.
-    let contract = crate::contract::gated_bound(contract);
+    let contract = crate::contract::gated_bound(contract, config);
     // The flag last, so it beats the file, and applied with `with_exec_mode`
     // rather than by replacing the whole `SandboxConfig` — the limits the file
     // set are the operator's and are not this flag's to discard.
@@ -1753,7 +1753,7 @@ impl WithProvider for Resuming {
         // `Died` is carried on rather than refused. Bounding one door and not the
         // other would have fixed the walk to a thousand steps only until somebody
         // typed the obvious next command.
-        let contract = crate::contract::gated_bound(contract);
+        let contract = crate::contract::gated_bound(contract, &self.config);
         // `None` on every arm: a containment is a fleet's shared budget, this
         // subcommand takes no flag that expresses one, and `crate::resume::recover`
         // refuses a contained run outright because io-harness publishes no

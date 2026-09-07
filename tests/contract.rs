@@ -2093,6 +2093,54 @@ fn f11_asking_for_the_default_explicitly_changes_nothing() {
     assert!(built.detached_spawns);
 }
 
+/// **F5 — a `[run] max_steps` a file named beats the gated cap.**
+///
+/// The one number an operator is most likely to write was the one value that did
+/// nothing. `configured` applies io-cli's own floor of a thousand before
+/// `Config::apply_to` runs, and `apply_to` sets the field unconditionally when
+/// the key is present — so `[run] max_steps = 1000` produced a contract
+/// indistinguishable from having written nothing, and a gated headless run took
+/// forty steps against a file asking for a thousand.
+///
+/// **Through a real `io.toml`, because the whole question is whether a file named
+/// the key.** `Config::from_toml` has no file and therefore no origins, which is
+/// exactly why `tests/gates.rs` cannot hold this row and points here instead.
+///
+/// Sabotage: drop the `origin` check from `contract::gated_bound`. The first
+/// assertion goes red and the second stays green.
+#[test]
+fn f5_a_max_steps_a_file_named_beats_the_gated_cap() {
+    let _guard = env_lock();
+    let gate = "[app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n";
+
+    let (dir, config) = discovered(&[(
+        "io.toml",
+        &format!(
+            "{gate}\n[run]\nmax_steps = {}\n",
+            io_cli::contract::MAX_STEPS
+        ),
+    )]);
+    let contract =
+        io_cli::contract::configured("goal", dir.path().to_path_buf(), &config, &config.plugins());
+    assert_eq!(
+        io_cli::contract::gated_bound(contract, &config).max_steps,
+        io_cli::contract::MAX_STEPS,
+        "a thousand steps an operator wrote in a file is a thousand steps they get",
+    );
+
+    // The companion: the floor still caps a gated run that wrote nothing, which is
+    // the behaviour 0.38.1 added and this release must not have removed while
+    // making the value above mean what it says.
+    let (dir, config) = discovered(&[("io.toml", gate)]);
+    let contract =
+        io_cli::contract::configured("goal", dir.path().to_path_buf(), &config, &config.plugins());
+    assert_eq!(
+        io_cli::contract::gated_bound(contract, &config).max_steps,
+        io_cli::contract::GATED_MAX_STEPS,
+        "a gated run the operator gave no budget at all is still bounded",
+    );
+}
+
 /// **N3 — 0.27.0 adds no configuration key, so an operator who runs none of it
 /// gets the contract 0.26.0 built.**
 ///

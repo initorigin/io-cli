@@ -9091,6 +9091,21 @@ fn undo_whole_turn(
             for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                 app.record(tone, line);
             }
+            // **The thought goes too (0.40.0).** This cleared the status, the
+            // fleet and the seen set and never touched `Events`, so after an undo
+            // `/expand` still printed the undone turn's reasoning — the one thing
+            // an operator undoes a turn to be rid of, kept by the act meant to
+            // remove it. `App::undo_turn`, the mid-turn abandon path, has always
+            // called both; two implementations of one act is exactly what this
+            // function's own comment warns about, and this is the half that was
+            // wrong.
+            //
+            // **After the record loop, not before.** `Events::forget` also resets
+            // the blank-line state that loop writes through, so forgetting first
+            // would run the undo's own report through a renderer that had just
+            // been told the scrollback was empty.
+            app.events.forget();
+            app.servers.forget();
         }
         Ok(None) => app.record(Tone::Muted, "there is no turn to undo".to_string()),
         // **`failure::said`, and not the raw `Display`.** Since 0.23.0 the undo

@@ -107,7 +107,24 @@ a repository and writes a file spends them easily — so what an unattended job
 produced was `error: step_cap_reached` over half-finished work with nobody
 watching, which is the defect the floor exists to fix and is not made better by
 the run being unattended. A `[run] max_steps` you wrote still beats the floor, in
-either direction.
+either direction — a file that *lowers* the cap is honoured, not only one that
+raises it.
+
+**A gated run with no budget is capped at forty steps, and from 0.40.0 anything
+you wrote beats that too.** A gate is the one configuration that takes away every
+bound the floor of a thousand is safe because of: io-harness evaluates the
+criterion after every step and hands a failure back, which is a reason to keep
+going; a run with no budget is measured against nothing; and headless has no
+operator to stop it. So a `[app.io-cli.gates]` run that set no `max_steps`, no
+`max_duration_secs` and no `max_tokens` stops at forty and exits `3` naming the
+ceiling. Forty is chosen to leave room for several write-then-check cycles while
+ending a hopeless run in the minutes an unattended job can afford.
+
+Through 0.39.0 there was one value that collided with the floor: `[run] max_steps
+= 1000` is the default written down, so it was indistinguishable from having
+written nothing and such a run took forty. **It is honoured from 0.40.0**, which
+is a behaviour change for exactly that configuration — a job that wrote a
+thousand and relied on the forty-step cap to bound it now runs to a thousand.
 
 ### The JSON
 
@@ -126,6 +143,17 @@ own, every event kind reaches the stream — including every kind the interactiv
 renderer has no way to draw. **There is no timestamp**: `RunEvent`
 does not carry one, and inventing an envelope to add one would make this a
 format io-cli owns rather than one it passes through.
+
+**The order is the harness's, and one pair of it will read backwards.** A
+`reasoning` event arrives *after* the `step` whose tokens it explains, because
+that is the order io-harness emits them and this stream relays what it is handed
+rather than buffering to re-sort it. A consumer that renders in arrival order
+shows a thought under the step it preceded. Nothing documented is broken by it —
+the events carry `run_id` and `step`, so a reader that groups by step gets it
+right — but a reader that assumes arrival order is chronological within a step
+will not. The interactive renderer's own ordering was corrected in 0.38.1; the
+stream deliberately was not, because re-ordering it would mean holding events back
+and this door exists to hand them over as they happen.
 
 Progress, warnings and the closing summary go to stderr, so redirecting it
 leaves the data alone.

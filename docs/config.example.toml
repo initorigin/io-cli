@@ -70,25 +70,42 @@ model = "anthropic/claude-sonnet-4"
 # otherwise. In a headless `io exec` run `ask` is still a decline, because nothing
 # there can answer it — see the README.
 #
-# NOTE: a PROJECT-scoped file may narrow this and may never widen it — a
+# NOTE: a file INSIDE THE WORKSPACE may narrow this and may never widen it — a
 # repository you cloned must not be able to grant itself permission. Widening
 # belongs in the user-scope file, which is where `io setup` writes.
 #
-# THERE ARE EXACTLY FIVE (KEY, VALUE) PAIRS A COMMITTED io.toml MAY NOT WRITE,
-# and io-harness refuses the WHOLE FILE for any one of them rather than dropping
-# that key — the check runs before the file is deserialized, so what you get is a
-# configuration that no longer parses rather than a rejected setting:
+# THAT MEANS io.local.toml TOO, SINCE io-harness 0.74.0. The rule used to be
+# about the committed file alone; it is now about any file inside the workspace
+# root, because io.local.toml is a path the run's own agent can write to — so one
+# write_file of it would have declared an argv the next discovery runs, outside
+# the policy and outside the sandbox. The user scope is the one file no workspace
+# can reach.
 #
+# THERE ARE THIRTEEN (KEY, VALUE) PAIRS ACROSS TWELVE KEYS THAT A FILE IN THE
+# WORKSPACE MAY NOT WRITE, and io-harness refuses the WHOLE FILE for any one of
+# them rather than dropping that key — the check runs before the file is
+# deserialized, so what you get is a configuration that no longer parses rather
+# than a rejected setting:
+#
+#   policy.defaults.read  = "allow"
+#   policy.defaults.write = "allow"
 #   policy.defaults.exec  = "allow"
 #   policy.defaults.net   = "allow"
 #   sandbox.allow_network = true
 #   sandbox.force_floor   = false
-#   sandbox.mode          = "full-access"
+#   sandbox.mode          = "full-access"   (and "workspace-write")
+#   sandbox.limits.max_cpu_secs     = 0
+#   sandbox.limits.max_wall_secs    = 0
+#   sandbox.limits.max_memory_bytes = 0
+#   sandbox.limits.max_processes    = 0
+#   sandbox.limits.max_open_files   = 0
 #
-# The narrowing value of each stays legal in a project file, which is what the
-# scope is for. Write any of the five in io.local.toml for this checkout, or in
-# this user-scope file for yourself. `/config` knows the list and says so on the
-# row BEFORE it writes, rather than writing and reporting the rollback.
+# The five limits are refused only at ZERO, which is what "no cap" means — a
+# merely large finite cap is still a cap. The narrowing value of each key stays
+# legal in a workspace file, which is what the scope is for; `read-only` is the
+# sandbox mode that narrows in every direction and stays legal everywhere. Write
+# any of these in THIS user-scope file. `/config` knows the list and says so on
+# the row BEFORE it writes, rather than writing and reporting the rollback.
 
 # Each of the four takes "allow", "ask" or "deny" — io-harness's own three, and
 # nothing else parses. `/config` offers them as a list rather than asking you to
@@ -218,11 +235,12 @@ net = "deny"
 # force_floor = true         # true or false: keep the floor even where the caller asked for less
 #
 # NOTE on the three sandbox keys above: `allow_network = true`, `force_floor =
-# false` and `mode = "full-access"` are three of the five pairs a project-scoped
-# file may not write — see the list under the policy block above, and note that
-# io-harness refuses the WHOLE FILE for one of them rather than that key. `/config`
-# says so on the row before it writes, and shows you the harness's own sentence
-# rather than a summary of it when a write does reach that refusal.
+# false` and `mode = "full-access"` are three of the thirteen pairs a file inside
+# the workspace may not write — io.local.toml included — see the list under the
+# policy block above, and note that io-harness refuses the WHOLE FILE for one of
+# them rather than that key. `/config` says so on the row before it writes, and
+# shows you the harness's own sentence rather than a summary of it when a write
+# does reach that refusal.
 #
 # [memory]                   # bounds the STORE, which outlives every run over it
 #                            # every key here is a WHOLE NUMBER, none negative
