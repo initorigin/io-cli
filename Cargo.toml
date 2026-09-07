@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.39.0"
+version = "0.40.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
@@ -73,7 +73,7 @@ path = "src/lib.rs"
 # claim is verified against `cargo tree --depth 1` with all six features on
 # rather than believed from the harness's manifest — see `tests/dependencies.rs`,
 # which asserts the ten names in both directions.
-io-harness = { version = "0.82", features = [
+io-harness = { version = "0.83", features = [
     "media",
     "browser",
     "documents",
