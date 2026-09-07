@@ -302,7 +302,7 @@ io plugin marketplace remove zeroonething/ultraship
 
 io config get run.max_steps
 io config set run.max_steps 40
-io config set app.io-cli.gates.command cargo test --all-features
+io config set app.io-cli.gates.command -- cargo test --all-features
 io config unset run.max_steps
 io config list
 ```

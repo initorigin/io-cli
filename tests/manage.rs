@@ -1465,3 +1465,70 @@ fn f2_the_argv_door_writes_the_shape_that_was_typed() {
         );
     }
 }
+
+/// **F1 — a list key is settable from a shell, and until 0.40.0 neither of the two
+/// was.**
+///
+/// The two list keys are a command line and a browser's arguments, and the value
+/// of either routinely begins with a dash — so `io config set
+/// app.io-cli.gates.command cargo test --all-features` was refused by io's own
+/// flag parser, naming `--all-features` as a flag it does not take. **That
+/// invocation is the worked example `docs/config.example.toml` has shipped since
+/// 0.24.0, and it had never run.** `--disable-gpu` is the same word one release
+/// later, which is how 0.40.0 met it.
+///
+/// **This is the argv door and nothing below it would have found this.**
+/// `tests/configure.rs` drives `configure::source_for`, which is one layer past
+/// the parse that refuses — so the unit gate for `browser.args` was green while
+/// the command an operator types could not run. Fifth consecutive release in which
+/// driving the real command line caught something.
+///
+/// Sabotage: restore `args.no_command("config set")?` at the top of `config_set`.
+/// Both writes below are refused and the reads print no row.
+#[test]
+fn f1_a_list_key_takes_its_words_after_the_separator() {
+    let fixture = tempfile::tempdir().expect("a temporary home");
+    let home = fixture.path();
+
+    for (key, words, read_back) in [
+        (
+            "app.io-cli.gates.command",
+            ["--", "cargo", "test", "--all-features"],
+            r#"["cargo", "test", "--all-features"]"#,
+        ),
+        (
+            "app.io-cli.browser.args",
+            ["--", "--disable-gpu", "--no-sandbox", "--headless"],
+            r#"["--disable-gpu", "--no-sandbox", "--headless"]"#,
+        ),
+    ] {
+        let mut argv = vec!["config", "set", "--scope", "user", key];
+        argv.extend(words);
+        let (_, stderr) = io_at(home, &argv);
+        let (out, _) = io_at(home, &["config", "get", key]);
+
+        let value = out
+            .lines()
+            .find(|line| line.starts_with(key))
+            .and_then(|line| line.split('\t').nth(1))
+            .map(str::trim)
+            .unwrap_or_else(|| {
+                panic!("`config get {key}` printed no row after the write said:\n{stderr}\n{out}")
+            });
+        assert_eq!(
+            value, read_back,
+            "`io config set {key} -- …` should write the words after the separator \
+             as the array io-harness reads back. The write said:\n{stderr}",
+        );
+    }
+
+    // And a `--` on a key that is not a list is still the mistake it always was:
+    // for every other key the words are one value, and a separator before them
+    // means the operator thought they were writing a command line.
+    let (_, stderr) = io_at(home, &["config", "set", "run.max_steps", "--", "30"]);
+    assert!(
+        stderr.contains("takes no command"),
+        "a `--` on a scalar key has to be named rather than folded into the value: \
+         {stderr}",
+    );
+}

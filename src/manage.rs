@@ -1593,7 +1593,6 @@ fn mcp_edit(args: &Args) -> Result<McpVerb, String> {
 
 /// `config set <key> <value…> [--scope]`.
 fn config_set(args: &Args) -> Result<Request, String> {
-    args.no_command("config set")?;
     args.only("config set", &["scope"])?;
     let scope = args.scope_or_inherited()?;
 
@@ -1604,7 +1603,35 @@ fn config_set(args: &Args) -> Result<Request, String> {
                 .to_string(),
         );
     };
-    let value = config_value(&key, &args.positional[1..])?;
+
+    // **A list key takes its words after `--`, and until 0.40.0 no list key could
+    // be set from a shell at all.** The two list keys are a command line and a
+    // browser's arguments, and the value of either routinely begins with a dash —
+    // so `io config set app.io-cli.gates.command cargo test --all` was refused by
+    // `only` above, naming `--all` as a flag io does not take. That invocation is
+    // the worked example `docs/config.example.toml` has shipped since 0.24.0 and
+    // it had never run. `--disable-gpu` is the same word one release later.
+    //
+    // The mechanism is the one this parser already has and already recommends: the
+    // refusal for a single-dash token says outright that "a flag meant for the
+    // server itself belongs after `--`", and `scan` stops dead at the first `--`
+    // so everything past it is copied through as text. What this adds is that
+    // `config set` accepts that section instead of refusing it — for a list key
+    // only, because for every other key the words are one value and a `--` before
+    // them is a mistake worth naming.
+    let listed = matches!(
+        crate::configure::kind_of(&key),
+        Some(crate::configure::Kind::List)
+    );
+    let mut words = args.positional[1..].to_vec();
+    match (&args.opaque, listed) {
+        (Some(rest), true) => words.extend(rest.iter().cloned()),
+        (Some(_), false) => {
+            args.no_command("config set")?;
+        }
+        (None, _) => {}
+    }
+    let value = config_value(&key, &words)?;
 
     // Reported here rather than discovered by the round trip, because the round
     // trip's refusal takes the WHOLE FILE: `refuse_widening` runs before

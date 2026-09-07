@@ -818,7 +818,9 @@ fleet = "ctrl+f"
 #                 read which binary will be picked rather than running it to find
 #                 out.
 #   args          extra arguments, a list. Written from the shell as the remaining
-#                 words: `io config set app.io-cli.browser.args --disable-gpu`.
+#                 words after `--`, because they begin with a dash and io's own
+#                 flags are spelled the same way:
+#                 `io config set app.io-cli.browser.args -- --disable-gpu`.
 #   headless      true or false.
 #   width/height  the viewport, in whole pixels.
 #   timeout_secs  a whole number of seconds for one navigation.
@@ -897,8 +899,15 @@ fleet = "ctrl+f"
 # available and were never going to be. A scalar written here — `command = "cargo
 # test"` — is a value io-harness cannot read back, which is why it is the one key
 # in io-cli's whole catalogue with a list of its own rather than being lumped in
-# with free text. `io config set app.io-cli.gates.command cargo test --all-features`
-# takes the words after the key and writes them as the array.
+# with free text. `io config set app.io-cli.gates.command -- cargo test --all-features`
+# takes the words after the `--` and writes them as the array.
+#
+# THE `--` IS LOAD-BEARING AND THIS LINE DID NOT CARRY IT UNTIL 0.40.0. A command
+# line routinely contains a word beginning with a dash, io's own flags are spelled
+# the same way, and the parser refused `--all-features` as a flag it does not take
+# — so the worked example this file has shipped since 0.24.0 had never run. `--` is
+# the same separator `/mcp add <name> -- <command>` uses, and everything after it
+# is copied through as text.
 #
 # `command` IS ALWAYS A CONCRETE ARGV. An empty list is refused, and an absent one
 # is not a criterion at all — this key never means "work it out for me".
