@@ -47,6 +47,14 @@ Two shipped interactions change. Neither is a correction you will not notice.
   catalogue — a list cannot notice what is missing from it. That walk exists now,
   and it found a fourteenth key while it was being written.
 
+  **Two keys of `[app.io-cli.browser]` are held to the file you own.**
+  `binary` names a program to execute and is written by hand rather than offered
+  at either `/config` door; `args` is that program's argument vector — where a
+  proxy carrying credentials or a loaded extension goes — and is settable only
+  with `--scope user`. io-harness refuses a whole top-level `[browser]` section
+  from any file inside the workspace for exactly this reason, and cannot apply the
+  rule to `[app.io-cli]`, which it reads as one opaque value.
+
 - **`max_total_duration` is settable at all.** It deserializes as a `Duration`, so
   what the file has to carry is `{ secs = N, nanos = 0 }` and no scalar you type is
   a value for it. `io config set app.io-cli.containment.max_total_duration 3600`
