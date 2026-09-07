@@ -639,18 +639,132 @@ fn f1_every_settable_app_key_round_trips_through_the_shell_door() {
         );
     }
 
-    // The table is the catalogue's own list, so a key made settable and not
-    // exercised here fails rather than shipping untested. `theme` and the keys
-    // that were already settable before 0.40.0 are covered by the tests above;
-    // what this asserts is that nothing in the catalogue is settable in principle
-    // and unwritten in practice.
-    for key in configure::CATALOGUE
-        .iter()
-        .filter(|key| key.starts_with("app.io-cli.containment.") || key.contains(".browser."))
-    {
+    // **Every key 0.40.0 made settable, and the filter used to miss two of them.**
+    // It selected the containment and browser rows by prefix, which is eleven of
+    // the thirteen — `reference_catalogue` and `prices.models`, the two the
+    // release calls the sharpest, could have been dropped from the table above
+    // without failing anything while this comment claimed otherwise. Named
+    // outright now: a list derived from a prefix is a list that quietly changes
+    // shape when a key is added under a different one. Found by the adversarial
+    // review.
+    for key in [
+        "app.io-cli.reference_catalogue",
+        "app.io-cli.prices.models",
+        "app.io-cli.browser.headless",
+        "app.io-cli.browser.width",
+        "app.io-cli.browser.height",
+        "app.io-cli.browser.timeout_secs",
+        "app.io-cli.browser.args",
+        "app.io-cli.containment.max_total_agents",
+        "app.io-cli.containment.max_concurrent_agents",
+        "app.io-cli.containment.max_depth",
+        "app.io-cli.containment.max_total_tokens",
+        "app.io-cli.containment.max_total_cost",
+        "app.io-cli.containment.max_total_duration",
+    ] {
         assert!(
-            written.iter().any(|(named, _)| named == key),
-            "`{key}` is offered by the catalogue and this gate never writes it",
+            configure::CATALOGUE.contains(&key),
+            "`{key}` is one of the thirteen this release made settable and it is not in \
+             the catalogue",
+        );
+        assert!(
+            written.iter().any(|(named, _)| *named == key),
+            "`{key}` is one of the thirteen and this gate never writes it",
+        );
+    }
+}
+
+/// **F1 — an excluded key is refused at the writer, not merely absent from a
+/// list.**
+///
+/// `configure::EXCLUDED` was added as the other half of the settings-struct walk
+/// and, as the adversarial review found, it enforced nothing: `kind_of` answers
+/// `None` for `app.io-cli.browser.binary`, so both `/config` doors fell through to
+/// the arm that quotes any unrecognised `app.io-cli.*` word and produced a
+/// perfectly valid string for an `Option<String>` field. `io config set
+/// app.io-cli.browser.binary /usr/bin/x --scope project` succeeded and took
+/// effect — the exact act the entry's own reason says must not be offered, in the
+/// one section io-harness reads opaquely and never widening-checks.
+///
+/// The reason strings had no reader at all. Now they are what the operator is
+/// told, which is also what stops them going stale.
+///
+/// Sabotage: delete the `EXCLUDED` lookup from `source_for`. Every row goes red.
+#[test]
+fn f1_an_excluded_key_is_refused_by_the_writer_with_its_own_reason() {
+    for (key, why) in configure::EXCLUDED {
+        let refusal = configure::source_for(key, &["anything".to_string()])
+            .expect_err("an excluded key is not written from either door");
+        assert!(
+            refusal.contains(key),
+            "the refusal for `{key}` does not name it: {refusal}",
+        );
+        assert!(
+            refusal.contains(why),
+            "the refusal for `{key}` does not carry the reason `EXCLUDED` records, so the \
+             reason is data nothing reads and nothing keeps true: {refusal}",
+        );
+    }
+
+    // The one that matters most, spelled out: it is a program path, in the section
+    // io-harness cannot widening-check.
+    let refusal = configure::source_for(
+        "app.io-cli.browser.binary",
+        &["/usr/bin/chromium".to_string()],
+    )
+    .expect_err("a program path is not set from a shell door");
+    assert!(refusal.contains("names a program to execute"), "{refusal}");
+}
+
+/// **F6 — the browser's argument vector is written to the user scope alone.**
+///
+/// The same argument the release wrote down for `binary` and then did not apply
+/// one field along. `args` is where a `--proxy-server=https://user:pass@host` or a
+/// `--load-extension` goes; io-harness redacts it from its own `Debug` for exactly
+/// that shape, and refuses the whole `[browser]` section from any file inside the
+/// workspace — a rule it cannot apply to `[app.io-cli.browser]`, which it reads as
+/// one opaque value. Committing the arguments is the same act as committing the
+/// binary, one word further along.
+///
+/// Sabotage: empty `configure::USER_SCOPE_ONLY`. Both halves go red.
+#[test]
+fn f6_the_browser_argument_vector_is_user_scope_only() {
+    let s = scopes("", "", "");
+
+    let offered: Vec<Scope> = configure::writable_scopes(
+        s.root.path(),
+        "app.io-cli.browser.args",
+        "[\"--disable-gpu\"]",
+    )
+    .into_iter()
+    .map(|(scope, _)| scope)
+    .collect();
+    assert_eq!(
+        offered,
+        vec![Scope::User],
+        "the `/config` scope picker offers a workspace file for the browser's arguments",
+    );
+
+    // And the shell door refuses the scope by name rather than writing it.
+    let refused = io_cli::manage::parse(&io_cli::manage::tokens(
+        "config set app.io-cli.browser.args --scope project -- --proxy-server=http://x",
+    ))
+    .expect_err("a workspace scope is refused for the browser's arguments");
+    assert!(
+        refused.contains("argument vector of a program"),
+        "the refusal has to say why, or it reads as an arbitrary restriction: {refused}",
+    );
+
+    // Every entry of the list is refused the same way, so a second one added later
+    // inherits the gate rather than needing its own.
+    for (key, _) in configure::USER_SCOPE_ONLY {
+        assert!(
+            configure::user_scope_only(key),
+            "`{key}` is on the list and the predicate does not answer for it",
+        );
+        assert!(
+            configure::why_user_scope_only(key).is_some(),
+            "`{key}` is refused with no reason to give the operator",
         );
     }
 }

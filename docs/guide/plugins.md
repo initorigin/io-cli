@@ -82,9 +82,10 @@ contribute skills, templates, agents and policy, and may **not** contribute
 hooks, MCP servers or executables, because each of those three names a program
 this machine would run. A project-scoped bundle that tries is refused **whole**:
 it contributes nothing at all, not the half that would have been safe. Move the
-`[[plugin]]` line into `io.local.toml` or into your user file and the same
-directory loads completely. The rule is about which file names it, exactly as it
-is for `[browser]`.
+`[[plugin]]` line **into your user file** and the same directory loads
+completely — `io.local.toml` is refused for the same reason since io-harness
+0.74.0, being a path inside the workspace the agent can write to. The rule is
+about which file names it, exactly as it is for `[browser]`.
 
 **A bundle's policy may only narrow.** Its layers may deny and may never allow: a
 `[policy] defaults` table in a manifest is refused by name, and a single rule

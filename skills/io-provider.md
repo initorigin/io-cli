@@ -41,10 +41,11 @@ machine can actually reach, and nothing here starts it.
 
 `api_key = "${env:…}"` rather than the key itself, always in a project file and
 preferably everywhere. io-harness substitutes `${env:…}`, `${file:…}` and
-`${cmd:…}` and nothing else — `${cmd:…}` is refused in the project scope,
-because that file travels with a clone, so it belongs in `io.local.toml` or the
-user file — and an unset variable is a hard parse error rather than a silent
-empty string — so name a variable the operator has, or say which one they need to
+`${cmd:…}` and nothing else — `${cmd:…}` is refused from **any file inside the
+workspace**, because `io.toml` travels with a clone and `io.local.toml` sits in a
+root the run's own agent can write to, so it belongs in the user file and nowhere
+else, as does the `[[provider]]` table that would carry it — and an unset variable
+is a hard parse error rather than a silent empty string — so name a variable the operator has, or say which one they need to
 export.
 
 ## The surface

@@ -36,8 +36,12 @@ The user file `~/.io-cli/io.toml` for a server that belongs to this machine; the
 project's `io.toml` for one the whole team should have. **A credential never goes
 into a committed file**: write `${env:GITHUB_TOKEN}` and let the environment
 carry the secret. io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}`
-and nothing else; `${cmd:…}` is refused in the project scope, because that file
-travels with a clone, so it belongs in `io.local.toml` or the user file.
+and nothing else; `${cmd:…}` is refused from **any file inside the workspace** —
+`io.toml` travels with a clone and `io.local.toml` sits in a root the run's own
+agent can write to — so it belongs in the user file and nowhere else. The same
+goes for the `[[mcp]]` table that would carry it: io-harness refuses that section
+from both workspace files, and refuses the whole file for it rather than the
+table.
 
 ## The surface
 

@@ -1941,12 +1941,15 @@ fn f7_an_image_block_becomes_media_and_a_bad_one_is_said_rather_than_swallowed()
     // A 1×1 PNG, base64 as a client would send it.
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-    let (images, refused) = acp::prompt_images(&json!({
-        "prompt": [
-            { "type": "text", "text": "what is in this?" },
-            { "type": "image", "mimeType": "image/png", "data": PNG },
-        ],
-    }));
+    let (images, refused) = acp::prompt_images(
+        &json!({
+            "prompt": [
+                { "type": "text", "text": "what is in this?" },
+                { "type": "image", "mimeType": "image/png", "data": PNG },
+            ],
+        }),
+        true,
+    );
     assert_eq!(images.len(), 1, "one image block is one attachment");
     assert_eq!(
         images[0].media_type, "image/png",
@@ -1960,13 +1963,16 @@ fn f7_an_image_block_becomes_media_and_a_bad_one_is_said_rather_than_swallowed()
 
     // What cannot be taken is said, and the rest of the prompt survives it. An
     // editor that attached one unreadable screenshot must not lose its question.
-    let (images, refused) = acp::prompt_images(&json!({
-        "prompt": [
-            { "type": "image", "mimeType": "image/svg+xml", "data": "PHN2Zy8+" },
-            { "type": "image", "mimeType": "image/png", "data": "not base64!" },
-            { "type": "image", "mimeType": "image/png" },
-        ],
-    }));
+    let (images, refused) = acp::prompt_images(
+        &json!({
+            "prompt": [
+                { "type": "image", "mimeType": "image/svg+xml", "data": "PHN2Zy8+" },
+                { "type": "image", "mimeType": "image/png", "data": "not base64!" },
+                { "type": "image", "mimeType": "image/png" },
+            ],
+        }),
+        true,
+    );
     assert!(images.is_empty());
     assert_eq!(
         refused.len(),
@@ -1985,5 +1991,83 @@ fn f7_an_image_block_becomes_media_and_a_bad_one_is_said_rather_than_swallowed()
     assert!(
         refused[2].contains("`data`"),
         "a block with no data at all says which field is missing: {refused:?}",
+    );
+
+    // **A text-only provider is asked before the bytes are taken.** Handing an
+    // image to one makes io-harness refuse the whole turn at request time, and
+    // `io acp` reports that on stderr — so the client saw a turn that ended
+    // having said nothing, which is the operator's question thrown away. This is
+    // the guard `/attach` has always had (`attach::prepare` checks it before it
+    // even reads the file) and the ACP door did not. Found by the adversarial
+    // review.
+    //
+    // Sabotage: drop the `accepts_images` arm from `prompt_images`. The image is
+    // attached and nothing is said.
+    let (images, refused) = acp::prompt_images(
+        &json!({
+            "prompt": [
+                { "type": "text", "text": "what is in this?" },
+                { "type": "image", "mimeType": "image/png", "data": PNG },
+            ],
+        }),
+        false,
+    );
+    assert!(
+        images.is_empty(),
+        "an image was attached for a provider that cannot look at one",
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].contains("does not accept image input"),
+        "the refusal names the reason and the fix rather than the format: {refused:?}",
+    );
+}
+
+/// **F7 — an embedded blob is spoken about rather than dropped.**
+///
+/// `embeddedContext: true` invites a client to send one, `prompt_text` can carry
+/// only the text form, and this function's own doc calls silent skipping the
+/// defect the release exists to fix. Images got spoken refusals from the first
+/// draft; blobs did not, which the adversarial review caught.
+#[test]
+fn f7_a_binary_resource_is_named_rather_than_skipped() {
+    let (images, refused) = acp::prompt_images(
+        &json!({
+            "prompt": [
+                { "type": "text", "text": "what is this?" },
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///w/report.pdf",
+                        "mimeType": "application/pdf",
+                        "blob": "JVBERi0=",
+                    },
+                },
+            ],
+        }),
+        true,
+    );
+    assert!(images.is_empty(), "a blob is not an image");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].contains("file:///w/report.pdf"),
+        "the sentence names the resource that went nowhere: {refused:?}",
+    );
+
+    // A text resource is carried rather than complained about — it is the case
+    // that works, and a gate that refused both would be asserting the opposite of
+    // the feature.
+    let (_, refused) = acp::prompt_images(
+        &json!({
+            "prompt": [{
+                "type": "resource",
+                "resource": { "uri": "file:///w/a.rs", "text": "fn main() {}" },
+            }],
+        }),
+        true,
+    );
+    assert!(
+        refused.is_empty(),
+        "a text resource is carried: {refused:?}"
     );
 }

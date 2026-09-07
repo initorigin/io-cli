@@ -310,11 +310,11 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "app.io-cli.browser.binary",
-        "it names a program to execute. io-harness refuses a whole `[browser]` section in a \
-         workspace file for exactly that reason, and it cannot apply that rule here, because \
-         `[app.io-cli]` is the section it reads as an opaque value — so offering a program \
-         path at a shell door with `--scope project` would put a widening act in the one \
-         section nothing widening-checks",
+        "it names a program to execute. io-harness refuses a whole `[browser]` section from \
+         any file inside the workspace for exactly that reason, and it cannot apply that \
+         rule to `[app.io-cli]`, which it reads as one opaque value — so a program path is \
+         written by hand, in the file you chose, rather than offered at a door that would \
+         take a scope",
     ),
     (
         "app.io-cli.prices.source",
@@ -357,11 +357,15 @@ pub enum Kind {
     File,
     /// A list of strings, written through [`crate::edit::array`].
     ///
-    /// Exactly one key — `app.io-cli.gates.command` is `Option<Vec<String>>`
-    /// (`src/gates.rs:84`) — and it has its own kind rather than being folded into
-    /// [`Kind::Text`] because a scalar written to that key is a value io-harness
-    /// cannot read back. The generic "type a value" editor this release replaces
-    /// would have written exactly that.
+    /// **Two keys since 0.40.0** — `app.io-cli.gates.command` is
+    /// `Option<Vec<String>>` (`src/gates.rs:84`) and `app.io-cli.browser.args` is
+    /// io-harness's `Vec<String>`. They have their own kind rather than being
+    /// folded into [`Kind::Text`] because a scalar written to either is a value
+    /// io-harness cannot read back. The generic "type a value" editor 0.28.0
+    /// replaced would have written exactly that.
+    ///
+    /// A list is the one kind whose value routinely begins with a dash, so the
+    /// shell door takes its words after a `--` — see `crate::manage`.
     List,
     /// Text no menu can hold: a substring to look for, a rubric, a URL. Three keys.
     Text,
@@ -494,6 +498,20 @@ pub const APP_PREFIX: &str = "app.io-cli.";
 /// io-harness's own words. A refusal at write time is strictly better than a
 /// silently wrong file.
 pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
+    // **[`EXCLUDED`] is enforced here, and until this was written it enforced
+    // nothing.** The list was added in 0.40.0 as the other half of the gate that
+    // walks the settings struct, and the adversarial review found that both
+    // `/config` doors reached the fall-through below regardless: `kind_of` answers
+    // `None` for `app.io-cli.browser.binary`, so it fell to the arm that quotes any
+    // unrecognised `app.io-cli.*` word and produced a perfectly valid string for an
+    // `Option<String>` field. `io config set app.io-cli.browser.binary /usr/bin/x
+    // --scope project` succeeded and took effect — the exact act the entry's own
+    // reason says must not be offered, in the one section io-harness reads
+    // opaquely and never widening-checks. The reason strings had no reader at all;
+    // now they are what an operator is told.
+    if let Some((_, why)) = EXCLUDED.iter().find(|(named, _)| *named == key) {
+        return Err(format!("`{key}` is not set from here: {why}"));
+    }
     let kind = kind_of(key);
     if matches!(kind, Some(Kind::Machine)) {
         return Err(format!(
@@ -502,9 +520,10 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
              refresh that writes it"
         ));
     }
-    // The one key whose value is a list (`app.io-cli.gates.command`), so the
-    // remaining words are the value rather than a mistake. A scalar written there
-    // is a value io-harness cannot read back.
+    // The two keys whose value is a list — `app.io-cli.gates.command` and, since
+    // 0.40.0, `app.io-cli.browser.args` — so the remaining words are the value
+    // rather than a mistake. A scalar written to either is a value io-harness
+    // cannot read back.
     if matches!(kind, Some(Kind::List)) {
         if words.is_empty() {
             // **No command word in the sentence, because two doors reach it
@@ -915,9 +934,14 @@ pub fn spell_value(kind: &Kind, value: &str) -> String {
     let bare = value.trim().trim_matches('"');
     match kind {
         Kind::Flag | Kind::Number { .. } => bare.to_string(),
-        // Already an inline table by the time it is here — `source_for` is what
-        // turns a number of seconds into one, and re-wrapping it would produce a
-        // table inside a string.
+        // **Unreachable today, and written as the correct answer rather than as a
+        // guess.** The one caller is the session's value picker, and `value_rows`
+        // returns `None` for a duration before any such pick exists — so nothing
+        // routes here. It is spelled anyway because the match is exhaustive over
+        // io-cli's own enum: a wildcard would quote a duration into a string the
+        // moment a later release gave the kind a picker, which is the failure this
+        // whole function exists to prevent. By then the value is already the
+        // inline table `source_for` built, so passing it through is right.
         Kind::Duration => bare.to_string(),
         Kind::List => {
             let words: Vec<&str> = bare.split_whitespace().collect();
@@ -1127,12 +1151,57 @@ pub fn writable_scopes(
     key: &str,
     value: &str,
 ) -> Vec<(Scope, std::path::PathBuf)> {
-    let widening = widens_workspace(key, value);
+    let refused_in_workspace = widens_workspace(key, value) || user_scope_only(key);
     [Scope::User, Scope::Project, Scope::Local]
         .into_iter()
-        .filter(|scope| !(widening && matches!(scope, Scope::Project | Scope::Local)))
+        .filter(|scope| !(refused_in_workspace && matches!(scope, Scope::Project | Scope::Local)))
         .filter_map(|scope| scope_path(root, scope).map(|path| (scope, path)))
         .collect()
+}
+
+/// Keys io-cli itself keeps out of a file inside the workspace, and why.
+///
+/// **io-harness cannot hold this line and it is this crate's to hold** (0.40.0).
+/// The harness refuses a whole top-level `[browser]` section from any file inside
+/// a workspace, because it names a program to execute and `io.toml` arrives with a
+/// `git clone` while `io.local.toml` sits in a root the run's own agent can write
+/// to. `[app.io-cli.browser]` is the same table under a section the harness reads
+/// as one opaque value, so `refuse_widening` never sees it — and this release is
+/// what built a door to it.
+///
+/// `binary` is on [`EXCLUDED`] and is refused at both doors outright. `args` is a
+/// catalogue row, because an operator has to be able to set it and the `[browser]`
+/// section is theirs — but the browser's argument vector is where a
+/// `--proxy-server=https://user:pass@host` or a `--load-extension` goes, which
+/// io-harness redacts from its own `Debug` for exactly that reason
+/// (`io-harness-0.83.0/src/browser.rs:163`). Committing one is the same act as
+/// committing the binary, one word further along.
+///
+/// A pair rather than a bare list, so the refusal says why. Found by the
+/// adversarial review, which noticed the release had written down the argument
+/// against this for `binary` and then built the door for `args`.
+pub const USER_SCOPE_ONLY: &[(&str, &str)] = &[(
+    "app.io-cli.browser.args",
+    "it is the argument vector of a program, which is where a proxy carrying \
+     credentials or a loaded extension goes — io-harness refuses a whole `[browser]` \
+     section from a file inside the workspace for that reason, and cannot apply the \
+     rule to `[app.io-cli]`, which it reads as one opaque value; write it with \
+     `--scope user` for yourself",
+)];
+
+/// Is `key` one io-cli keeps out of a workspace file whatever its value?
+#[must_use]
+pub fn user_scope_only(key: &str) -> bool {
+    USER_SCOPE_ONLY.iter().any(|(named, _)| *named == key)
+}
+
+/// Why `key` may not be written inside the workspace, if it may not.
+#[must_use]
+pub fn why_user_scope_only(key: &str) -> Option<&'static str> {
+    USER_SCOPE_ONLY
+        .iter()
+        .find(|(named, _)| *named == key)
+        .map(|(_, why)| *why)
 }
 
 /// The `/config` row that re-reads the price catalogue.

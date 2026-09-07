@@ -441,9 +441,9 @@ fn unnamed_leaves(value: &serde_json::Value, at: &str, out: &mut Vec<String>) {
 /// `CATALOGUE` or by `EXCLUDED` and nothing else.
 ///
 /// Sabotage: delete one entry from `CATALOGUE`. This goes red naming that key,
-/// and `the_readme_documents_every_key_of_the_io_cli_section` and
-/// `every_catalogue_key_is_documented` both stay green — which is the proof the
-/// two directions are not the same test.
+/// and `the_readme_documents_every_key_of_the_io_cli_section` here and
+/// `f2_the_catalogue_is_documented_rather_than_invented` in `tests/configure.rs`
+/// both stay green — which is the proof the two directions are not the same test.
 #[test]
 fn f2_every_settings_key_is_named_by_one_of_the_two_lists() {
     let value = serde_json::to_value(every_setting()).expect("[app.io-cli] serializes");
@@ -3585,6 +3585,80 @@ fn n2_no_shipped_page_offers_the_local_file_as_the_place_to_widen() {
                  taken. io-harness has refused that file since 0.74.0, so the sentence \
                  sends an operator into a refusal: {stale:?}",
             );
+        }
+    }
+
+    // **The property, not five needles.** The sweep above is a list of phrases,
+    // and a list cannot notice a sixth spelling — which is what happened: four
+    // more pages and two agent-read skills still sent an operator to
+    // `io.local.toml` for a REFUSED SECTION rather than for a widening value, and
+    // every one of them passed the needles. So this is the shape instead: a
+    // paragraph that names one of the sections io-harness refuses from a workspace
+    // file, and names `io.local.toml` within it, is offering the file for
+    // something it will be refused for — whichever verb the sentence happens to
+    // use. Found by the adversarial review.
+    //
+    // Paragraph-scoped rather than whole-file, because a page may legitimately
+    // mention both far apart: `docs/guide/configuration.md` explains the scope
+    // rule in one place and lists the files in another.
+    for (name, text) in &pages {
+        for paragraph in text.split("\n\n") {
+            if !paragraph.contains("io.local.toml") {
+                continue;
+            }
+            // **The escape hatch is two exact phrases, and the first draft's was
+            // four loose ones that made this whole gate vacuous.** It excused any
+            // paragraph containing "refused", "may not" or "nowhere else" — and
+            // the stale `docs/guide/hooks.md` paragraph opens "A project-scoped
+            // file **may not** declare `[[hook]]`" and then offers
+            // `io.local.toml`, so the gate passed over the very page it was
+            // written for. Verified by restoring that page from git and watching
+            // this test stay green.
+            //
+            // What separates the corrected form from the stale one is not whether
+            // a refusal is mentioned — both mention one — but WHICH FILE the
+            // refusal is about. The corrected paragraphs say the rule covers any
+            // file inside the workspace, or cite the io-harness release that made
+            // it so. Neither phrase appears in any of the stale forms.
+            //
+            // Whitespace-normalised because a shipped page wraps, and
+            // `skills/io-provider.md` carries "inside the\nworkspace" across a
+            // line break. **The comment marker goes too**: one of these pages is
+            // `docs/config.example.toml`, where every line of prose opens with a
+            // `#`, so a phrase spanning two lines reads "inside the # workspace"
+            // and matched nothing — which made the gate fire on a paragraph that
+            // says exactly the right thing.
+            let lowered = paragraph
+                .to_lowercase()
+                .lines()
+                .map(|line| line.trim_start().trim_start_matches('#'))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if lowered.contains("0.74.0") || lowered.contains("inside the workspace") {
+                continue;
+            }
+            for section in [
+                "[[hook]]",
+                "[[plugin]]",
+                "[[mcp]]",
+                "[[lsp]]",
+                "[[provider]]",
+                "[browser]",
+                "${cmd:",
+            ] {
+                assert!(
+                    !paragraph.contains(section),
+                    "{name} names `{section}` and offers `io.local.toml` in the same \
+                     paragraph without saying that file is refused for it. io-harness \
+                     refuses every one of these sections from any file inside the \
+                     workspace, and refuses the WHOLE FILE rather than the section — so \
+                     the paragraph sends an operator to a configuration that will not \
+                     parse:\n{paragraph}",
+                );
+            }
         }
     }
 

@@ -1192,9 +1192,15 @@ impl Args {
     fn no_command(&self, verb: &str) -> Result<(), String> {
         match &self.opaque {
             None => Ok(()),
+            // **The closing clause used to name a server, on every verb that
+            // reaches this** — right for `mcp add`, which is what it was written
+            // for, and wrong for `config set`, where a `--` means the operator
+            // thought they were writing a command line. It says what the `--` is
+            // for instead, which is true wherever this is reached.
             Some(rest) => Err(format!(
                 "`{verb}` takes no command, so the `--` and everything after it ({}) has nowhere \
-                 to go; a server's command is written when it is added",
+                 to go; `--` carries a program's own argument vector, and only a verb that takes \
+                 one reads it",
                 rest.join(" ")
             )),
         }
@@ -1652,6 +1658,19 @@ fn config_set(args: &Args) -> Result<Request, String> {
     // reason. `io.local.toml` is not committed, but it sits in the workspace root
     // a run's own agent can write to, so one `write_file` of an unremarkable name
     // was an escalation. The user scope is the only destination left.
+    // **io-cli's own line, beside io-harness's** (0.40.0). The harness refuses a
+    // top-level `[browser]` from a workspace file because it names a program; it
+    // cannot apply that rule to `[app.io-cli.browser]`, which it reads as one
+    // opaque value. So the browser's argument vector — where a proxy carrying
+    // credentials goes — is held to the user scope here, at the same door and in
+    // the same shape as the widening refusal below.
+    if matches!(scope, Some(Scope::Project | Scope::Local)) {
+        if let Some(why) = crate::configure::why_user_scope_only(&key) {
+            return Err(format!(
+                "`{key}` is not written inside the workspace: {why}"
+            ));
+        }
+    }
     if matches!(scope, Some(Scope::Project | Scope::Local))
         && crate::configure::widens_workspace(&key, &value)
     {

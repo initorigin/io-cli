@@ -4100,8 +4100,22 @@ async fn live_f6_a_withheld_tool_is_refused_by_the_mask_and_says_so() {
                 if layer.as_deref() == Some("turn tool mask") && target == "write_file"
         )
     });
+    // **A refused call still commits a step, and reading the tool name alone
+    // called that a success** (found by the 0.40.0 live run, which is the first
+    // time a model actually attempted the withheld call). io-harness records the
+    // refusal as `Step { decision: "write_file refused: withheld from this turn",
+    // tool_call: "write_file:{…}" }` — so the mask working produced exactly the
+    // event this predicate was reading as the mask having failed, and the arm
+    // above it says the refusal is one of the two outcomes that PROVE the mask.
+    //
+    // The decision is what separates them, and it is io-harness's own sentence
+    // rather than a needle typed here: a refused step carries the refusal in it.
     let committed = events.iter().any(|event| {
-        matches!(&event.kind, EventKind::Step { tool_call, .. } if tool_call.starts_with("write_file:"))
+        matches!(
+            &event.kind,
+            EventKind::Step { tool_call, decision, .. }
+                if tool_call.starts_with("write_file:") && !decision.contains("refused")
+        )
     });
     println!("refused: {refused}  committed a write_file step: {committed}");
 

@@ -430,8 +430,10 @@ net = "deny"
 # skills, templates, agents and policy, and may NOT contribute hooks or MCP
 # servers, because both of those run a program on this machine. One that tries is
 # refused WHOLE: it contributes nothing at all, not the half that would have been
-# safe. Name it from io.local.toml or from this user-scope file and the same
-# directory loads completely. The rule is about which file, not about the bundle.
+# safe. Name it from THIS user-scope file and the same directory loads completely;
+# io.local.toml is refused for the same reason since io-harness 0.74.0, being a
+# path inside the workspace the run's own agent can write to. The rule is about
+# which file, not about the bundle.
 #
 # A BUNDLE'S POLICY MAY ONLY DENY. A `[policy] defaults` table in a manifest is
 # refused by name, and a single rule whose effect is not `deny` drops the bundle.
@@ -490,8 +492,10 @@ net = "deny"
 # on this machine, and io.toml is the file a `git clone` delivers. There is no
 # Config to be had, so io genuinely cannot start against such a file; what 0.20.0
 # changed is that it prints io-harness's own sentence, which names the key, the
-# reason and the two files that may carry it, instead of a bare error string.
-# Write the table here or in io.local.toml.
+# reason and the file that may carry it, instead of a bare error string.
+# Write the table HERE, in the user-scope file, and nowhere else: io.local.toml is
+# refused too since io-harness 0.74.0, because it sits in a root the run's own
+# agent can write to.
 #
 # [[hook]]
 # on = []                       # every event
@@ -809,9 +813,16 @@ fleet = "ctrl+f"
 #
 # `binary` is DELIBERATELY not offered at either `/config` door, and the reason is
 # not that it is hard to type. It names a program to execute; io-harness refuses a
-# whole top-level [browser] section in a project file for exactly that reason, and
-# it cannot apply that rule here because [app.io-cli] is the section it reads as an
+# whole top-level [browser] section from ANY file inside the workspace —
+# `io.local.toml` included since its 0.74.0 — for exactly that reason, and it
+# cannot apply that rule here because [app.io-cli] is the section it reads as an
 # opaque value. Write it by hand, in the file you chose, as below.
+#
+# `args` IS settable, and only into the user-scope file. It is the argument vector
+# of that same program, which is where a `--proxy-server=https://user:pass@host` or
+# a `--load-extension` goes — committing one is the same act as committing the
+# binary, one word further along. `io config set --scope project` refuses it and
+# `/config` does not offer the scope.
 #
 #   binary        the browser executable. ABSENT resolves it from io-harness's own
 #                 ordered list of well-known names, which is documented — so you
@@ -897,9 +908,9 @@ fleet = "ctrl+f"
 # program, not a shell line: io-harness checks argv[0] against this session's
 # `exec` policy and runs it without a shell, so `&&`, a pipe and a glob are not
 # available and were never going to be. A scalar written here — `command = "cargo
-# test"` — is a value io-harness cannot read back, which is why it is the one key
-# in io-cli's whole catalogue with a list of its own rather than being lumped in
-# with free text. `io config set app.io-cli.gates.command -- cargo test --all-features`
+# test"` — is a value io-harness cannot read back, which is why it is one of the
+# two keys in io-cli's catalogue with a list of its own rather than being lumped
+# in with free text. `[app.io-cli.browser] args` is the other, since 0.40.0. `io config set app.io-cli.gates.command -- cargo test --all-features`
 # takes the words after the `--` and writes them as the array.
 #
 # THE `--` IS LOAD-BEARING AND THIS LINE DID NOT CARRY IT UNTIL 0.40.0. A command

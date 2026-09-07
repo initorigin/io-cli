@@ -9100,10 +9100,13 @@ fn undo_whole_turn(
             // function's own comment warns about, and this is the half that was
             // wrong.
             //
-            // **After the record loop, not before.** `Events::forget` also resets
-            // the blank-line state that loop writes through, so forgetting first
-            // would run the undo's own report through a renderer that had just
-            // been told the scrollback was empty.
+            // After the record loop by convention rather than by necessity, and
+            // an earlier draft of this comment claimed otherwise: it said
+            // `Events::forget` resets blank-line state the loop writes through.
+            // It does not — `App::record` builds a line from the theme and pushes
+            // it onto `pending`, and reaches `Events` at no point — so the
+            // ordering is free. Caught by the adversarial review, which is right
+            // that a reason invented for a correct line is still a false comment.
             app.events.forget();
             app.servers.forget();
         }

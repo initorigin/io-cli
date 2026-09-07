@@ -1263,16 +1263,27 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                         ),
                     ));
                 }
-                let goal = prompt_text(params).ok_or((
-                    ErrorCode::InvalidParams,
-                    "a prompt carries at least one text content block".to_string(),
-                ))?;
+                // **The images are decoded before the text is demanded, and the
+                // order is the fix.** `image: true` invites a client to send a
+                // prompt whose only blocks are images; computing the goal first
+                // returned `InvalidParams` on the `?` and none of the refusal
+                // sentences below were ever sent, so the operator learned neither
+                // what was wrong with their picture nor that a picture had been
+                // sent at all.
+                //
+                // **A provider that cannot look at pictures is asked first**, which
+                // is what `/attach` has always done (`attach::prepare` checks
+                // `accepts_images` before it even reads the file). Handing the
+                // images over anyway makes io-harness refuse the whole turn at
+                // request time, and this door reports that on stderr — so the
+                // client sees a turn that ended having said nothing, which is the
+                // operator's question thrown away.
+                let (images, refused) = prompt_images(params, self.provider.accepts_images());
                 // **Refused images are said, never swallowed.** They go out as
                 // agent-message text on the session's own stream, because a client
                 // that attached a screenshot and got an answer written without it
                 // has no other way to learn that happened.
-                let (images, refused) = prompt_images(params);
-                for sentence in refused {
+                for sentence in &refused {
                     let _ = self.outbound.send(Outgoing::Notification {
                         method: "session/update".into(),
                         params: json!({
@@ -1284,6 +1295,16 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                         }),
                     });
                 }
+                // An image alone is not a prompt: it gives the model something to
+                // look at and nothing to answer, and inventing a question here
+                // would be this adapter putting words in the operator's mouth.
+                let goal = prompt_text(params).ok_or((
+                    ErrorCode::InvalidParams,
+                    "a prompt carries at least one block with words in it — text, an embedded \
+                     resource or a resource link. An image may accompany them and is not a \
+                     question on its own."
+                        .to_string(),
+                ))?;
                 let reason = self.run(&session_id, goal, images).await;
                 Ok(json!({ "stopReason": reason }))
             }
@@ -1326,7 +1347,9 @@ impl<P: io_harness::Provider> Editing<'_, P> {
         // **The same call `/attach` makes, and it is io-harness that carries them
         // onto the turn.** `Session::attach` holds the images for the next turn
         // only, which is exactly what an ACP prompt means: the client sent them
-        // with this question and not with the conversation.
+        // with this question and not with the conversation. The caller has already
+        // asked the provider whether it accepts images, which is the other half of
+        // what `/attach` does and the half that was missing.
         if !images.is_empty() {
             session.attach(images);
         }
@@ -1460,19 +1483,47 @@ pub fn prompt_text(params: &Value) -> Option<String> {
 /// A block that cannot be taken comes back as a sentence rather than failing the
 /// prompt: the rest of what the client sent is still a prompt, and an editor that
 /// attached one unreadable screenshot should not have its question thrown away.
-pub fn prompt_images(params: &Value) -> (Vec<io_harness::Media>, Vec<String>) {
+pub fn prompt_images(
+    params: &Value,
+    accepts_images: bool,
+) -> (Vec<io_harness::Media>, Vec<String>) {
     let (mut images, mut refused) = (Vec::new(), Vec::new());
     let Some(blocks) = params.get("prompt").and_then(Value::as_array) else {
         return (images, refused);
     };
     for block in blocks {
+        // **An embedded blob is spoken about too, and leaving it silent was the
+        // defect this function's own doc argues against.** `embeddedContext: true`
+        // invites a client to send one, `prompt_text` can carry only the text
+        // form, and a resource dropped without a word is exactly the failure the
+        // release exists to end — an operator whose attachment went nowhere with
+        // nothing on screen saying so.
+        if block.get("type").and_then(Value::as_str) == Some("resource") {
+            let resource = block.get("resource");
+            if resource.and_then(|r| r.get("text")).is_none()
+                && resource.and_then(|r| r.get("blob")).is_some()
+            {
+                let uri = resource
+                    .and_then(|r| r.get("uri"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("an embedded resource");
+                refused.push(format!(
+                    "{uri} was sent as a binary resource, which a prompt cannot carry — only an \
+                     embedded resource's text and an image reach the model"
+                ));
+            }
+            continue;
+        }
         if block.get("type").and_then(Value::as_str) != Some("image") {
             continue;
         }
+        // Named rather than left empty: a refusal reading "so its  could not be
+        // read" is a sentence with a hole in it, and the missing field is the
+        // thing the operator has to fix.
         let media_type = block
             .get("mimeType")
             .and_then(Value::as_str)
-            .unwrap_or_default();
+            .unwrap_or("an image block with no `mimeType`");
         let Some(data) = block.get("data").and_then(Value::as_str) else {
             refused.push("an image block carried no `data`".to_string());
             continue;
@@ -1484,6 +1535,20 @@ pub fn prompt_images(params: &Value) -> (Vec<io_harness::Media>, Vec<String>) {
             ));
             continue;
         };
+        // **The provider is asked before the bytes are taken, which is what
+        // `/attach` has always done** (`attach::prepare` checks this before it
+        // even reads the file). Handing an image to a text-only model makes
+        // io-harness refuse the whole turn at request time, and this door reports
+        // that on stderr — so the client saw a turn that ended having said
+        // nothing, which is the operator's question thrown away. Found by the
+        // adversarial review.
+        if !accepts_images {
+            refused.push(format!(
+                "this provider does not accept image input, so the attached {media_type} was \
+                 not sent. Switch the provider, or describe the picture in words."
+            ));
+            continue;
+        }
         match io_harness::Media::attach(media_type, &bytes) {
             Ok(media) => images.push(media),
             Err(error) => refused.push(error.to_string()),
