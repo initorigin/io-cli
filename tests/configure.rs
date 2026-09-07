@@ -533,6 +533,175 @@ fn f8_every_documented_harness_key_deserialises() {
     }
 }
 
+/// **F1 — every documented `[app.io-cli]` key round-trips through the shell door.**
+///
+/// The thirteen keys 0.40.0 made settable, each written the way `io config set`
+/// writes it, read back naming its scope, and — the part that is the whole point —
+/// leaving `settings::stored` with no warning. That warning is the failure this
+/// release exists to stop: io-harness reads `[app.io-cli]` as one opaque value, so
+/// a single mis-typed key does not fail that key, it fails the section, and the
+/// session reverts theme, keybindings, containment, gates and routing to defaults
+/// behind one line.
+///
+/// Written as a table of thirteen rather than thirteen tests because the property
+/// is the same for each and the list is the thing that must not go short — and it
+/// is checked against `CATALOGUE` at the end, so a key added to the catalogue and
+/// not to this table fails here rather than shipping unexercised.
+///
+/// Sabotage: give any one of them back to the `[app.io-cli]` fall-through by
+/// removing its `kind_of` arm. `source_for` quotes it, the value is a string where
+/// a number or a flag belongs, and this goes red on the warning rather than on the
+/// value — which is the failure an operator actually met.
+#[test]
+fn f1_every_settable_app_key_round_trips_through_the_shell_door() {
+    // The containment table's first four fields are required by io-harness — there
+    // is no safe default for somebody else's token ceiling — so the fixture starts
+    // with a complete one. A file holding `max_depth` alone is a file that does not
+    // deserialize, and testing against one would confuse this release's defect with
+    // that one.
+    let s = scopes(
+        "[app.io-cli]\ntheme = \"dark\"\n\n[app.io-cli.containment]\n\
+         max_total_agents = 12\nmax_concurrent_agents = 4\nmax_depth = 2\n\
+         max_total_tokens = 200000\n",
+        "",
+        "",
+    );
+    let written: &[(&str, &[&str])] = &[
+        ("app.io-cli.reference_catalogue", &["false"]),
+        ("app.io-cli.prices.models", &["417"]),
+        ("app.io-cli.browser.headless", &["true"]),
+        ("app.io-cli.browser.width", &["1280"]),
+        ("app.io-cli.browser.height", &["800"]),
+        ("app.io-cli.browser.timeout_secs", &["30"]),
+        (
+            "app.io-cli.browser.args",
+            &["--disable-gpu", "--no-sandbox"],
+        ),
+        ("app.io-cli.containment.max_total_duration", &["3600"]),
+        ("app.io-cli.containment.max_total_agents", &["24"]),
+        ("app.io-cli.containment.max_concurrent_agents", &["6"]),
+        ("app.io-cli.containment.max_depth", &["3"]),
+        ("app.io-cli.containment.max_total_tokens", &["400000"]),
+        ("app.io-cli.containment.max_total_cost", &["5"]),
+    ];
+
+    for (key, words) in written {
+        let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
+        let source = configure::source_for(key, &words).unwrap_or_else(|e| {
+            panic!("`{key}` is documented and `io config set` refuses it: {e}")
+        });
+        // The environment guard is held for the write alone and released before
+        // the read: `Scopes::config` takes the same lock, and it is not reentrant.
+        {
+            let _guard = env_lock();
+            std::env::set_var("IO_CONFIG", &s.user);
+            let written = configure::write(
+                s.root.path(),
+                Scope::User,
+                &[io_cli::edit::Edit::set(*key, source.as_str())],
+            );
+            std::env::remove_var("IO_CONFIG");
+            written.unwrap_or_else(|e| panic!("the write of `{key}` was refused: {e}"));
+        }
+
+        let config = s.config();
+
+        // The session's own read. `None` is no warning, and no warning is the
+        // whole criterion: the section deserialized.
+        let (stored, warning) = io_cli::settings::stored(&config);
+        assert!(
+            warning.is_none(),
+            "after `io config set {key} {}`, a session reports: {warning:?}",
+            words.join(" "),
+        );
+        assert!(
+            stored.is_some(),
+            "after `io config set {key}`, [app.io-cli] read back as nothing at all",
+        );
+
+        // `io config get`'s answer: the value, and the scope that decided it.
+        let setting = configure::setting(&config, key);
+        assert!(
+            setting.value.is_some(),
+            "`io config get {key}` answers nothing for a key just written",
+        );
+        assert!(
+            matches!(
+                setting.decided,
+                configure::Decided::File {
+                    scope: Scope::User,
+                    ..
+                }
+            ),
+            "`{key}` was written to the user scope and `io config get` says it was decided \
+             by {:?}",
+            setting.decided,
+        );
+    }
+
+    // The table is the catalogue's own list, so a key made settable and not
+    // exercised here fails rather than shipping untested. `theme` and the keys
+    // that were already settable before 0.40.0 are covered by the tests above;
+    // what this asserts is that nothing in the catalogue is settable in principle
+    // and unwritten in practice.
+    for key in configure::CATALOGUE
+        .iter()
+        .filter(|key| key.starts_with("app.io-cli.containment.") || key.contains(".browser."))
+    {
+        assert!(
+            written.iter().any(|(named, _)| named == key),
+            "`{key}` is offered by the catalogue and this gate never writes it",
+        );
+    }
+}
+
+/// **F1's negative half — a bad value is still refused, and one absent key does
+/// not fail the section.**
+///
+/// The controls that matter. Typing a key is worth nothing if the type is not
+/// enforced, and the release would be a regression if giving thirteen keys a kind
+/// made a file holding twelve of them stop parsing.
+#[test]
+fn f1_a_typed_key_still_refuses_a_value_and_an_absent_key_still_loads() {
+    for (key, word) in [
+        ("app.io-cli.reference_catalogue", "yes"),
+        ("app.io-cli.browser.headless", "on"),
+        ("app.io-cli.browser.width", "wide"),
+        ("app.io-cli.containment.max_depth", "deep"),
+        ("app.io-cli.containment.max_total_duration", "an hour"),
+    ] {
+        let refusal = configure::source_for(key, &[word.to_string()]);
+        assert!(
+            refusal.is_err(),
+            "`{word}` is not a value `{key}` takes and it was accepted",
+        );
+    }
+
+    // A negative number where something is counted, which is the arm a `Kind`
+    // without a sign would have let through.
+    assert!(configure::source_for("app.io-cli.browser.width", &["-1".to_string()]).is_err());
+
+    // And the section still loads with one of the thirteen absent — every one of
+    // them is optional except the containment table's own required four.
+    let s = scopes(
+        "[app.io-cli]\ntheme = \"dark\"\nreference_catalogue = false\n\n\
+         [app.io-cli.browser]\nheadless = true\n",
+        "",
+        "",
+    );
+    let (stored, warning) = io_cli::settings::stored(&s.config());
+    assert!(
+        warning.is_none(),
+        "a file naming two keys warns: {warning:?}"
+    );
+    let stored = stored.expect("[app.io-cli] read back");
+    assert_eq!(stored.reference_catalogue, Some(false));
+    assert!(
+        stored.containment.is_none(),
+        "nothing invented a containment"
+    );
+}
+
 // --- F3: the write lands in the scope that was picked, and takes effect -------
 
 #[test]
@@ -937,19 +1106,82 @@ fn f1_only_three_keys_are_authored_text() {
     );
 }
 
-/// `app.io-cli.gates.command` is a list and not text.
+/// The two list keys are lists and not text.
 ///
-/// Sabotage: classify it as authored text. Under it this test fails, and the
+/// Sabotage: classify either as authored text. Under it this test fails, and the
 /// surface writes a bare string into a key io-harness reads as `Vec<String>` —
 /// a value the harness cannot read back at all.
+///
+/// **`app.io-cli.browser.args` is the second, and it needed no new arm anywhere**
+/// (0.40.0). It is the same act `app.io-cli.gates.command` has been since 0.24.0 —
+/// the remaining words are the value — so the release that made it settable added
+/// a catalogue row, a `kind_of` arm and a shape sentence, and touched no writer.
 #[test]
-fn f1_the_command_key_is_the_one_list() {
-    let lists: Vec<&str> = configure::CATALOGUE
+fn f1_the_list_keys_are_the_two_lists() {
+    let mut lists: Vec<&str> = configure::CATALOGUE
         .iter()
         .copied()
         .filter(|key| configure::kind_of(key) == Some(configure::Kind::List))
         .collect();
-    assert_eq!(lists, vec!["app.io-cli.gates.command"]);
+    lists.sort_unstable();
+    assert_eq!(
+        lists,
+        vec!["app.io-cli.browser.args", "app.io-cli.gates.command"]
+    );
+}
+
+/// `app.io-cli.containment.max_total_duration` is a duration, and no scalar is a
+/// value for it.
+///
+/// **This is the control the exclusion argument rests on, and it is a real round
+/// trip rather than a reading of serde's derive** (0.40.0). `Containment` holds
+/// `Option<Duration>` with no `#[serde(with)]` on it, so what deserializes is a
+/// struct of `secs` and `nanos` — which means the bare `60` an operator would
+/// type fails for exactly the reason the quoted `"60"` this release removes fails.
+/// The key is settable because `Kind::Duration` writes the table for them, and
+/// that is the one shape in the catalogue an operator is not asked to know.
+///
+/// Sabotage: give the key `Kind::Number { signed: false }`. `source_for` then
+/// writes a bare `60`, and the deserialization below refuses it.
+#[test]
+fn f1_the_wall_clock_ceiling_is_written_as_the_table_serde_reads() {
+    assert_eq!(
+        configure::kind_of("app.io-cli.containment.max_total_duration"),
+        Some(configure::Kind::Duration)
+    );
+    let source = configure::source_for(
+        "app.io-cli.containment.max_total_duration",
+        &["3600".to_string()],
+    )
+    .expect("a whole number of seconds is a value for it");
+
+    // Through io-cli's own settings type, because that is what fails at a session
+    // start when the section cannot be read — the failure this release exists to
+    // stop happening in silence.
+    let file = format!(
+        "max_total_agents = 12\nmax_concurrent_agents = 4\nmax_depth = 2\n\
+         max_total_tokens = 200000\nmax_total_duration = {source}\n"
+    );
+    let read: io_harness::Containment =
+        toml::from_str(&file).expect("the value io writes is a value io-harness reads back");
+    assert_eq!(
+        read.max_total_duration,
+        Some(std::time::Duration::from_secs(3_600))
+    );
+
+    // And the two spellings a person would reach for are both refused, which is
+    // why the key has a kind of its own rather than being a number.
+    for scalar in ["3600", "\"3600\""] {
+        let file = format!(
+            "max_total_agents = 12\nmax_concurrent_agents = 4\nmax_depth = 2\n\
+             max_total_tokens = 200000\nmax_total_duration = {scalar}\n"
+        );
+        assert!(
+            toml::from_str::<io_harness::Containment>(&file).is_err(),
+            "`{scalar}` is not a value io-harness reads as a duration, so writing one \
+             would fail the whole [app.io-cli] section behind a single warning line",
+        );
+    }
 }
 
 /// `prices.as_of` is written by machinery and is never offered for typing.

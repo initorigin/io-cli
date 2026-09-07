@@ -267,61 +267,7 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
     let page = guide("configuration");
     let table = settings_table(&page);
 
-    // Every field set, because `skip_serializing_if` drops a `None` — a default
-    // value here would assert against a table with nothing in it.
-    let every = io_cli::settings::CliSettings {
-        theme: Some("dark".into()),
-        diff: Some("unified".into()),
-        glyphs: Some("ascii".into()),
-        plain: Some(false),
-        keys: Some(Default::default()),
-        containment: Some(io_harness::Containment::new(12, 4, 2, 200_000)),
-        mcp: Some(Vec::new()),
-        lsp: Some(Vec::new()),
-        browser: Some(io_harness::BrowserConfig::default()),
-        skills: Some("/skills".into()),
-        max_parallel_reads: Some(16),
-        spawn_background_after_secs: Some(120),
-        detached_spawns: Some(true),
-        prices: Some(io_cli::settings::PriceSettings {
-            source_url: Some("https://example.invalid/models".into()),
-            source: Some("the reference catalogue".into()),
-            models: Some(417),
-        }),
-        // Written out field by field rather than as a `Default::default()`, which
-        // would serialize to `{}` and satisfy the row check just as well. The
-        // point is the compile error: `[app.io-cli.gates]` is the one nested
-        // table whose keys are explained in README prose rather than in a row of
-        // their own, so a key added to `gates::Settings` has to break something
-        // to be noticed. This is that something.
-        gates: Some(io_cli::gates::Settings {
-            retries: Some(2),
-            command: Some(vec!["cargo".into(), "test".into()]),
-            expect_exit: Some(0),
-            file: Some("CHANGELOG.md".into()),
-            contains: Some("## [0.24.0]".into()),
-            rubric: Some("the change is covered by a test that fails without it".into()),
-            reviewer: Some("a-reviewing-model".into()),
-            allow_self_review: Some(false),
-        }),
-        conversational: Some(false),
-        // Written out field by field for `gates`' reason, and with the same
-        // consequence: `[app.io-cli.routing]`'s two rules are sub-tables whose
-        // keys are explained in README prose rather than in rows of their own, so
-        // a key added to `routing::Settings` has to break something to be noticed.
-        routing: Some(io_cli::routing::Settings {
-            escalate_after: Some(io_cli::routing::Escalation {
-                failures: Some(3),
-                model: Some("a-stronger-model".into()),
-            }),
-            downshift_under: Some(io_cli::routing::Downshift {
-                bytes: Some(2_000),
-                model: Some("a-cheaper-model".into()),
-            }),
-        }),
-        reference_catalogue: Some(false),
-    };
-    let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
+    let value = serde_json::to_value(every_setting()).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");
 
     let (mut scalars, mut tables) = (0, 0);
@@ -366,6 +312,183 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         page.contains(&sentence),
         "the guide should say `{sentence}`",
     );
+}
+
+/// `[app.io-cli]` with every field of every sub-table set.
+///
+/// **Every field written out, and no `..Default::default()` anywhere in it.** A
+/// `skip_serializing_if` drops a `None`, so a default value here would assert
+/// against a table with nothing in it — and, more to the point, the struct
+/// literals are the forced decision: adding a field to `CliSettings`, to
+/// `gates::Settings`, to `routing::Settings`, or to either of the two io-harness
+/// types this section embeds stops this file compiling until somebody says what
+/// the new key is. That property is why the fixture is shared rather than copied:
+/// the row check below and `f2_every_settings_key_is_named_by_one_of_the_two_lists`
+/// must be looking at the same struct, or the second one is checking a census the
+/// first has already gone stale on.
+fn every_setting() -> io_cli::settings::CliSettings {
+    io_cli::settings::CliSettings {
+        theme: Some("dark".into()),
+        diff: Some("unified".into()),
+        glyphs: Some("ascii".into()),
+        plain: Some(false),
+        keys: Some(Default::default()),
+        // A struct literal from 0.40.0, not `Containment::new`, which leaves
+        // `max_total_cost` and `max_total_duration` at `None` — and a `None` is
+        // dropped by `skip_serializing_if`, so the two keys this release makes
+        // settable would have been invisible to the walk that exists to find them.
+        containment: Some(io_harness::Containment {
+            max_total_agents: 12,
+            max_concurrent_agents: 4,
+            max_depth: 2,
+            max_total_tokens: 200_000,
+            max_total_cost: Some(5),
+            max_total_duration: Some(std::time::Duration::from_secs(3_600)),
+        }),
+        mcp: Some(Vec::new()),
+        lsp: Some(Vec::new()),
+        // A struct literal for the same reason, and it is the one that paid: the
+        // `BrowserConfig::default()` this used to call left `binary` at `None`,
+        // and `binary` is the fourteenth key the release contract's own risk
+        // predicted and this fixture found.
+        browser: Some(io_harness::BrowserConfig {
+            binary: Some("/usr/bin/chromium".into()),
+            args: vec!["--disable-gpu".into()],
+            headless: true,
+            width: 1_280,
+            height: 800,
+            timeout_secs: 30,
+        }),
+        skills: Some("/skills".into()),
+        max_parallel_reads: Some(16),
+        spawn_background_after_secs: Some(120),
+        detached_spawns: Some(true),
+        prices: Some(io_cli::settings::PriceSettings {
+            source_url: Some("https://example.invalid/models".into()),
+            source: Some("the reference catalogue".into()),
+            models: Some(417),
+        }),
+        // Written out field by field rather than as a `Default::default()`, which
+        // would serialize to `{}` and satisfy the row check just as well. The
+        // point is the compile error: `[app.io-cli.gates]` is the one nested
+        // table whose keys are explained in README prose rather than in a row of
+        // their own, so a key added to `gates::Settings` has to break something
+        // to be noticed. This is that something.
+        gates: Some(io_cli::gates::Settings {
+            retries: Some(2),
+            command: Some(vec!["cargo".into(), "test".into()]),
+            expect_exit: Some(0),
+            file: Some("CHANGELOG.md".into()),
+            contains: Some("## [0.24.0]".into()),
+            rubric: Some("the change is covered by a test that fails without it".into()),
+            reviewer: Some("a-reviewing-model".into()),
+            allow_self_review: Some(false),
+        }),
+        conversational: Some(false),
+        // Written out field by field for `gates`' reason, and with the same
+        // consequence: `[app.io-cli.routing]`'s two rules are sub-tables whose
+        // keys are explained in README prose rather than in rows of their own, so
+        // a key added to `routing::Settings` has to break something to be noticed.
+        routing: Some(io_cli::routing::Settings {
+            escalate_after: Some(io_cli::routing::Escalation {
+                failures: Some(3),
+                model: Some("a-stronger-model".into()),
+            }),
+            downshift_under: Some(io_cli::routing::Downshift {
+                bytes: Some(2_000),
+                model: Some("a-cheaper-model".into()),
+            }),
+        }),
+        reference_catalogue: Some(false),
+    }
+}
+
+/// Every path in the settings struct that neither list names, given a table and
+/// the key it sits under.
+///
+/// **A path stops descending the moment one of the two lists names it**, which is
+/// what makes the walk agree with the surface rather than with serde. Both
+/// `[app.io-cli.keys]` and `containment.max_total_duration` are objects to serde —
+/// a map of chords and a `Duration`'s `secs`/`nanos` — and descending into either
+/// would demand catalogue rows for values that are not settings at all.
+fn unnamed_leaves(value: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+    if io_cli::configure::CATALOGUE.contains(&at)
+        || io_cli::configure::EXCLUDED
+            .iter()
+            .any(|(key, _)| *key == at)
+    {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, held) in fields {
+                unnamed_leaves(held, &format!("{at}.{name}"), out);
+            }
+        }
+        _ => out.push(at.to_string()),
+    }
+}
+
+/// **F2 — a key the settings struct holds cannot be missing from the catalogue.**
+///
+/// The existing gates walk `CATALOGUE` and check the documentation, and the
+/// documentation and check `CATALOGUE`. Both were green while eight keys of
+/// `CliSettings` were named by neither — `reference_catalogue` among them, which
+/// 0.39.0 shipped as the way to turn a network call off and which `io config set`
+/// then wrote as a string that took the whole `[app.io-cli]` section down. **A
+/// list cannot notice what is missing from it.** So this is the other direction:
+/// from the struct, into its sub-tables, to a leaf that must be named by
+/// `CATALOGUE` or by `EXCLUDED` and nothing else.
+///
+/// Sabotage: delete one entry from `CATALOGUE`. This goes red naming that key,
+/// and `the_readme_documents_every_key_of_the_io_cli_section` and
+/// `every_catalogue_key_is_documented` both stay green — which is the proof the
+/// two directions are not the same test.
+#[test]
+fn f2_every_settings_key_is_named_by_one_of_the_two_lists() {
+    let value = serde_json::to_value(every_setting()).expect("[app.io-cli] serializes");
+    let mut unnamed = Vec::new();
+    unnamed_leaves(&value, "app.io-cli", &mut unnamed);
+
+    assert!(
+        unnamed.is_empty(),
+        "these are fields of CliSettings that `configure::CATALOGUE` does not offer \
+         and `configure::EXCLUDED` does not refuse, so they are settable only by \
+         hand-editing the file and `io config set` writes each of them as a string \
+         that fails the whole [app.io-cli] section: {unnamed:?}",
+    );
+
+    // The control, and it is the one that matters: a walk that descended into
+    // nothing would satisfy the assertion above vacuously. Every catalogue key
+    // under `[app.io-cli]` has to be a leaf this walk can actually reach.
+    let mut reached = Vec::new();
+    reach_all(&value, "app.io-cli", &mut reached);
+    for key in io_cli::configure::CATALOGUE
+        .iter()
+        .filter(|key| key.starts_with("app.io-cli."))
+    {
+        assert!(
+            reached.iter().any(|found| found == key),
+            "`{key}` is offered by the catalogue and is not a field of CliSettings that \
+             serializes — so either the key is spelled wrong or the walk above is not \
+             descending into the table that holds it, and this gate is checking nothing",
+        );
+    }
+}
+
+/// Every path the settings struct serializes, with no list consulted.
+///
+/// The census `f2_every_settings_key_is_named_by_one_of_the_two_lists` checks
+/// itself against. `unnamed_leaves` stops at a named path by design, so it cannot
+/// answer "did this walk reach that key at all" — only a walk that consults
+/// nothing can.
+fn reach_all(value: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+    out.push(at.to_string());
+    if let serde_json::Value::Object(fields) = value {
+        for (name, held) in fields {
+            reach_all(held, &format!("{at}.{name}"), out);
+        }
+    }
 }
 
 #[test]
@@ -2625,9 +2748,9 @@ fn n5_no_shipped_page_claims_a_span_was_delivered() {
 /// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
 /// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
 /// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.82.0/src/tools/mod.rs:33-42`).
+/// cache *write* on every later turn (`io-harness-0.83.0/src/tools/mod.rs:33-42`).
 /// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`io-harness-0.82.0/src/run/prompts.rs:1381`).
+/// naming what is withheld (`io-harness-0.83.0/src/run/prompts.rs:1418`).
 ///
 /// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
 /// its headline. That framing is what a writer reaches for, because "withhold" means

@@ -10696,6 +10696,7 @@ fn value_rows(
         // Typed, and the caller says what shape.
         io_cli::configure::Kind::List
         | io_cli::configure::Kind::Text
+        | io_cli::configure::Kind::Duration
         | io_cli::configure::Kind::Machine => return None,
     };
     let (scope, inherited) = io_cli::configure::destination(config, key);

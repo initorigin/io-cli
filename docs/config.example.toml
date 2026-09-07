@@ -600,6 +600,25 @@ plain = false
 #
 # conversational = false
 #
+# true or false. Whether io may read the reference catalogue over the network to
+# size a model's context window and price its tokens (0.39.0).
+#
+# true is the default and what an absent key means. false is the switch for an
+# operator who wants no request io did not have to make — an air-gapped machine, a
+# self-hosted endpoint the reference catalogue has never heard of, or a policy that
+# says so. With it off, the surfaces that would have shown a window or a price say
+# what they do not know rather than guessing.
+#
+# THIS KEY WAS UNSETTABLE FROM 0.39.0 UNTIL 0.40.0 and it is worth saying why, in
+# the file that promises a worked example for every key. `io config set` quoted it,
+# `CliSettings` could not read `"false"` back, and the refusal was not of that key:
+# io-harness reads [app.io-cli] as one opaque value, so the whole section failed —
+# theme, keybindings, containment, gates and routing all reverting to defaults
+# behind a single warning line. The escape hatch for a network call was the one key
+# you could not reach.
+#
+# reference_catalogue = false
+#
 # How many steps one turn may take.
 #
 # DEPRECATED IN 0.14.0 AND REMOVED IN 0.16.0. It existed because the flat turn
@@ -657,8 +676,11 @@ fleet = "ctrl+f"
 # well. Every one of those reaches every turn now, and this table means exactly
 # what its name says: the caps a fan-out runs under.
 #
-# All four keys are required, because there is no safe default for somebody
-# else's token ceiling.
+# The first four keys are required, because there is no safe default for somebody
+# else's token ceiling. The last two are optional and are written out here from
+# 0.40.0, because five of these six were settable from `io config set` and named
+# by no `/config` list at all — a key that can be spelled and cannot be found is a
+# key an operator meets only by reading io-cli's source.
 #
 # max_total_agents refuses: the spawn that would cross it comes back to the
 # parent, which adapts. max_concurrent_agents throttles: a spawn past it waits
@@ -666,11 +688,28 @@ fleet = "ctrl+f"
 # from the root, which is 0. max_total_tokens is the whole tree's, drawn down
 # together — tokens, because a provider reports tokens and never money.
 #
+# max_total_duration is a WALL-CLOCK ceiling for the whole tree, measured from
+# when the root run started — so it counts the tree's whole life, including time
+# the process was down. It is written into the file as a table rather than a
+# number, which is io-harness's `Duration` and not io-cli's choice:
+# `io config set app.io-cli.containment.max_total_duration 3600` takes the seconds
+# and writes the table for you, and a bare 3600 written by hand fails the whole
+# [app.io-cli] section.
+#
+# max_total_cost IS RESERVED AND NOT ENFORCED, and io-harness says so itself:
+# enforcing a money ceiling needs a price per token that a provider never reports,
+# so any figure the harness compared against would be one it invented. It
+# deserializes, so a file that sets it parses and the ceiling does nothing. The
+# spend that IS enforced is max_total_tokens — convert your budget at your
+# provider's rate and set that instead.
+#
 # [app.io-cli.containment]
 # max_total_agents = 12
 # max_concurrent_agents = 4
 # max_depth = 2
 # max_total_tokens = 200000
+# max_total_duration = { secs = 3600, nanos = 0 }
+# max_total_cost = 5
 
 # The three ceilings io-harness has no configuration key for. They are
 # TaskContract fields, so io-cli names them in its own section — and it applies
@@ -744,9 +783,35 @@ fleet = "ctrl+f"
 # nobody typed, is decided by this session's policy. The status line shows the
 # last host and whether it was allowed or refused.
 #
+# Every key of this table except `binary` is settable from `io config set` as of
+# 0.40.0 — before it, all five reached the fall-through that quoted an
+# unrecognised `app.io-cli.*` word, so `headless false` was written as the string
+# "false" and the whole [app.io-cli] section stopped deserializing behind one
+# warning line.
+#
+# `binary` is DELIBERATELY not offered at either `/config` door, and the reason is
+# not that it is hard to type. It names a program to execute; io-harness refuses a
+# whole top-level [browser] section in a project file for exactly that reason, and
+# it cannot apply that rule here because [app.io-cli] is the section it reads as an
+# opaque value. Write it by hand, in the file you chose, as below.
+#
+#   binary        the browser executable. ABSENT resolves it from io-harness's own
+#                 ordered list of well-known names, which is documented — so you
+#                 read which binary will be picked rather than running it to find
+#                 out.
+#   args          extra arguments, a list. Written from the shell as the remaining
+#                 words: `io config set app.io-cli.browser.args --disable-gpu`.
+#   headless      true or false.
+#   width/height  the viewport, in whole pixels.
+#   timeout_secs  a whole number of seconds for one navigation.
+#
 # [app.io-cli.browser]
 # binary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# args = ["--disable-gpu"]
 # headless = true
+# width = 1280
+# height = 800
+# timeout_secs = 30
 
 # Where the prices above came from (0.22.0). The rates themselves are io-harness's
 # and live in [prices]; this is the bookkeeping io-harness does not model, in the
@@ -777,6 +842,7 @@ fleet = "ctrl+f"
 #
 # [app.io-cli.prices]
 # source_url = "https://openrouter.ai/api/v1/models"
+# models = 417
 
 # --- what "done" means for this repository (0.24.0) -------------------------
 #
