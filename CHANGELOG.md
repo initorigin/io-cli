@@ -6,6 +6,92 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-07
+
+Every key io documents can be set from either door, and nothing decides on your
+behalf.
+
+### Upgrading
+
+Two shipped interactions change. Neither is a correction you will not notice.
+
+- **An approval now needs `Enter`.** `y`, `a` and `n` move the highlight to that
+  answer; nothing resolves until you press `Enter`, which is the same two-step the
+  arrow keys have always used. It costs one keystroke and it buys the thing that
+  was wrong: a letter inside a sentence can no longer decide a write. Typing "no,
+  not that one" at an approval used to deny with the `n` in "no" and leave the rest
+  of the sentence in the composer, which was then sent as a prompt.
+
+- **A gated run that wrote `max_steps = 1000` now takes a thousand steps.** It took
+  forty. `[run] max_steps = 1000` is io-cli's own floor written down, so it was
+  indistinguishable from having written nothing and the gated cap applied anyway.
+  If you have a CI job that wrote a thousand and relied on the forty-step cap to
+  bound it, that job now runs to a thousand.
+
+### Fixed
+
+- **Thirteen `[app.io-cli]` keys are settable from the shell at last.**
+  `io config set` wrote a string wherever a number or a flag belonged, for every
+  key `kind_of` did not name — and the cost is not the key. io-harness reads
+  `[app.io-cli]` as one opaque value, so one bad value fails the **whole section**
+  and the session silently reverts theme, keybindings, containment, gates and
+  routing to defaults behind a single warning line. The thirteen are
+  `reference_catalogue`, `prices.models`, the five `[app.io-cli.browser]` keys and
+  the six `[app.io-cli.containment]` ceilings.
+
+  `reference_catalogue` is the sharpest of them: 0.39.0 shipped it as the way to
+  turn its new network call off, and left it unsettable.
+
+  0.38.1 fixed this class of defect for `max_total_agents` and the fix did not
+  generalise, because nothing in the suite walked from the settings struct to the
+  catalogue — a list cannot notice what is missing from it. That walk exists now,
+  and it found a fourteenth key while it was being written.
+
+- **`max_total_duration` is settable at all.** It deserializes as a `Duration`, so
+  what the file has to carry is `{ secs = N, nanos = 0 }` and no scalar you type is
+  a value for it. `io config set app.io-cli.containment.max_total_duration 3600`
+  takes the seconds and writes the table.
+
+- **`/undo` forgets the thought as well as the files.** The whole-turn undo cleared
+  the status, the fleet and the seen set and never touched the transcript's own
+  memory, so `/expand` still printed the undone turn's reasoning — the one thing
+  you undo a turn to be rid of, kept by the act meant to remove it.
+
+- **The `/config` scope picker offers only the scopes a key can be written to.** A
+  widening value is refused from any file inside the workspace, so offering
+  `io.toml` and `io.local.toml` was offering two rows whose write io-harness
+  refuses — and it refuses the whole file, not the key.
+
+### Added
+
+- **ACP carries an image and an embedded resource.** `image` and `embeddedContext`
+  are declared, so a conforming editor will offer both. An image reaches the model
+  as an attachment on that one turn, through the same door `/attach` uses; a
+  `resource` block is folded into the prompt with its uri, which is how an editor
+  hands over the file you have open. A block that cannot be taken is reported back
+  as a message rather than dropped. `audio` stays false and will until io-harness
+  carries audio.
+
+### Changed
+
+- **The pin moves to io-harness 0.83.0.** `sandbox.allow_network = true` reaches
+  the macOS backend on a proxied run — which is every real run — so a widened
+  sandbox widens, and `git_log` on a repository with no commits answers in its own
+  words instead of with the error git also returns for "not a git repository".
+  Both were reported from this product and neither was this product's to fix.
+
+- **Four sentences that were false are corrected, and each has a gate.** The commit
+  identity a repository with none of its own will carry is named
+  (`io-harness agent <agent@io-harness.invalid>`) rather than left to be discovered
+  in `git log`; the forty-step gated cap is documented instead of contradicted; the
+  `--json` stream says that `reasoning` arrives after the step whose tokens it
+  explains; and `Cargo.toml` says what its dependency gate actually asserts.
+
+- **`io.local.toml` has been widening-checked since io-harness 0.74.0, and three
+  pages still offered it as the place to put a widening value** — including
+  `skills/io-permissions.md`, which is what an agent reads. The refused list is
+  thirteen (key, value) pairs across twelve keys, not the five those pages named.
+
 ## [0.39.0] - 2026-09-06
 
 No keystroke loses your work, a running turn shows more of what it is doing, and
@@ -3749,7 +3835,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.40.0...HEAD
+[0.40.0]: https://github.com/initorigin/io-cli/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/initorigin/io-cli/compare/v0.38.2...v0.39.0
 [0.38.2]: https://github.com/initorigin/io-cli/compare/v0.38.1...v0.38.2
 [0.38.1]: https://github.com/initorigin/io-cli/compare/v0.38.0...v0.38.1

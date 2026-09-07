@@ -1372,6 +1372,100 @@ fn n3_no_second_async_executor_is_in_the_tree() {
     }
 }
 
+/// **F8 — the pinned harness's own features name no dependency.**
+///
+/// `Cargo.toml` claims that `otel`, `mcp-server` and `codeact` add no crate, and
+/// through 0.39.0 it said that claim was "verified against `cargo tree --depth 1`
+/// … see `tests/dependencies.rs`". It was not. This file parses `Cargo.toml` and
+/// `Cargo.lock`; `cargo tree --depth 1` prints io-cli's own *direct* dependencies,
+/// which is where a transitive crate would not appear at all. The `ALLOWED` gate
+/// is a real gate and it does not check that.
+///
+/// The claim is true and it is checkable at its source: a feature that turns
+/// nothing on has an empty list, and one that enables a feature of a crate already
+/// present names no `dep:`. So this reads the manifest of the version `Cargo.lock`
+/// pins and asserts exactly that, and the sentence in `Cargo.toml` was amended to
+/// say what is actually asserted.
+///
+/// Sabotage: point `MANIFEST_FEATURES` at a name no `[features]` table has. The
+/// control below goes red rather than the whole test passing over a file it never
+/// found — a path miss is the way a manifest gate goes vacuous.
+#[test]
+fn f8_the_pinned_harness_features_this_crate_turns_on_name_no_dependency() {
+    let manifest = harness_manifest();
+    let features = manifest
+        .split_once("\n[features]")
+        .map(|(_, rest)| rest.split("\n[").next().unwrap_or(rest))
+        .expect("the pinned io-harness manifest declares a [features] table");
+
+    // The control, first. A `[features]` table this parser did not find would
+    // satisfy every absence below by holding nothing at all.
+    assert!(
+        features.contains("media = ["),
+        "the [features] table was not read out of the pinned manifest, so the \
+         assertions below are about an empty string: {features:.200?}",
+    );
+
+    for feature in ["otel", "codeact", "mcp-server"] {
+        let line = features
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("{feature} = [")))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the pinned io-harness declares no `{feature}` feature; Cargo.toml turns it on"
+                )
+            });
+        assert!(
+            !line.contains("dep:"),
+            "`{feature}` names a dependency: {line}. Cargo.toml says these three add \
+             no crate, and a feature that names a `dep:` is one that does — so either \
+             the claim in the manifest is now false or the feature should come off.",
+        );
+    }
+}
+
+/// The pinned io-harness's own `Cargo.toml`.
+///
+/// The version comes from `Cargo.lock` rather than from `Cargo.toml`, which
+/// carries a caret requirement and not a version: `"0.83"` matches 0.83.4 too, and
+/// the manifest this asserts on has to be the one that is actually built.
+fn harness_manifest() -> String {
+    let lock = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"))
+        .expect("Cargo.lock exists; this crate is a binary and commits its lockfile");
+    let version = lock
+        .split("name = \"io-harness\"")
+        .nth(1)
+        .and_then(|rest| rest.split_once("version = \""))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(version, _)| version.to_string())
+        .expect("io-harness is in the lockfile");
+
+    let home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .expect("a cargo home");
+    let registries = home.join("registry").join("src");
+    let entries = std::fs::read_dir(&registries)
+        .unwrap_or_else(|error| panic!("{} is readable: {error}", registries.display()));
+    for entry in entries.flatten() {
+        let candidate = entry
+            .path()
+            .join(format!("io-harness-{version}"))
+            .join("Cargo.toml");
+        if candidate.is_file() {
+            // Normalised for the same reason every other reader here normalises:
+            // git checks the registry out with CRLF on Windows, where CI runs.
+            return std::fs::read_to_string(&candidate)
+                .expect("the pinned manifest is readable")
+                .replace("\r\n", "\n");
+        }
+    }
+    panic!(
+        "io-harness {version} is not unpacked under {}",
+        registries.display()
+    );
+}
+
 /// **N3's other half — there is exactly one place a future is driven, and it is
 /// the entry point.**
 ///

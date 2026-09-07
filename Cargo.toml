@@ -69,10 +69,17 @@ path = "src/lib.rs"
 # ["tokio/io-std"]` is two more types inside a name already here, the JSON-RPC
 # framing hand-written precisely to avoid the nine packages `rmcp`'s server half
 # pulls in; and `codeact = []` turns nothing on at all, because its interpreter
-# is a host binary discovered the way a browser is and never downloaded. The
-# claim is verified against `cargo tree --depth 1` with all six features on
-# rather than believed from the harness's manifest — see `tests/dependencies.rs`,
-# which asserts the ten names in both directions.
+# is a host binary discovered the way a browser is and never downloaded.
+#
+# **That claim is checked at its source, and the sentence that stood here said
+# something else (0.40.0).** It said the claim was verified against `cargo tree
+# --depth 1` by `tests/dependencies.rs` — which parses this file and `Cargo.lock`
+# and never runs cargo, and `--depth 1` prints io-cli's own DIRECT dependencies,
+# which is exactly where a transitive crate would not appear. What is asserted is
+# what can be: `f8_the_pinned_harness_features_this_crate_turns_on_name_no_dependency`
+# reads the `[features]` table of the io-harness version `Cargo.lock` pins and
+# holds those three to naming no `dep:`. The ten-name allowlist is a separate gate
+# in the same file, asserted in both directions.
 io-harness = { version = "0.83", features = [
     "media",
     "browser",
