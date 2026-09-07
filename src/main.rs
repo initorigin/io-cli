@@ -9091,6 +9091,24 @@ fn undo_whole_turn(
             for (tone, line) in io_cli::rewind::undone_lines(&undone, &app.theme.glyphs) {
                 app.record(tone, line);
             }
+            // **The thought goes too (0.40.0).** This cleared the status, the
+            // fleet and the seen set and never touched `Events`, so after an undo
+            // `/expand` still printed the undone turn's reasoning — the one thing
+            // an operator undoes a turn to be rid of, kept by the act meant to
+            // remove it. `App::undo_turn`, the mid-turn abandon path, has always
+            // called both; two implementations of one act is exactly what this
+            // function's own comment warns about, and this is the half that was
+            // wrong.
+            //
+            // After the record loop by convention rather than by necessity, and
+            // an earlier draft of this comment claimed otherwise: it said
+            // `Events::forget` resets blank-line state the loop writes through.
+            // It does not — `App::record` builds a line from the theme and pushes
+            // it onto `pending`, and reaches `Events` at no point — so the
+            // ordering is free. Caught by the adversarial review, which is right
+            // that a reason invented for a correct line is still a false comment.
+            app.events.forget();
+            app.servers.forget();
         }
         Ok(None) => app.record(Tone::Muted, "there is no turn to undo".to_string()),
         // **`failure::said`, and not the raw `Display`.** Since 0.23.0 the undo
@@ -10696,6 +10714,7 @@ fn value_rows(
         // Typed, and the caller says what shape.
         io_cli::configure::Kind::List
         | io_cli::configure::Kind::Text
+        | io_cli::configure::Kind::Duration
         | io_cli::configure::Kind::Machine => return None,
     };
     let (scope, inherited) = io_cli::configure::destination(config, key);
@@ -10755,14 +10774,10 @@ fn value_rows(
 }
 
 fn write_where(root: &std::path::Path, key: String, value: String) -> (Picker, Pick) {
-    let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
-        io_harness::config::Scope::User,
-        io_harness::config::Scope::Project,
-        io_harness::config::Scope::Local,
-    ]
-    .into_iter()
-    .filter_map(|scope| io_cli::configure::scope_path(root, scope).map(|p| (scope, p)))
-    .collect();
+    // **Only the scopes the write will be taken in (0.40.0).** The decision is
+    // `configure::writable_scopes`, in the library, because nothing under `tests/`
+    // links this file — a filter written here would be one no gate could reach.
+    let paths = io_cli::configure::writable_scopes(root, &key, &value);
 
     let rows: Vec<Row> = paths
         .iter()

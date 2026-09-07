@@ -296,9 +296,14 @@ async fn the_overlay_says_what_it_did_not_show() {
     deciding.await.expect("the approver did not panic");
 }
 
-/// **F3.** Each key is its own answer, the run is told exactly that, and the
-/// transcript gains exactly one line saying so — so a decision is in the terminal's
-/// own scrollback as well as in the harness's durable trace.
+/// **F3.** Each key chooses its own answer, `Enter` gives it, the run is told
+/// exactly that, and the transcript gains exactly one line saying so — so a
+/// decision is in the terminal's own scrollback as well as in the harness's
+/// durable trace.
+///
+/// **The `Enter` is 0.40.0's and it is the behaviour change.** Through 0.39.0 the
+/// letter alone answered, which is what let the `n` in a typed sentence deny a
+/// write.
 #[tokio::test]
 async fn f3_each_answer_reaches_the_run_as_itself_and_commits_one_line() {
     for (key, expected) in [
@@ -314,6 +319,11 @@ async fn f3_each_answer_reaches_the_run_as_itself_and_commits_one_line() {
         assert!(app.asking(), "the overlay is up before the key");
 
         app.key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        assert!(
+            app.asking(),
+            "a letter chooses and does not answer, so the overlay is still up: {key:?}",
+        );
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.asking(), "answering closes the overlay: {key:?}");
 
         let decision = deciding.await.expect("the approver did not panic");
@@ -401,7 +411,74 @@ async fn an_open_question_takes_the_keyboard() {
     );
 
     app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     deciding.await.expect("the approver did not panic");
+}
+
+/// **F3 — an approval is not answered by a keystroke.**
+///
+/// The failure this release exists to remove, asserted as the thing that happened
+/// rather than as a rule. In the 2026-09-05 field test an operator typed an
+/// instruction while an approval was up; the `n` in "end" denied the write, and
+/// the composer was left holding the rest of the sentence, which was then sent as
+/// a prompt.
+///
+/// A sentence containing both `n` and `y` leaves the highlight where the last of
+/// them put it and decides nothing — which is the part that could not be asserted
+/// before, because the first letter used to end the overlay.
+///
+/// Sabotage: return the found answer from `Approval::key`'s `Char` arm instead of
+/// storing it. The first row goes red on the pending act having been decided.
+#[tokio::test]
+async fn f3_a_typed_sentence_moves_the_highlight_and_decides_nothing() {
+    let (request, context) = flagged();
+    let (ask, deciding) = asked(request, context).await;
+
+    let mut approval = Approval::new(ask, std::path::Path::new(""));
+    assert_eq!(
+        approval.chosen(),
+        approval::Answer::Once,
+        "the overlay opens on the least committal answer",
+    );
+
+    // "never mind" — an `n`, an `e`, a `v`, and so on. Not one of them answers.
+    for c in "never mind".chars() {
+        assert!(
+            approval
+                .key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .is_none(),
+            "`{c}` answered an approval on its own",
+        );
+    }
+    // `n` was the first letter and `d` the last; the highlight is on the last of
+    // the three answer letters the sentence happened to contain, which is `n`.
+    assert_eq!(
+        approval.chosen(),
+        approval::Answer::Deny,
+        "a letter that names an answer moves the highlight to it",
+    );
+
+    // And a sentence whose letters name all three ends on the last of them: `a`
+    // then `n` then `y`, so the highlight finishes on `y`.
+    for c in "any".chars() {
+        assert!(approval
+            .key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+            .is_none());
+    }
+    assert_eq!(
+        approval.chosen(),
+        approval::Answer::Once,
+        "the last answer letter typed is the one highlighted",
+    );
+
+    // Nothing has been decided by any of it. The act is still pending, which is
+    // the property the whole change exists for.
+    approval.answer(approval::Answer::Once);
+    let decision = deciding.await.expect("the approver did not panic");
+    assert!(
+        matches!(decision, Decision::Approve { .. }),
+        "the answer is the one that was given deliberately, not one a letter made: {decision:?}",
+    );
 }
 
 /// **F5.** The harness's own `remember` is run-scoped: it applies for the rest of
@@ -426,6 +503,7 @@ async fn f5_allowing_for_the_session_survives_into_the_next_turn() {
     let mut app = App::new(DARK, "opus-5");
     app.open_approval(ask);
     app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     deciding.await.expect("the approver did not panic");
 
     let next = approval::effective_policy(&base, app.remembered());

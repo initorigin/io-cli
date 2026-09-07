@@ -267,61 +267,7 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
     let page = guide("configuration");
     let table = settings_table(&page);
 
-    // Every field set, because `skip_serializing_if` drops a `None` — a default
-    // value here would assert against a table with nothing in it.
-    let every = io_cli::settings::CliSettings {
-        theme: Some("dark".into()),
-        diff: Some("unified".into()),
-        glyphs: Some("ascii".into()),
-        plain: Some(false),
-        keys: Some(Default::default()),
-        containment: Some(io_harness::Containment::new(12, 4, 2, 200_000)),
-        mcp: Some(Vec::new()),
-        lsp: Some(Vec::new()),
-        browser: Some(io_harness::BrowserConfig::default()),
-        skills: Some("/skills".into()),
-        max_parallel_reads: Some(16),
-        spawn_background_after_secs: Some(120),
-        detached_spawns: Some(true),
-        prices: Some(io_cli::settings::PriceSettings {
-            source_url: Some("https://example.invalid/models".into()),
-            source: Some("the reference catalogue".into()),
-            models: Some(417),
-        }),
-        // Written out field by field rather than as a `Default::default()`, which
-        // would serialize to `{}` and satisfy the row check just as well. The
-        // point is the compile error: `[app.io-cli.gates]` is the one nested
-        // table whose keys are explained in README prose rather than in a row of
-        // their own, so a key added to `gates::Settings` has to break something
-        // to be noticed. This is that something.
-        gates: Some(io_cli::gates::Settings {
-            retries: Some(2),
-            command: Some(vec!["cargo".into(), "test".into()]),
-            expect_exit: Some(0),
-            file: Some("CHANGELOG.md".into()),
-            contains: Some("## [0.24.0]".into()),
-            rubric: Some("the change is covered by a test that fails without it".into()),
-            reviewer: Some("a-reviewing-model".into()),
-            allow_self_review: Some(false),
-        }),
-        conversational: Some(false),
-        // Written out field by field for `gates`' reason, and with the same
-        // consequence: `[app.io-cli.routing]`'s two rules are sub-tables whose
-        // keys are explained in README prose rather than in rows of their own, so
-        // a key added to `routing::Settings` has to break something to be noticed.
-        routing: Some(io_cli::routing::Settings {
-            escalate_after: Some(io_cli::routing::Escalation {
-                failures: Some(3),
-                model: Some("a-stronger-model".into()),
-            }),
-            downshift_under: Some(io_cli::routing::Downshift {
-                bytes: Some(2_000),
-                model: Some("a-cheaper-model".into()),
-            }),
-        }),
-        reference_catalogue: Some(false),
-    };
-    let value = serde_json::to_value(&every).expect("[app.io-cli] serializes");
+    let value = serde_json::to_value(every_setting()).expect("[app.io-cli] serializes");
     let keys = value.as_object().expect("a table");
 
     let (mut scalars, mut tables) = (0, 0);
@@ -366,6 +312,183 @@ fn the_readme_documents_every_key_of_the_io_cli_section() {
         page.contains(&sentence),
         "the guide should say `{sentence}`",
     );
+}
+
+/// `[app.io-cli]` with every field of every sub-table set.
+///
+/// **Every field written out, and no `..Default::default()` anywhere in it.** A
+/// `skip_serializing_if` drops a `None`, so a default value here would assert
+/// against a table with nothing in it — and, more to the point, the struct
+/// literals are the forced decision: adding a field to `CliSettings`, to
+/// `gates::Settings`, to `routing::Settings`, or to either of the two io-harness
+/// types this section embeds stops this file compiling until somebody says what
+/// the new key is. That property is why the fixture is shared rather than copied:
+/// the row check below and `f2_every_settings_key_is_named_by_one_of_the_two_lists`
+/// must be looking at the same struct, or the second one is checking a census the
+/// first has already gone stale on.
+fn every_setting() -> io_cli::settings::CliSettings {
+    io_cli::settings::CliSettings {
+        theme: Some("dark".into()),
+        diff: Some("unified".into()),
+        glyphs: Some("ascii".into()),
+        plain: Some(false),
+        keys: Some(Default::default()),
+        // A struct literal from 0.40.0, not `Containment::new`, which leaves
+        // `max_total_cost` and `max_total_duration` at `None` — and a `None` is
+        // dropped by `skip_serializing_if`, so the two keys this release makes
+        // settable would have been invisible to the walk that exists to find them.
+        containment: Some(io_harness::Containment {
+            max_total_agents: 12,
+            max_concurrent_agents: 4,
+            max_depth: 2,
+            max_total_tokens: 200_000,
+            max_total_cost: Some(5),
+            max_total_duration: Some(std::time::Duration::from_secs(3_600)),
+        }),
+        mcp: Some(Vec::new()),
+        lsp: Some(Vec::new()),
+        // A struct literal for the same reason, and it is the one that paid: the
+        // `BrowserConfig::default()` this used to call left `binary` at `None`,
+        // and `binary` is the fourteenth key the release contract's own risk
+        // predicted and this fixture found.
+        browser: Some(io_harness::BrowserConfig {
+            binary: Some("/usr/bin/chromium".into()),
+            args: vec!["--disable-gpu".into()],
+            headless: true,
+            width: 1_280,
+            height: 800,
+            timeout_secs: 30,
+        }),
+        skills: Some("/skills".into()),
+        max_parallel_reads: Some(16),
+        spawn_background_after_secs: Some(120),
+        detached_spawns: Some(true),
+        prices: Some(io_cli::settings::PriceSettings {
+            source_url: Some("https://example.invalid/models".into()),
+            source: Some("the reference catalogue".into()),
+            models: Some(417),
+        }),
+        // Written out field by field rather than as a `Default::default()`, which
+        // would serialize to `{}` and satisfy the row check just as well. The
+        // point is the compile error: `[app.io-cli.gates]` is the one nested
+        // table whose keys are explained in README prose rather than in a row of
+        // their own, so a key added to `gates::Settings` has to break something
+        // to be noticed. This is that something.
+        gates: Some(io_cli::gates::Settings {
+            retries: Some(2),
+            command: Some(vec!["cargo".into(), "test".into()]),
+            expect_exit: Some(0),
+            file: Some("CHANGELOG.md".into()),
+            contains: Some("## [0.24.0]".into()),
+            rubric: Some("the change is covered by a test that fails without it".into()),
+            reviewer: Some("a-reviewing-model".into()),
+            allow_self_review: Some(false),
+        }),
+        conversational: Some(false),
+        // Written out field by field for `gates`' reason, and with the same
+        // consequence: `[app.io-cli.routing]`'s two rules are sub-tables whose
+        // keys are explained in README prose rather than in rows of their own, so
+        // a key added to `routing::Settings` has to break something to be noticed.
+        routing: Some(io_cli::routing::Settings {
+            escalate_after: Some(io_cli::routing::Escalation {
+                failures: Some(3),
+                model: Some("a-stronger-model".into()),
+            }),
+            downshift_under: Some(io_cli::routing::Downshift {
+                bytes: Some(2_000),
+                model: Some("a-cheaper-model".into()),
+            }),
+        }),
+        reference_catalogue: Some(false),
+    }
+}
+
+/// Every path in the settings struct that neither list names, given a table and
+/// the key it sits under.
+///
+/// **A path stops descending the moment one of the two lists names it**, which is
+/// what makes the walk agree with the surface rather than with serde. Both
+/// `[app.io-cli.keys]` and `containment.max_total_duration` are objects to serde —
+/// a map of chords and a `Duration`'s `secs`/`nanos` — and descending into either
+/// would demand catalogue rows for values that are not settings at all.
+fn unnamed_leaves(value: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+    if io_cli::configure::CATALOGUE.contains(&at)
+        || io_cli::configure::EXCLUDED
+            .iter()
+            .any(|(key, _)| *key == at)
+    {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, held) in fields {
+                unnamed_leaves(held, &format!("{at}.{name}"), out);
+            }
+        }
+        _ => out.push(at.to_string()),
+    }
+}
+
+/// **F2 — a key the settings struct holds cannot be missing from the catalogue.**
+///
+/// The existing gates walk `CATALOGUE` and check the documentation, and the
+/// documentation and check `CATALOGUE`. Both were green while eight keys of
+/// `CliSettings` were named by neither — `reference_catalogue` among them, which
+/// 0.39.0 shipped as the way to turn a network call off and which `io config set`
+/// then wrote as a string that took the whole `[app.io-cli]` section down. **A
+/// list cannot notice what is missing from it.** So this is the other direction:
+/// from the struct, into its sub-tables, to a leaf that must be named by
+/// `CATALOGUE` or by `EXCLUDED` and nothing else.
+///
+/// Sabotage: delete one entry from `CATALOGUE`. This goes red naming that key,
+/// and `the_readme_documents_every_key_of_the_io_cli_section` here and
+/// `f2_the_catalogue_is_documented_rather_than_invented` in `tests/configure.rs`
+/// both stay green — which is the proof the two directions are not the same test.
+#[test]
+fn f2_every_settings_key_is_named_by_one_of_the_two_lists() {
+    let value = serde_json::to_value(every_setting()).expect("[app.io-cli] serializes");
+    let mut unnamed = Vec::new();
+    unnamed_leaves(&value, "app.io-cli", &mut unnamed);
+
+    assert!(
+        unnamed.is_empty(),
+        "these are fields of CliSettings that `configure::CATALOGUE` does not offer \
+         and `configure::EXCLUDED` does not refuse, so they are settable only by \
+         hand-editing the file and `io config set` writes each of them as a string \
+         that fails the whole [app.io-cli] section: {unnamed:?}",
+    );
+
+    // The control, and it is the one that matters: a walk that descended into
+    // nothing would satisfy the assertion above vacuously. Every catalogue key
+    // under `[app.io-cli]` has to be a leaf this walk can actually reach.
+    let mut reached = Vec::new();
+    reach_all(&value, "app.io-cli", &mut reached);
+    for key in io_cli::configure::CATALOGUE
+        .iter()
+        .filter(|key| key.starts_with("app.io-cli."))
+    {
+        assert!(
+            reached.iter().any(|found| found == key),
+            "`{key}` is offered by the catalogue and is not a field of CliSettings that \
+             serializes — so either the key is spelled wrong or the walk above is not \
+             descending into the table that holds it, and this gate is checking nothing",
+        );
+    }
+}
+
+/// Every path the settings struct serializes, with no list consulted.
+///
+/// The census `f2_every_settings_key_is_named_by_one_of_the_two_lists` checks
+/// itself against. `unnamed_leaves` stops at a named path by design, so it cannot
+/// answer "did this walk reach that key at all" — only a walk that consults
+/// nothing can.
+fn reach_all(value: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+    out.push(at.to_string());
+    if let serde_json::Value::Object(fields) = value {
+        for (name, held) in fields {
+            reach_all(held, &format!("{at}.{name}"), out);
+        }
+    }
 }
 
 #[test]
@@ -2625,9 +2748,9 @@ fn n5_no_shipped_page_claims_a_span_was_delivered() {
 /// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
 /// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
 /// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.82.0/src/tools/mod.rs:33-42`).
+/// cache *write* on every later turn (`io-harness-0.83.0/src/tools/mod.rs:33-42`).
 /// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`io-harness-0.82.0/src/run/prompts.rs:1381`).
+/// naming what is withheld (`io-harness-0.83.0/src/run/prompts.rs:1418`).
 ///
 /// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
 /// its headline. That framing is what a writer reaches for, because "withhold" means
@@ -3348,4 +3471,255 @@ fn f9_plugin_search_with_no_match_says_nothing_matched() {
          `marketplace::nothing_matched`, which is two answers to one question \
          agreeing only until one of them is edited",
     );
+}
+
+// ---------------------------------------------------------------------------
+// N2 — every sentence 0.40.0 corrected has a gate that names a phrase a reader
+// would act on
+// ---------------------------------------------------------------------------
+
+/// **N2 — the git guide names the identity a commit will carry.**
+///
+/// The page explained that the identity always resolves and that you are told
+/// which default io-harness will use, and never said what it is — so an operator
+/// could not know their history would carry `io-harness agent` until it did, at
+/// which point the one fact about a commit that cannot be corrected without
+/// rewriting history was already wrong.
+///
+/// **Read from `Identity::default()` rather than typed here**, the way
+/// `tests/commit.rs` already does it: a literal in this file is a second place
+/// for the string to live, and the wrong one would still pass.
+#[test]
+fn n2_the_git_guide_names_the_commit_identity_io_harness_will_use() {
+    let default = io_harness::Identity::default();
+    let page = guide("git");
+    for part in [&default.name, &default.email] {
+        assert!(
+            page.contains(part.as_str()),
+            "docs/guide/git.md says a repository with no identity is told which default \
+             io-harness will use and never names it. The default is `{}` <{}>, and until \
+             an operator has seen it they have no way to know what their history will \
+             carry.",
+            default.name,
+            default.email,
+        );
+    }
+}
+
+/// **N2 — the headless guide names the gated step cap.**
+///
+/// `contract::GATED_MAX_STEPS` bounds a gated headless run that budgeted nothing,
+/// it decides whether an unattended job finishes, and through 0.39.0 it appeared
+/// in no shipped document at all — the only place the number and its reasoning
+/// existed was a doc comment on the constant.
+#[test]
+fn n2_the_headless_guide_names_the_gated_step_cap() {
+    let page = guide("headless");
+    let cap = io_cli::contract::GATED_MAX_STEPS;
+    assert_eq!(
+        cap, 40,
+        "the cap moved and the word below is spelled out, so the assertion has to \
+         move with it rather than silently checking for the old number",
+    );
+    for needle in [&cap.to_string(), "forty"] {
+        assert!(
+            page.contains(needle),
+            "docs/guide/headless.md does not name the gated step cap ({needle}), which \
+             is what decides whether an unattended gated run finishes",
+        );
+    }
+    assert!(
+        page.contains("exits `3`"),
+        "a cap an operator meets has to name the exit code they will see",
+    );
+}
+
+/// **N2 — the headless guide warns that `reasoning` trails the step it explains.**
+///
+/// The `--json` stream relays io-harness's order faithfully and breaks nothing
+/// documented — the events carry `run_id` and `step`, so a reader that groups by
+/// step is right. A reader that assumes arrival order is chronological is not, and
+/// the screen ordering having been corrected in 0.38.1 is exactly what makes the
+/// stream's order surprising.
+#[test]
+fn n2_the_json_section_warns_that_reasoning_trails_its_step() {
+    let page = guide("headless");
+    assert!(
+        page.contains("`reasoning` event arrives *after* the `step`"),
+        "docs/guide/headless.md documents the JSON stream and does not say that a \
+         thought arrives after the step whose tokens it explains, so a consumer that \
+         renders in arrival order shows it under the wrong step",
+    );
+}
+
+/// **N2 — no shipped page still says a widening value is accepted in
+/// `io.local.toml`.**
+///
+/// Untrue since io-harness 0.74.0, which widening-checks that file always: it is a
+/// path inside the workspace root that the run's own agent can write to, so a
+/// single `write_file` of it would declare an argv the next discovery runs,
+/// outside the policy and outside the sandbox.
+///
+/// **`skills/io-permissions.md` is the one that mattered.** It is read by an agent
+/// and it is what advised the 2026-09-05 field tester into the refusal they hit —
+/// a page that sends somebody somewhere it knows they will be refused.
+#[test]
+fn n2_no_shipped_page_offers_the_local_file_as_the_place_to_widen() {
+    let mut pages = shipped_prose();
+    pages.push((
+        "docs/config.example.toml".to_string(),
+        read("docs/config.example.toml"),
+    ));
+
+    for (name, text) in &pages {
+        for stale in [
+            "accepted in `io.local.toml`",
+            "accepts the same value in `io.local.toml`",
+            "belongs in\n`io.local.toml`",
+            "in io.local.toml for this checkout",
+            "`--scope local` for this checkout",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{name} still offers `io.local.toml` as a place a widening value is \
+                 taken. io-harness has refused that file since 0.74.0, so the sentence \
+                 sends an operator into a refusal: {stale:?}",
+            );
+        }
+    }
+
+    // **The property, not five needles.** The sweep above is a list of phrases,
+    // and a list cannot notice a sixth spelling — which is what happened: four
+    // more pages and two agent-read skills still sent an operator to
+    // `io.local.toml` for a REFUSED SECTION rather than for a widening value, and
+    // every one of them passed the needles. So this is the shape instead: a
+    // paragraph that names one of the sections io-harness refuses from a workspace
+    // file, and names `io.local.toml` within it, is offering the file for
+    // something it will be refused for — whichever verb the sentence happens to
+    // use. Found by the adversarial review.
+    //
+    // Paragraph-scoped rather than whole-file, because a page may legitimately
+    // mention both far apart: `docs/guide/configuration.md` explains the scope
+    // rule in one place and lists the files in another.
+    for (name, text) in &pages {
+        for paragraph in text.split("\n\n") {
+            if !paragraph.contains("io.local.toml") {
+                continue;
+            }
+            // **The escape hatch is two exact phrases, and the first draft's was
+            // four loose ones that made this whole gate vacuous.** It excused any
+            // paragraph containing "refused", "may not" or "nowhere else" — and
+            // the stale `docs/guide/hooks.md` paragraph opens "A project-scoped
+            // file **may not** declare `[[hook]]`" and then offers
+            // `io.local.toml`, so the gate passed over the very page it was
+            // written for. Verified by restoring that page from git and watching
+            // this test stay green.
+            //
+            // What separates the corrected form from the stale one is not whether
+            // a refusal is mentioned — both mention one — but WHICH FILE the
+            // refusal is about. The corrected paragraphs say the rule covers any
+            // file inside the workspace, or cite the io-harness release that made
+            // it so. Neither phrase appears in any of the stale forms.
+            //
+            // Whitespace-normalised because a shipped page wraps, and
+            // `skills/io-provider.md` carries "inside the\nworkspace" across a
+            // line break. **The comment marker goes too**: one of these pages is
+            // `docs/config.example.toml`, where every line of prose opens with a
+            // `#`, so a phrase spanning two lines reads "inside the # workspace"
+            // and matched nothing — which made the gate fire on a paragraph that
+            // says exactly the right thing.
+            let lowered = paragraph
+                .to_lowercase()
+                .lines()
+                .map(|line| line.trim_start().trim_start_matches('#'))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if lowered.contains("0.74.0") || lowered.contains("inside the workspace") {
+                continue;
+            }
+            for section in [
+                "[[hook]]",
+                "[[plugin]]",
+                "[[mcp]]",
+                "[[lsp]]",
+                "[[provider]]",
+                "[browser]",
+                "${cmd:",
+            ] {
+                assert!(
+                    !paragraph.contains(section),
+                    "{name} names `{section}` and offers `io.local.toml` in the same \
+                     paragraph without saying that file is refused for it. io-harness \
+                     refuses every one of these sections from any file inside the \
+                     workspace, and refuses the WHOLE FILE rather than the section — so \
+                     the paragraph sends an operator to a configuration that will not \
+                     parse:\n{paragraph}",
+                );
+            }
+        }
+    }
+
+    // And the three pages that carry the rule say what it is now, so the negative
+    // sweep above cannot be satisfied by deleting the subject.
+    for name in [
+        "docs/guide/configuration.md",
+        "docs/config.example.toml",
+        "skills/io-permissions.md",
+    ] {
+        let text = read(name);
+        assert!(
+            text.contains("io.local.toml") && text.contains("0.74.0"),
+            "{name} explains where a widening value goes and does not say that \
+             `io.local.toml` has been refused since io-harness 0.74.0",
+        );
+    }
+}
+
+/// **N2 — no shipped page counts five refused pairs.**
+///
+/// There are thirteen, across twelve keys: the four `policy.defaults.*` acts, two
+/// sandbox flags, two `sandbox.mode` values and the five `sandbox.limits.*` zeroes.
+/// The count is io-harness's own `PROJECT_WIDENING`, and it is
+/// `tests/configure.rs`'s `f2_a_widening_value_is_legal_in_one_scope_and_refused_in_another`
+/// that holds the *code* to it by driving every pair through the real refusal —
+/// this gate is only about the prose beside it, which had drifted eight pairs
+/// short and was gated by nothing at all.
+#[test]
+fn n2_no_shipped_page_counts_five_refused_widening_pairs() {
+    let mut pages = shipped_prose();
+    pages.push((
+        "docs/config.example.toml".to_string(),
+        read("docs/config.example.toml"),
+    ));
+
+    for (name, text) in &pages {
+        for stale in [
+            "exactly five (key, value) pairs",
+            "EXACTLY FIVE (KEY, VALUE) PAIRS",
+            "three of the five pairs",
+            "any of the five in",
+        ] {
+            assert!(
+                !text.contains(stale),
+                "{name} says there are five refused (key, value) pairs. There are \
+                 thirteen, and a reader who trusts the short list writes one of the \
+                 other eight into a file that then does not parse at all: {stale:?}",
+            );
+        }
+    }
+
+    // Lowercased on both sides: the example file shouts this sentence in capitals,
+    // which is its own convention for a rule with a cost, and a gate that forced
+    // one casing would be editing the page's voice rather than its facts.
+    for name in ["docs/guide/configuration.md", "docs/config.example.toml"] {
+        let text = read(name).to_lowercase();
+        assert!(
+            text.contains("thirteen (key, value) pairs"),
+            "{name} lists what a workspace file may not widen and does not say how \
+             many there are",
+        );
+    }
 }

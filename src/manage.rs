@@ -1192,9 +1192,15 @@ impl Args {
     fn no_command(&self, verb: &str) -> Result<(), String> {
         match &self.opaque {
             None => Ok(()),
+            // **The closing clause used to name a server, on every verb that
+            // reaches this** — right for `mcp add`, which is what it was written
+            // for, and wrong for `config set`, where a `--` means the operator
+            // thought they were writing a command line. It says what the `--` is
+            // for instead, which is true wherever this is reached.
             Some(rest) => Err(format!(
                 "`{verb}` takes no command, so the `--` and everything after it ({}) has nowhere \
-                 to go; a server's command is written when it is added",
+                 to go; `--` carries a program's own argument vector, and only a verb that takes \
+                 one reads it",
                 rest.join(" ")
             )),
         }
@@ -1441,7 +1447,7 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.82.0/src/mcp.rs:439-447`: the
+    // silent no-op on an HTTP server (`io-harness-0.83.0/src/mcp.rs:439-447`: the
     // body writes only into the `Stdio` arm) — a constructor chain here would drop
     // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`
@@ -1593,7 +1599,6 @@ fn mcp_edit(args: &Args) -> Result<McpVerb, String> {
 
 /// `config set <key> <value…> [--scope]`.
 fn config_set(args: &Args) -> Result<Request, String> {
-    args.no_command("config set")?;
     args.only("config set", &["scope"])?;
     let scope = args.scope_or_inherited()?;
 
@@ -1604,7 +1609,35 @@ fn config_set(args: &Args) -> Result<Request, String> {
                 .to_string(),
         );
     };
-    let value = config_value(&key, &args.positional[1..])?;
+
+    // **A list key takes its words after `--`, and until 0.40.0 no list key could
+    // be set from a shell at all.** The two list keys are a command line and a
+    // browser's arguments, and the value of either routinely begins with a dash —
+    // so `io config set app.io-cli.gates.command cargo test --all` was refused by
+    // `only` above, naming `--all` as a flag io does not take. That invocation is
+    // the worked example `docs/config.example.toml` has shipped since 0.24.0 and
+    // it had never run. `--disable-gpu` is the same word one release later.
+    //
+    // The mechanism is the one this parser already has and already recommends: the
+    // refusal for a single-dash token says outright that "a flag meant for the
+    // server itself belongs after `--`", and `scan` stops dead at the first `--`
+    // so everything past it is copied through as text. What this adds is that
+    // `config set` accepts that section instead of refusing it — for a list key
+    // only, because for every other key the words are one value and a `--` before
+    // them is a mistake worth naming.
+    let listed = matches!(
+        crate::configure::kind_of(&key),
+        Some(crate::configure::Kind::List)
+    );
+    let mut words = args.positional[1..].to_vec();
+    match (&args.opaque, listed) {
+        (Some(rest), true) => words.extend(rest.iter().cloned()),
+        (Some(_), false) => {
+            args.no_command("config set")?;
+        }
+        (None, _) => {}
+    }
+    let value = config_value(&key, &words)?;
 
     // Reported here rather than discovered by the round trip, because the round
     // trip's refusal takes the WHOLE FILE: `refuse_widening` runs before
@@ -1625,6 +1658,19 @@ fn config_set(args: &Args) -> Result<Request, String> {
     // reason. `io.local.toml` is not committed, but it sits in the workspace root
     // a run's own agent can write to, so one `write_file` of an unremarkable name
     // was an escalation. The user scope is the only destination left.
+    // **io-cli's own line, beside io-harness's** (0.40.0). The harness refuses a
+    // top-level `[browser]` from a workspace file because it names a program; it
+    // cannot apply that rule to `[app.io-cli.browser]`, which it reads as one
+    // opaque value. So the browser's argument vector — where a proxy carrying
+    // credentials goes — is held to the user scope here, at the same door and in
+    // the same shape as the widening refusal below.
+    if matches!(scope, Some(Scope::Project | Scope::Local)) {
+        if let Some(why) = crate::configure::why_user_scope_only(&key) {
+            return Err(format!(
+                "`{key}` is not written inside the workspace: {why}"
+            ));
+        }
+    }
     if matches!(scope, Some(Scope::Project | Scope::Local))
         && crate::configure::widens_workspace(&key, &value)
     {

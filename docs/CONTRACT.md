@@ -189,6 +189,13 @@ deleted that was not already copied. This does nothing at all when `$IO_CONFIG` 
 
 ## Limits that hold today
 
+**A gated headless run with no budget stops at forty steps and exits `3`.** A `[app.io-cli.gates]`
+criterion takes away every bound io-cli's own floor of a thousand is safe because of — io-harness
+hands a failed criterion back as a reason to keep going, a run with no budget is measured against
+nothing, and headless has no operator — so a run that set no `max_steps`, `max_duration_secs` or
+`max_tokens` is bounded at forty. Anything you wrote beats it, **including `max_steps = 1000`**,
+which through 0.39.0 was indistinguishable from having written nothing.
+
 **A marketplace, and an entry inside one, resolve against `github.com` and no other host.** A
 marketplace is named `<owner>/<repo>`; an index entry naming a repository elsewhere has its url
 re-derived to that shape, and a url that is not two ordinary path segments on that host is refused

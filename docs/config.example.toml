@@ -70,25 +70,42 @@ model = "anthropic/claude-sonnet-4"
 # otherwise. In a headless `io exec` run `ask` is still a decline, because nothing
 # there can answer it — see the README.
 #
-# NOTE: a PROJECT-scoped file may narrow this and may never widen it — a
+# NOTE: a file INSIDE THE WORKSPACE may narrow this and may never widen it — a
 # repository you cloned must not be able to grant itself permission. Widening
 # belongs in the user-scope file, which is where `io setup` writes.
 #
-# THERE ARE EXACTLY FIVE (KEY, VALUE) PAIRS A COMMITTED io.toml MAY NOT WRITE,
-# and io-harness refuses the WHOLE FILE for any one of them rather than dropping
-# that key — the check runs before the file is deserialized, so what you get is a
-# configuration that no longer parses rather than a rejected setting:
+# THAT MEANS io.local.toml TOO, SINCE io-harness 0.74.0. The rule used to be
+# about the committed file alone; it is now about any file inside the workspace
+# root, because io.local.toml is a path the run's own agent can write to — so one
+# write_file of it would have declared an argv the next discovery runs, outside
+# the policy and outside the sandbox. The user scope is the one file no workspace
+# can reach.
 #
+# THERE ARE THIRTEEN (KEY, VALUE) PAIRS ACROSS TWELVE KEYS THAT A FILE IN THE
+# WORKSPACE MAY NOT WRITE, and io-harness refuses the WHOLE FILE for any one of
+# them rather than dropping that key — the check runs before the file is
+# deserialized, so what you get is a configuration that no longer parses rather
+# than a rejected setting:
+#
+#   policy.defaults.read  = "allow"
+#   policy.defaults.write = "allow"
 #   policy.defaults.exec  = "allow"
 #   policy.defaults.net   = "allow"
 #   sandbox.allow_network = true
 #   sandbox.force_floor   = false
-#   sandbox.mode          = "full-access"
+#   sandbox.mode          = "full-access"   (and "workspace-write")
+#   sandbox.limits.max_cpu_secs     = 0
+#   sandbox.limits.max_wall_secs    = 0
+#   sandbox.limits.max_memory_bytes = 0
+#   sandbox.limits.max_processes    = 0
+#   sandbox.limits.max_open_files   = 0
 #
-# The narrowing value of each stays legal in a project file, which is what the
-# scope is for. Write any of the five in io.local.toml for this checkout, or in
-# this user-scope file for yourself. `/config` knows the list and says so on the
-# row BEFORE it writes, rather than writing and reporting the rollback.
+# The five limits are refused only at ZERO, which is what "no cap" means — a
+# merely large finite cap is still a cap. The narrowing value of each key stays
+# legal in a workspace file, which is what the scope is for; `read-only` is the
+# sandbox mode that narrows in every direction and stays legal everywhere. Write
+# any of these in THIS user-scope file. `/config` knows the list and says so on
+# the row BEFORE it writes, rather than writing and reporting the rollback.
 
 # Each of the four takes "allow", "ask" or "deny" — io-harness's own three, and
 # nothing else parses. `/config` offers them as a list rather than asking you to
@@ -218,11 +235,12 @@ net = "deny"
 # force_floor = true         # true or false: keep the floor even where the caller asked for less
 #
 # NOTE on the three sandbox keys above: `allow_network = true`, `force_floor =
-# false` and `mode = "full-access"` are three of the five pairs a project-scoped
-# file may not write — see the list under the policy block above, and note that
-# io-harness refuses the WHOLE FILE for one of them rather than that key. `/config`
-# says so on the row before it writes, and shows you the harness's own sentence
-# rather than a summary of it when a write does reach that refusal.
+# false` and `mode = "full-access"` are three of the thirteen pairs a file inside
+# the workspace may not write — io.local.toml included — see the list under the
+# policy block above, and note that io-harness refuses the WHOLE FILE for one of
+# them rather than that key. `/config` says so on the row before it writes, and
+# shows you the harness's own sentence rather than a summary of it when a write
+# does reach that refusal.
 #
 # [memory]                   # bounds the STORE, which outlives every run over it
 #                            # every key here is a WHOLE NUMBER, none negative
@@ -412,8 +430,10 @@ net = "deny"
 # skills, templates, agents and policy, and may NOT contribute hooks or MCP
 # servers, because both of those run a program on this machine. One that tries is
 # refused WHOLE: it contributes nothing at all, not the half that would have been
-# safe. Name it from io.local.toml or from this user-scope file and the same
-# directory loads completely. The rule is about which file, not about the bundle.
+# safe. Name it from THIS user-scope file and the same directory loads completely;
+# io.local.toml is refused for the same reason since io-harness 0.74.0, being a
+# path inside the workspace the run's own agent can write to. The rule is about
+# which file, not about the bundle.
 #
 # A BUNDLE'S POLICY MAY ONLY DENY. A `[policy] defaults` table in a manifest is
 # refused by name, and a single rule whose effect is not `deny` drops the bundle.
@@ -472,8 +492,10 @@ net = "deny"
 # on this machine, and io.toml is the file a `git clone` delivers. There is no
 # Config to be had, so io genuinely cannot start against such a file; what 0.20.0
 # changed is that it prints io-harness's own sentence, which names the key, the
-# reason and the two files that may carry it, instead of a bare error string.
-# Write the table here or in io.local.toml.
+# reason and the file that may carry it, instead of a bare error string.
+# Write the table HERE, in the user-scope file, and nowhere else: io.local.toml is
+# refused too since io-harness 0.74.0, because it sits in a root the run's own
+# agent can write to.
 #
 # [[hook]]
 # on = []                       # every event
@@ -600,6 +622,25 @@ plain = false
 #
 # conversational = false
 #
+# true or false. Whether io may read the reference catalogue over the network to
+# size a model's context window and price its tokens (0.39.0).
+#
+# true is the default and what an absent key means. false is the switch for an
+# operator who wants no request io did not have to make — an air-gapped machine, a
+# self-hosted endpoint the reference catalogue has never heard of, or a policy that
+# says so. With it off, the surfaces that would have shown a window or a price say
+# what they do not know rather than guessing.
+#
+# THIS KEY WAS UNSETTABLE FROM 0.39.0 UNTIL 0.40.0 and it is worth saying why, in
+# the file that promises a worked example for every key. `io config set` quoted it,
+# `CliSettings` could not read `"false"` back, and the refusal was not of that key:
+# io-harness reads [app.io-cli] as one opaque value, so the whole section failed —
+# theme, keybindings, containment, gates and routing all reverting to defaults
+# behind a single warning line. The escape hatch for a network call was the one key
+# you could not reach.
+#
+# reference_catalogue = false
+#
 # How many steps one turn may take.
 #
 # DEPRECATED IN 0.14.0 AND REMOVED IN 0.16.0. It existed because the flat turn
@@ -657,8 +698,11 @@ fleet = "ctrl+f"
 # well. Every one of those reaches every turn now, and this table means exactly
 # what its name says: the caps a fan-out runs under.
 #
-# All four keys are required, because there is no safe default for somebody
-# else's token ceiling.
+# The first four keys are required, because there is no safe default for somebody
+# else's token ceiling. The last two are optional and are written out here from
+# 0.40.0, because five of these six were settable from `io config set` and named
+# by no `/config` list at all — a key that can be spelled and cannot be found is a
+# key an operator meets only by reading io-cli's source.
 #
 # max_total_agents refuses: the spawn that would cross it comes back to the
 # parent, which adapts. max_concurrent_agents throttles: a spawn past it waits
@@ -666,11 +710,28 @@ fleet = "ctrl+f"
 # from the root, which is 0. max_total_tokens is the whole tree's, drawn down
 # together — tokens, because a provider reports tokens and never money.
 #
+# max_total_duration is a WALL-CLOCK ceiling for the whole tree, measured from
+# when the root run started — so it counts the tree's whole life, including time
+# the process was down. It is written into the file as a table rather than a
+# number, which is io-harness's `Duration` and not io-cli's choice:
+# `io config set app.io-cli.containment.max_total_duration 3600` takes the seconds
+# and writes the table for you, and a bare 3600 written by hand fails the whole
+# [app.io-cli] section.
+#
+# max_total_cost IS RESERVED AND NOT ENFORCED, and io-harness says so itself:
+# enforcing a money ceiling needs a price per token that a provider never reports,
+# so any figure the harness compared against would be one it invented. It
+# deserializes, so a file that sets it parses and the ceiling does nothing. The
+# spend that IS enforced is max_total_tokens — convert your budget at your
+# provider's rate and set that instead.
+#
 # [app.io-cli.containment]
 # max_total_agents = 12
 # max_concurrent_agents = 4
 # max_depth = 2
 # max_total_tokens = 200000
+# max_total_duration = { secs = 3600, nanos = 0 }
+# max_total_cost = 5
 
 # The three ceilings io-harness has no configuration key for. They are
 # TaskContract fields, so io-cli names them in its own section — and it applies
@@ -744,9 +805,44 @@ fleet = "ctrl+f"
 # nobody typed, is decided by this session's policy. The status line shows the
 # last host and whether it was allowed or refused.
 #
+# Every key of this table except `binary` is settable from `io config set` as of
+# 0.40.0 — before it, all five reached the fall-through that quoted an
+# unrecognised `app.io-cli.*` word, so `headless false` was written as the string
+# "false" and the whole [app.io-cli] section stopped deserializing behind one
+# warning line.
+#
+# `binary` is DELIBERATELY not offered at either `/config` door, and the reason is
+# not that it is hard to type. It names a program to execute; io-harness refuses a
+# whole top-level [browser] section from ANY file inside the workspace —
+# `io.local.toml` included since its 0.74.0 — for exactly that reason, and it
+# cannot apply that rule here because [app.io-cli] is the section it reads as an
+# opaque value. Write it by hand, in the file you chose, as below.
+#
+# `args` IS settable, and only into the user-scope file. It is the argument vector
+# of that same program, which is where a `--proxy-server=https://user:pass@host` or
+# a `--load-extension` goes — committing one is the same act as committing the
+# binary, one word further along. `io config set --scope project` refuses it and
+# `/config` does not offer the scope.
+#
+#   binary        the browser executable. ABSENT resolves it from io-harness's own
+#                 ordered list of well-known names, which is documented — so you
+#                 read which binary will be picked rather than running it to find
+#                 out.
+#   args          extra arguments, a list. Written from the shell as the remaining
+#                 words after `--`, because they begin with a dash and io's own
+#                 flags are spelled the same way:
+#                 `io config set app.io-cli.browser.args -- --disable-gpu`.
+#   headless      true or false.
+#   width/height  the viewport, in whole pixels.
+#   timeout_secs  a whole number of seconds for one navigation.
+#
 # [app.io-cli.browser]
 # binary = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# args = ["--disable-gpu"]
 # headless = true
+# width = 1280
+# height = 800
+# timeout_secs = 30
 
 # Where the prices above came from (0.22.0). The rates themselves are io-harness's
 # and live in [prices]; this is the bookkeeping io-harness does not model, in the
@@ -777,6 +873,7 @@ fleet = "ctrl+f"
 #
 # [app.io-cli.prices]
 # source_url = "https://openrouter.ai/api/v1/models"
+# models = 417
 
 # --- what "done" means for this repository (0.24.0) -------------------------
 #
@@ -811,10 +908,17 @@ fleet = "ctrl+f"
 # program, not a shell line: io-harness checks argv[0] against this session's
 # `exec` policy and runs it without a shell, so `&&`, a pipe and a glob are not
 # available and were never going to be. A scalar written here — `command = "cargo
-# test"` — is a value io-harness cannot read back, which is why it is the one key
-# in io-cli's whole catalogue with a list of its own rather than being lumped in
-# with free text. `io config set app.io-cli.gates.command cargo test --all-features`
-# takes the words after the key and writes them as the array.
+# test"` — is a value io-harness cannot read back, which is why it is one of the
+# two keys in io-cli's catalogue with a list of its own rather than being lumped
+# in with free text. `[app.io-cli.browser] args` is the other, since 0.40.0. `io config set app.io-cli.gates.command -- cargo test --all-features`
+# takes the words after the `--` and writes them as the array.
+#
+# THE `--` IS LOAD-BEARING AND THIS LINE DID NOT CARRY IT UNTIL 0.40.0. A command
+# line routinely contains a word beginning with a dash, io's own flags are spelled
+# the same way, and the parser refused `--all-features` as a flag it does not take
+# — so the worked example this file has shipped since 0.24.0 had never run. `--` is
+# the same separator `/mcp add <name> -- <command>` uses, and everything after it
+# is copied through as text.
 #
 # `command` IS ALWAYS A CONCRETE ARGV. An empty list is refused, and an absent one
 # is not a criterion at all — this key never means "work it out for me".
