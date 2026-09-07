@@ -159,17 +159,29 @@ fn f2_initialize_answers_protocol_version_one_and_needs_no_authentication() {
         "no authentication step is required of the client",
     );
 
-    // Everything omitted is unsupported by the specification's own rule, so the
-    // three prompt capabilities being present and false is a statement rather
-    // than an oversight.
+    // Everything omitted is unsupported by the specification's own rule, so a
+    // prompt capability being present and false is a statement rather than an
+    // oversight — and one being true is a promise `tests/acp.rs` keeps this
+    // adapter to below.
     let prompt = &result["agentCapabilities"]["promptCapabilities"];
-    for name in ["image", "audio", "embeddedContext"] {
+    for name in ["image", "embeddedContext"] {
         assert_eq!(
             prompt[name],
-            json!(false),
-            "`{name}` is not carried into a run yet and must not be promised",
+            json!(true),
+            "`{name}` reaches a run from 0.40.0 and the client has no other way to \
+             learn it may send one",
         );
     }
+    // **`audio` stays false, and io-harness is the reason.** `Media` has an image
+    // media type and nothing else, and the crate renders an audio file as a named
+    // non-attachment — so there is nothing one layer down to carry the bytes,
+    // whatever this adapter does. A capability declared here would be a promise
+    // this product cannot keep.
+    assert_eq!(
+        result["agentCapabilities"]["promptCapabilities"]["audio"],
+        json!(false),
+        "io-harness carries no audio, so declaring it would be a promise io cannot keep",
+    );
     // **`true` since 0.39.0.** It was false because the correspondence between an
     // ACP session id and a stored conversation had to be designed rather than
     // guessed; the design turned out to be the one the id already carried, since
@@ -1852,5 +1864,126 @@ async fn f11_a_response_naming_an_unknown_id_is_dropped() {
     assert!(
         answer.await.is_ok(),
         "the correlator still settles its own ids"
+    );
+}
+
+/// **F7 — ACP carries an embedded resource and an image.**
+///
+/// The text half is io-cli's alone: an editor that sends the file the user has
+/// open sends it as `resource`, with the text already in the frame, and through
+/// 0.39.0 the block was skipped silently — so the model was asked about a file it
+/// had never been given and nothing said so.
+///
+/// Sabotage: drop the `resource` arm from `acp::prompt_text`. The first assertion
+/// goes red and the plain-text one stays green, which is what separates "the fold
+/// works" from "there was text in the frame anyway".
+#[test]
+fn f7_an_embedded_resource_reaches_the_prompt() {
+    let params = json!({
+        "sessionId": "io-1",
+        "prompt": [
+            { "type": "text", "text": "why does this fail?" },
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///w/src/lib.rs",
+                    "mimeType": "text/x-rust",
+                    "text": "fn main() { panic!() }",
+                },
+            },
+            { "type": "resource_link", "uri": "file:///w/README.md", "name": "README.md" },
+        ],
+    });
+
+    let folded = acp::prompt_text(&params).expect("a prompt with text in it");
+    assert!(
+        folded.contains("why does this fail?"),
+        "the typed question is still the prompt: {folded:?}",
+    );
+    assert!(
+        folded.contains("fn main() { panic!() }"),
+        "an embedded resource's text has to reach the model, or the client attached \
+         a file to nothing: {folded:?}",
+    );
+    assert!(
+        folded.contains("file:///w/src/lib.rs"),
+        "the resource is named as well as quoted, so the model can tell which file \
+         it is reading: {folded:?}",
+    );
+    // A link carries no text, only a locator. It is folded as the mention it is
+    // and never read here — reading it would be a file access outside the
+    // session's own policy, made by the adapter instead of by the agent.
+    assert!(
+        folded.contains("README.md (file:///w/README.md)"),
+        "a resource_link is folded as a mention: {folded:?}",
+    );
+
+    // A prompt of nothing but blocks this adapter does not fold is still not a
+    // prompt, which is what the caller's `InvalidParams` rests on.
+    assert!(acp::prompt_text(&json!({ "prompt": [] })).is_none());
+    assert!(
+        acp::prompt_text(&json!({ "prompt": [{ "type": "audio", "data": "AA==" }] })).is_none(),
+    );
+}
+
+/// **F7 — an image block reaches the contract as a `Media` with its type and
+/// bytes.**
+///
+/// Through `Media::attach`, which is the same door `/attach` uses — so an ACP
+/// image gets io-harness's media-type table, its pixel-bomb guard and its byte
+/// bound. Constructing a `Media` out of the frame's two fields would have been
+/// shorter and skipped all three.
+///
+/// Sabotage: return an empty vector from `acp::prompt_images`. The first
+/// assertion goes red.
+#[test]
+fn f7_an_image_block_becomes_media_and_a_bad_one_is_said_rather_than_swallowed() {
+    // A 1×1 PNG, base64 as a client would send it.
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    let (images, refused) = acp::prompt_images(&json!({
+        "prompt": [
+            { "type": "text", "text": "what is in this?" },
+            { "type": "image", "mimeType": "image/png", "data": PNG },
+        ],
+    }));
+    assert_eq!(images.len(), 1, "one image block is one attachment");
+    assert_eq!(
+        images[0].media_type, "image/png",
+        "the media type reaches the provider boundary as the client declared it",
+    );
+    assert_eq!(
+        images[0].base64, PNG,
+        "a png passes through byte-identically rather than being re-encoded",
+    );
+    assert!(refused.is_empty(), "nothing was refused: {refused:?}");
+
+    // What cannot be taken is said, and the rest of the prompt survives it. An
+    // editor that attached one unreadable screenshot must not lose its question.
+    let (images, refused) = acp::prompt_images(&json!({
+        "prompt": [
+            { "type": "image", "mimeType": "image/svg+xml", "data": "PHN2Zy8+" },
+            { "type": "image", "mimeType": "image/png", "data": "not base64!" },
+            { "type": "image", "mimeType": "image/png" },
+        ],
+    }));
+    assert!(images.is_empty());
+    assert_eq!(
+        refused.len(),
+        3,
+        "each block that could not be taken says so: {refused:?}",
+    );
+    assert!(
+        refused[0].contains("SVG"),
+        "the refusal is io-harness's own sentence, which names the format and the \
+         conversion that fixes it: {refused:?}",
+    );
+    assert!(
+        refused[1].contains("base64"),
+        "a body that is not base64 is named as that rather than as a bad image: {refused:?}",
+    );
+    assert!(
+        refused[2].contains("`data`"),
+        "a block with no data at all says which field is missing: {refused:?}",
     );
 }

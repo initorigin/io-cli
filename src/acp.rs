@@ -514,9 +514,20 @@ impl Default for AgentCapabilities {
         Self {
             load_session: true,
             prompt_capabilities: PromptCapabilities {
-                image: false,
+                // Both true from 0.40.0. `image` is `Media::attach` behind a
+                // base64 decode; `embeddedContext` is text folded into the
+                // prompt. Neither is a new seam — see [`prompt_text`] and
+                // [`prompt_images`].
+                image: true,
+                embedded_context: true,
+                // **`audio` stays false, and io-harness is the reason rather
+                // than an unfinished task.** `Media` has an image media type and
+                // nothing else (`IMAGE_MEDIA_TYPES` is its whole vocabulary), and
+                // the crate renders an audio file as a named non-attachment. A
+                // capability declared here is a promise this product cannot keep
+                // whatever it does, because what would carry the bytes does not
+                // exist one layer down.
                 audio: false,
-                embedded_context: false,
             },
         }
     }
@@ -1256,7 +1267,24 @@ impl<P: io_harness::Provider> Editing<'_, P> {
                     ErrorCode::InvalidParams,
                     "a prompt carries at least one text content block".to_string(),
                 ))?;
-                let reason = self.run(&session_id, goal).await;
+                // **Refused images are said, never swallowed.** They go out as
+                // agent-message text on the session's own stream, because a client
+                // that attached a screenshot and got an answer written without it
+                // has no other way to learn that happened.
+                let (images, refused) = prompt_images(params);
+                for sentence in refused {
+                    let _ = self.outbound.send(Outgoing::Notification {
+                        method: "session/update".into(),
+                        params: json!({
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": { "type": "text", "text": sentence },
+                            },
+                        }),
+                    });
+                }
+                let reason = self.run(&session_id, goal, images).await;
                 Ok(json!({ "stopReason": reason }))
             }
             _ => Err((
@@ -1278,7 +1306,12 @@ impl<P: io_harness::Provider> Editing<'_, P> {
     }
 
     /// Drive one turn, streaming updates, and answer with its stop reason.
-    async fn run(&mut self, session_id: &str, goal: String) -> &'static str {
+    async fn run(
+        &mut self,
+        session_id: &str,
+        goal: String,
+        images: Vec<io_harness::Media>,
+    ) -> &'static str {
         let (reporter, shared) = Reporter::new(session_id, self.outbound.clone());
         self.cancel = Some(std::sync::Arc::clone(&shared.cancelled));
 
@@ -1290,6 +1323,13 @@ impl<P: io_harness::Provider> Editing<'_, P> {
         let Some(mut session) = self.sessions.remove(session_id) else {
             return "refusal";
         };
+        // **The same call `/attach` makes, and it is io-harness that carries them
+        // onto the turn.** `Session::attach` holds the images for the next turn
+        // only, which is exactly what an ACP prompt means: the client sent them
+        // with this question and not with the conversation.
+        if !images.is_empty() {
+            session.attach(images);
+        }
         let contract = crate::exec::contract(self.config, &session, goal, None);
         let run_id = session.id();
         let outcome = session
@@ -1348,21 +1388,140 @@ impl<P: io_harness::Provider> Editing<'_, P> {
 
 /// The text of a `session/prompt`, joined from its content blocks.
 ///
-/// ACP carries a prompt as a list of typed blocks. 0.36.0 declares no image,
-/// audio or embedded-context capability, so a conforming client sends text —
-/// and anything else is skipped rather than rendered as a placeholder the model
-/// would try to read.
+/// ACP carries a prompt as a list of typed blocks. **From 0.40.0 the embedded
+/// ones are folded in rather than dropped**: an editor that sends a file the user
+/// has open sends it as `resource`, with the text already in the frame, and
+/// through 0.39.0 io-cli skipped it silently — so the model was asked about a file
+/// it had not been given and the operator had no way to see that the attachment
+/// had gone nowhere. A `resource_link` carries no text, only a locator, and is
+/// folded as the mention it is: naming a path the agent may read for itself is
+/// what the block means.
+///
+/// **io-cli-side entirely.** Nothing about this needs io-harness: the text is in
+/// the frame and the prompt is a string.
+///
+/// An `image` block is not text and is not folded here — see [`prompt_images`].
+/// Anything else is skipped rather than rendered as a placeholder the model would
+/// try to read.
 pub fn prompt_text(params: &Value) -> Option<String> {
     let blocks = params.get("prompt")?.as_array()?;
-    let text: Vec<&str> = blocks
-        .iter()
-        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect();
-    if text.is_empty() {
+    let mut parts: Vec<String> = Vec::new();
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    parts.push(text.to_string());
+                }
+            }
+            // `resource` nests the content one level down, and the specification
+            // allows either a text resource or a blob. Only the text one has
+            // anything a prompt can carry; a blob is skipped for the same reason
+            // an unknown block is.
+            Some("resource") => {
+                let resource = block.get("resource");
+                let text = resource.and_then(|r| r.get("text")).and_then(Value::as_str);
+                let uri = resource.and_then(|r| r.get("uri")).and_then(Value::as_str);
+                if let Some(text) = text {
+                    parts.push(match uri {
+                        Some(uri) => format!("{uri}:\n{text}"),
+                        None => text.to_string(),
+                    });
+                }
+            }
+            // A link is a locator and nothing else. Folded as a mention rather
+            // than read here: reading it would be a file access outside the
+            // session's own policy, made by the adapter instead of by the agent
+            // through the tool the policy governs.
+            Some("resource_link") => {
+                if let Some(uri) = block.get("uri").and_then(Value::as_str) {
+                    parts.push(match block.get("name").and_then(Value::as_str) {
+                        Some(name) => format!("{name} ({uri})"),
+                        None => uri.to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    if parts.is_empty() {
         return None;
     }
-    Some(text.join("\n"))
+    Some(parts.join("\n"))
+}
+
+/// The images of a `session/prompt`, and the ones that could not be taken.
+///
+/// **Through `Media::attach`, which is the same door `/attach` uses** — so an ACP
+/// image gets io-harness's own media-type table, its pixel-bomb guard, its
+/// per-image byte bound and its conversion of the five formats a provider will not
+/// take. Constructing a `Media` out of the frame's two fields would have been
+/// shorter and would have skipped every one of those.
+///
+/// A block that cannot be taken comes back as a sentence rather than failing the
+/// prompt: the rest of what the client sent is still a prompt, and an editor that
+/// attached one unreadable screenshot should not have its question thrown away.
+pub fn prompt_images(params: &Value) -> (Vec<io_harness::Media>, Vec<String>) {
+    let (mut images, mut refused) = (Vec::new(), Vec::new());
+    let Some(blocks) = params.get("prompt").and_then(Value::as_array) else {
+        return (images, refused);
+    };
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) != Some("image") {
+            continue;
+        }
+        let media_type = block
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let Some(data) = block.get("data").and_then(Value::as_str) else {
+            refused.push("an image block carried no `data`".to_string());
+            continue;
+        };
+        let Some(bytes) = from_base64(data) else {
+            refused.push(format!(
+                "an image block's `data` is not standard base64, so its {media_type} \
+                 could not be read"
+            ));
+            continue;
+        };
+        match io_harness::Media::attach(media_type, &bytes) {
+            Ok(media) => images.push(media),
+            Err(error) => refused.push(error.to_string()),
+        }
+    }
+    (images, refused)
+}
+
+/// Standard base64, no line breaks, padding optional.
+///
+/// **Fifteen lines rather than a crate, and that is the argument for it.** The
+/// dependency set is ten names and one of this release's own criteria is that it
+/// stays ten; a decoder over a 64-entry alphabet is table lookup and shifting, and
+/// what it buys is that the bytes go through `Media::attach` — io-harness's real
+/// door, with its bounds and its conversions — instead of being poured into a
+/// `Media`'s fields with no check at all.
+///
+/// Rejects anything outside the alphabet, `=` included except as trailing
+/// padding, so a `data:` URL or a whitespace-wrapped body is refused by name
+/// rather than decoded into rubbish.
+fn from_base64(text: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let body = text.trim_end_matches('=');
+    if body.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() / 4 * 3);
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for byte in body.bytes() {
+        let value = ALPHABET.iter().position(|c| *c == byte)? as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    Some(out)
 }
 
 /// The approver for an ACP turn.

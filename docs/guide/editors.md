@@ -113,6 +113,20 @@ so loading is reopening that conversation; its turns are replayed to you as the 
 `session/update` notifications a live turn sends, which is why your client renders a loaded
 conversation with the code it already renders a running one with.
 
+**Attaching what you are looking at.** From 0.40.0 `image` and `embeddedContext` are declared, so a
+client will offer both. An `image` block reaches the model as an attachment on that one turn, put
+through the same door `/attach` uses — io-harness's own media-type table, its size bound and its
+conversion of the formats a provider will not take — and a block it cannot take is reported back to
+you as a message rather than dropped, so a screenshot that did not arrive says so instead of
+producing an answer written without it. A `resource` block is folded into the prompt with its uri,
+which is how an editor hands over the file you have open; a `resource_link` is folded as the mention
+it is, and the agent reads it for itself through the tool your policy governs rather than the adapter
+reading it around that policy.
+
+`audio` is declared **false** and will stay false until io-harness carries audio: `Media` has an
+image media type and nothing else, and the crate renders an audio file as a named non-attachment.
+Declaring it would be a promise `io` cannot keep whatever this adapter does.
+
 What is replayed is what was **said** — your prompts and the agent's replies, along the path the
 conversation actually took. A turn you rewound is not replayed: undoing moves the head without
 deleting the turn, so the stored tree still contains it, and showing it back to you would be

@@ -1101,6 +1101,40 @@ pub fn widens_workspace(key: &str, value: &str) -> bool {
     Config::from_toml(&document).is_err_and(|refusal| refusal.to_string().contains(WIDENS))
 }
 
+/// The scopes a key may actually be written to with this value, each with its
+/// file.
+///
+/// **The two `/config` doors disagreed, and this is what makes them agree**
+/// (0.40.0). The value arm has checked [`widens_workspace`] since 0.28.0 and
+/// refuses before it writes; the scope arm offered all three files and let
+/// `write`'s round trip refuse two of them afterwards. So an operator choosing
+/// `sandbox.mode = "full-access"` was shown `io.toml` and `io.local.toml` as
+/// places to put it, picked one, and met a refusal the surface already knew was
+/// coming — and the refusal is not of the key but of *the whole file*, which is
+/// the worst moment to learn the rule.
+///
+/// The predicate is a pure function of the pair and both are in hand when the
+/// picker is built, so a scope that will be refused is not offered at all.
+///
+/// **`configure::write`'s round trip stays, and it is not redundant.** It is what
+/// restores "absent" rather than "empty" for every refusal this predicate does not
+/// model — the refused *sections*, an absolute `run.skills`, anything io-harness
+/// tightens next. A predicate that hid the backstop would be a copy of the rules
+/// again, which is exactly what [`widens_workspace`] was rewritten to stop being.
+#[must_use]
+pub fn writable_scopes(
+    root: &std::path::Path,
+    key: &str,
+    value: &str,
+) -> Vec<(Scope, std::path::PathBuf)> {
+    let widening = widens_workspace(key, value);
+    [Scope::User, Scope::Project, Scope::Local]
+        .into_iter()
+        .filter(|scope| !(widening && matches!(scope, Scope::Project | Scope::Local)))
+        .filter_map(|scope| scope_path(root, scope).map(|path| (scope, path)))
+        .collect()
+}
+
 /// The `/config` row that re-reads the price catalogue.
 ///
 /// **A row rather than a key, because it is an act and not a setting.** Every

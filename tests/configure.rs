@@ -702,6 +702,107 @@ fn f1_a_typed_key_still_refuses_a_value_and_an_absent_key_still_loads() {
     );
 }
 
+/// **F6 — the scope picker offers no scope the write will be refused for.**
+///
+/// The two `/config` doors disagreed: the value arm has checked
+/// `widens_workspace` since 0.28.0, and the scope arm offered all three files and
+/// let the round trip refuse two of them afterwards — so an operator was shown
+/// `io.toml` and `io.local.toml`, picked one, and met a refusal the surface
+/// already knew was coming. And the refusal is not of the key but of the whole
+/// file.
+///
+/// Sabotage: drop the filter from `configure::writable_scopes`. The first arm goes
+/// red naming the scopes it should not have offered.
+#[test]
+fn f6_the_scope_picker_offers_no_scope_the_write_will_be_refused_for() {
+    let s = scopes("", "", "");
+    let root = s.root.path();
+
+    // A widening pair: the user scope and nothing else.
+    for (key, value) in [
+        ("sandbox.mode", "full-access"),
+        ("sandbox.allow_network", "true"),
+        ("policy.defaults.write", "allow"),
+        ("sandbox.limits.max_processes", "0"),
+    ] {
+        let offered: Vec<Scope> = configure::writable_scopes(root, key, value)
+            .into_iter()
+            .map(|(scope, _)| scope)
+            .collect();
+        assert_eq!(
+            offered,
+            vec![Scope::User],
+            "`{key} = {value}` widens the boundary, so a file inside the workspace \
+             may not carry it — and offering one is offering a row whose write \
+             io-harness refuses, taking the whole file with it",
+        );
+    }
+
+    // A narrowing value of the same key, and an ordinary one: all three.
+    for (key, value) in [("sandbox.mode", "read-only"), ("run.max_steps", "500")] {
+        let offered: Vec<Scope> = configure::writable_scopes(root, key, value)
+            .into_iter()
+            .map(|(scope, _)| scope)
+            .collect();
+        assert_eq!(
+            offered,
+            vec![Scope::User, Scope::Project, Scope::Local],
+            "`{key} = {value}` is legal in every scope and the picker must offer \
+             every scope; narrowing in a workspace file is what the scope is for",
+        );
+    }
+}
+
+/// **F6's other half — the round trip is still the backstop.**
+///
+/// The one to keep. `writable_scopes` models widening and nothing else, so every
+/// refusal it does not model — a refused section, an absolute `run.skills`,
+/// whatever io-harness tightens next — still has to be caught by `write` reading
+/// the file back and restoring what was there. A criterion that asserted only the
+/// predicate would pass just as well over a `write` that stopped checking.
+///
+/// **`[browser]` names a program to execute**, so io-harness refuses the section
+/// from any file inside the workspace — and it is not a widening *value*, so
+/// `widens_workspace` answers false for it and the picker offers all three scopes.
+/// That is the hole, and this is what covers it.
+#[test]
+fn f6_a_refusal_the_predicate_does_not_model_still_restores_absence() {
+    let s = scopes("", "", "");
+    let root = s.root.path();
+
+    // The predicate does not see it.
+    assert!(
+        !configure::widens_workspace("browser.binary", "/usr/bin/chromium"),
+        "a refused section is not a widening value, which is exactly why the round \
+         trip cannot be dropped",
+    );
+
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+    let refused = configure::write(
+        root,
+        Scope::Project,
+        &[io_cli::edit::Edit::set(
+            "browser.binary",
+            "\"/usr/bin/chromium\"",
+        )],
+    );
+    std::env::remove_var("IO_CONFIG");
+
+    assert!(
+        refused.is_err(),
+        "io-harness refuses `[browser]` from a file inside the workspace and the \
+         write reported success",
+    );
+    // Absent, not empty. The file did not exist before the call, so what it goes
+    // back to is "not there" — an empty `io.toml` left behind is a project file
+    // this operator never wrote.
+    assert!(
+        !root.join("io.toml").exists(),
+        "a refused write left a project file behind that the operator never wrote",
+    );
+}
+
 // --- F3: the write lands in the scope that was picked, and takes effect -------
 
 #[test]

@@ -10771,14 +10771,10 @@ fn value_rows(
 }
 
 fn write_where(root: &std::path::Path, key: String, value: String) -> (Picker, Pick) {
-    let paths: Vec<(io_harness::config::Scope, std::path::PathBuf)> = [
-        io_harness::config::Scope::User,
-        io_harness::config::Scope::Project,
-        io_harness::config::Scope::Local,
-    ]
-    .into_iter()
-    .filter_map(|scope| io_cli::configure::scope_path(root, scope).map(|p| (scope, p)))
-    .collect();
+    // **Only the scopes the write will be taken in (0.40.0).** The decision is
+    // `configure::writable_scopes`, in the library, because nothing under `tests/`
+    // links this file — a filter written here would be one no gate could reach.
+    let paths = io_cli::configure::writable_scopes(root, &key, &value);
 
     let rows: Vec<Row> = paths
         .iter()
