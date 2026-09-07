@@ -34,9 +34,14 @@ deterministic act.
 reads that value rather than picking one. io-harness hands the name and email
 from that section to git on the commit invocation itself, and the section always
 resolves to something, so a repository with no identity of its own is told which
-default io-harness will use. You are told before the turn is spent, because the
-author of a commit is the one thing about it that cannot be corrected afterwards
-without rewriting history.
+default io-harness will use. **That default is `io-harness agent
+<agent@io-harness.invalid>`** — named here rather than left to be discovered in
+`git log`, because until you have seen it you have no way to know what your
+history will carry. The address is deliberately unreachable: `.invalid` is
+reserved by RFC 2606 precisely so a synthetic address cannot accidentally be
+somebody's. You are told before the turn is spent, because the author of a commit
+is the one thing about it that cannot be corrected afterwards without rewriting
+history.
 
 ### The refusal this repairs — and the half of it that is now fixed upstream
 

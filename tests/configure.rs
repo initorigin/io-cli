@@ -533,6 +533,390 @@ fn f8_every_documented_harness_key_deserialises() {
     }
 }
 
+/// **F1 — every documented `[app.io-cli]` key round-trips through the shell door.**
+///
+/// The thirteen keys 0.40.0 made settable, each written the way `io config set`
+/// writes it, read back naming its scope, and — the part that is the whole point —
+/// leaving `settings::stored` with no warning. That warning is the failure this
+/// release exists to stop: io-harness reads `[app.io-cli]` as one opaque value, so
+/// a single mis-typed key does not fail that key, it fails the section, and the
+/// session reverts theme, keybindings, containment, gates and routing to defaults
+/// behind one line.
+///
+/// Written as a table of thirteen rather than thirteen tests because the property
+/// is the same for each and the list is the thing that must not go short — and it
+/// is checked against `CATALOGUE` at the end, so a key added to the catalogue and
+/// not to this table fails here rather than shipping unexercised.
+///
+/// Sabotage: give any one of them back to the `[app.io-cli]` fall-through by
+/// removing its `kind_of` arm. `source_for` quotes it, the value is a string where
+/// a number or a flag belongs, and this goes red on the warning rather than on the
+/// value — which is the failure an operator actually met.
+#[test]
+fn f1_every_settable_app_key_round_trips_through_the_shell_door() {
+    // The containment table's first four fields are required by io-harness — there
+    // is no safe default for somebody else's token ceiling — so the fixture starts
+    // with a complete one. A file holding `max_depth` alone is a file that does not
+    // deserialize, and testing against one would confuse this release's defect with
+    // that one.
+    let s = scopes(
+        "[app.io-cli]\ntheme = \"dark\"\n\n[app.io-cli.containment]\n\
+         max_total_agents = 12\nmax_concurrent_agents = 4\nmax_depth = 2\n\
+         max_total_tokens = 200000\n",
+        "",
+        "",
+    );
+    let written: &[(&str, &[&str])] = &[
+        ("app.io-cli.reference_catalogue", &["false"]),
+        ("app.io-cli.prices.models", &["417"]),
+        ("app.io-cli.browser.headless", &["true"]),
+        ("app.io-cli.browser.width", &["1280"]),
+        ("app.io-cli.browser.height", &["800"]),
+        ("app.io-cli.browser.timeout_secs", &["30"]),
+        (
+            "app.io-cli.browser.args",
+            &["--disable-gpu", "--no-sandbox"],
+        ),
+        ("app.io-cli.containment.max_total_duration", &["3600"]),
+        ("app.io-cli.containment.max_total_agents", &["24"]),
+        ("app.io-cli.containment.max_concurrent_agents", &["6"]),
+        ("app.io-cli.containment.max_depth", &["3"]),
+        ("app.io-cli.containment.max_total_tokens", &["400000"]),
+        ("app.io-cli.containment.max_total_cost", &["5"]),
+    ];
+
+    for (key, words) in written {
+        let words: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
+        let source = configure::source_for(key, &words).unwrap_or_else(|e| {
+            panic!("`{key}` is documented and `io config set` refuses it: {e}")
+        });
+        // The environment guard is held for the write alone and released before
+        // the read: `Scopes::config` takes the same lock, and it is not reentrant.
+        {
+            let _guard = env_lock();
+            std::env::set_var("IO_CONFIG", &s.user);
+            let written = configure::write(
+                s.root.path(),
+                Scope::User,
+                &[io_cli::edit::Edit::set(*key, source.as_str())],
+            );
+            std::env::remove_var("IO_CONFIG");
+            written.unwrap_or_else(|e| panic!("the write of `{key}` was refused: {e}"));
+        }
+
+        let config = s.config();
+
+        // The session's own read. `None` is no warning, and no warning is the
+        // whole criterion: the section deserialized.
+        let (stored, warning) = io_cli::settings::stored(&config);
+        assert!(
+            warning.is_none(),
+            "after `io config set {key} {}`, a session reports: {warning:?}",
+            words.join(" "),
+        );
+        assert!(
+            stored.is_some(),
+            "after `io config set {key}`, [app.io-cli] read back as nothing at all",
+        );
+
+        // `io config get`'s answer: the value, and the scope that decided it.
+        let setting = configure::setting(&config, key);
+        assert!(
+            setting.value.is_some(),
+            "`io config get {key}` answers nothing for a key just written",
+        );
+        assert!(
+            matches!(
+                setting.decided,
+                configure::Decided::File {
+                    scope: Scope::User,
+                    ..
+                }
+            ),
+            "`{key}` was written to the user scope and `io config get` says it was decided \
+             by {:?}",
+            setting.decided,
+        );
+    }
+
+    // **Every key 0.40.0 made settable, and the filter used to miss two of them.**
+    // It selected the containment and browser rows by prefix, which is eleven of
+    // the thirteen — `reference_catalogue` and `prices.models`, the two the
+    // release calls the sharpest, could have been dropped from the table above
+    // without failing anything while this comment claimed otherwise. Named
+    // outright now: a list derived from a prefix is a list that quietly changes
+    // shape when a key is added under a different one. Found by the adversarial
+    // review.
+    for key in [
+        "app.io-cli.reference_catalogue",
+        "app.io-cli.prices.models",
+        "app.io-cli.browser.headless",
+        "app.io-cli.browser.width",
+        "app.io-cli.browser.height",
+        "app.io-cli.browser.timeout_secs",
+        "app.io-cli.browser.args",
+        "app.io-cli.containment.max_total_agents",
+        "app.io-cli.containment.max_concurrent_agents",
+        "app.io-cli.containment.max_depth",
+        "app.io-cli.containment.max_total_tokens",
+        "app.io-cli.containment.max_total_cost",
+        "app.io-cli.containment.max_total_duration",
+    ] {
+        assert!(
+            configure::CATALOGUE.contains(&key),
+            "`{key}` is one of the thirteen this release made settable and it is not in \
+             the catalogue",
+        );
+        assert!(
+            written.iter().any(|(named, _)| *named == key),
+            "`{key}` is one of the thirteen and this gate never writes it",
+        );
+    }
+}
+
+/// **F1 — an excluded key is refused at the writer, not merely absent from a
+/// list.**
+///
+/// `configure::EXCLUDED` was added as the other half of the settings-struct walk
+/// and, as the adversarial review found, it enforced nothing: `kind_of` answers
+/// `None` for `app.io-cli.browser.binary`, so both `/config` doors fell through to
+/// the arm that quotes any unrecognised `app.io-cli.*` word and produced a
+/// perfectly valid string for an `Option<String>` field. `io config set
+/// app.io-cli.browser.binary /usr/bin/x --scope project` succeeded and took
+/// effect — the exact act the entry's own reason says must not be offered, in the
+/// one section io-harness reads opaquely and never widening-checks.
+///
+/// The reason strings had no reader at all. Now they are what the operator is
+/// told, which is also what stops them going stale.
+///
+/// Sabotage: delete the `EXCLUDED` lookup from `source_for`. Every row goes red.
+#[test]
+fn f1_an_excluded_key_is_refused_by_the_writer_with_its_own_reason() {
+    for (key, why) in configure::EXCLUDED {
+        let refusal = configure::source_for(key, &["anything".to_string()])
+            .expect_err("an excluded key is not written from either door");
+        assert!(
+            refusal.contains(key),
+            "the refusal for `{key}` does not name it: {refusal}",
+        );
+        assert!(
+            refusal.contains(why),
+            "the refusal for `{key}` does not carry the reason `EXCLUDED` records, so the \
+             reason is data nothing reads and nothing keeps true: {refusal}",
+        );
+    }
+
+    // The one that matters most, spelled out: it is a program path, in the section
+    // io-harness cannot widening-check.
+    let refusal = configure::source_for(
+        "app.io-cli.browser.binary",
+        &["/usr/bin/chromium".to_string()],
+    )
+    .expect_err("a program path is not set from a shell door");
+    assert!(refusal.contains("names a program to execute"), "{refusal}");
+}
+
+/// **F6 — the browser's argument vector is written to the user scope alone.**
+///
+/// The same argument the release wrote down for `binary` and then did not apply
+/// one field along. `args` is where a `--proxy-server=https://user:pass@host` or a
+/// `--load-extension` goes; io-harness redacts it from its own `Debug` for exactly
+/// that shape, and refuses the whole `[browser]` section from any file inside the
+/// workspace — a rule it cannot apply to `[app.io-cli.browser]`, which it reads as
+/// one opaque value. Committing the arguments is the same act as committing the
+/// binary, one word further along.
+///
+/// Sabotage: empty `configure::USER_SCOPE_ONLY`. Both halves go red.
+#[test]
+fn f6_the_browser_argument_vector_is_user_scope_only() {
+    let s = scopes("", "", "");
+
+    let offered: Vec<Scope> = configure::writable_scopes(
+        s.root.path(),
+        "app.io-cli.browser.args",
+        "[\"--disable-gpu\"]",
+    )
+    .into_iter()
+    .map(|(scope, _)| scope)
+    .collect();
+    assert_eq!(
+        offered,
+        vec![Scope::User],
+        "the `/config` scope picker offers a workspace file for the browser's arguments",
+    );
+
+    // And the shell door refuses the scope by name rather than writing it.
+    let refused = io_cli::manage::parse(&io_cli::manage::tokens(
+        "config set app.io-cli.browser.args --scope project -- --proxy-server=http://x",
+    ))
+    .expect_err("a workspace scope is refused for the browser's arguments");
+    assert!(
+        refused.contains("argument vector of a program"),
+        "the refusal has to say why, or it reads as an arbitrary restriction: {refused}",
+    );
+
+    // Every entry of the list is refused the same way, so a second one added later
+    // inherits the gate rather than needing its own.
+    for (key, _) in configure::USER_SCOPE_ONLY {
+        assert!(
+            configure::user_scope_only(key),
+            "`{key}` is on the list and the predicate does not answer for it",
+        );
+        assert!(
+            configure::why_user_scope_only(key).is_some(),
+            "`{key}` is refused with no reason to give the operator",
+        );
+    }
+}
+
+/// **F1's negative half — a bad value is still refused, and one absent key does
+/// not fail the section.**
+///
+/// The controls that matter. Typing a key is worth nothing if the type is not
+/// enforced, and the release would be a regression if giving thirteen keys a kind
+/// made a file holding twelve of them stop parsing.
+#[test]
+fn f1_a_typed_key_still_refuses_a_value_and_an_absent_key_still_loads() {
+    for (key, word) in [
+        ("app.io-cli.reference_catalogue", "yes"),
+        ("app.io-cli.browser.headless", "on"),
+        ("app.io-cli.browser.width", "wide"),
+        ("app.io-cli.containment.max_depth", "deep"),
+        ("app.io-cli.containment.max_total_duration", "an hour"),
+    ] {
+        let refusal = configure::source_for(key, &[word.to_string()]);
+        assert!(
+            refusal.is_err(),
+            "`{word}` is not a value `{key}` takes and it was accepted",
+        );
+    }
+
+    // A negative number where something is counted, which is the arm a `Kind`
+    // without a sign would have let through.
+    assert!(configure::source_for("app.io-cli.browser.width", &["-1".to_string()]).is_err());
+
+    // And the section still loads with one of the thirteen absent — every one of
+    // them is optional except the containment table's own required four.
+    let s = scopes(
+        "[app.io-cli]\ntheme = \"dark\"\nreference_catalogue = false\n\n\
+         [app.io-cli.browser]\nheadless = true\n",
+        "",
+        "",
+    );
+    let (stored, warning) = io_cli::settings::stored(&s.config());
+    assert!(
+        warning.is_none(),
+        "a file naming two keys warns: {warning:?}"
+    );
+    let stored = stored.expect("[app.io-cli] read back");
+    assert_eq!(stored.reference_catalogue, Some(false));
+    assert!(
+        stored.containment.is_none(),
+        "nothing invented a containment"
+    );
+}
+
+/// **F6 — the scope picker offers no scope the write will be refused for.**
+///
+/// The two `/config` doors disagreed: the value arm has checked
+/// `widens_workspace` since 0.28.0, and the scope arm offered all three files and
+/// let the round trip refuse two of them afterwards — so an operator was shown
+/// `io.toml` and `io.local.toml`, picked one, and met a refusal the surface
+/// already knew was coming. And the refusal is not of the key but of the whole
+/// file.
+///
+/// Sabotage: drop the filter from `configure::writable_scopes`. The first arm goes
+/// red naming the scopes it should not have offered.
+#[test]
+fn f6_the_scope_picker_offers_no_scope_the_write_will_be_refused_for() {
+    let s = scopes("", "", "");
+    let root = s.root.path();
+
+    // A widening pair: the user scope and nothing else.
+    for (key, value) in [
+        ("sandbox.mode", "full-access"),
+        ("sandbox.allow_network", "true"),
+        ("policy.defaults.write", "allow"),
+        ("sandbox.limits.max_processes", "0"),
+    ] {
+        let offered: Vec<Scope> = configure::writable_scopes(root, key, value)
+            .into_iter()
+            .map(|(scope, _)| scope)
+            .collect();
+        assert_eq!(
+            offered,
+            vec![Scope::User],
+            "`{key} = {value}` widens the boundary, so a file inside the workspace \
+             may not carry it — and offering one is offering a row whose write \
+             io-harness refuses, taking the whole file with it",
+        );
+    }
+
+    // A narrowing value of the same key, and an ordinary one: all three.
+    for (key, value) in [("sandbox.mode", "read-only"), ("run.max_steps", "500")] {
+        let offered: Vec<Scope> = configure::writable_scopes(root, key, value)
+            .into_iter()
+            .map(|(scope, _)| scope)
+            .collect();
+        assert_eq!(
+            offered,
+            vec![Scope::User, Scope::Project, Scope::Local],
+            "`{key} = {value}` is legal in every scope and the picker must offer \
+             every scope; narrowing in a workspace file is what the scope is for",
+        );
+    }
+}
+
+/// **F6's other half — the round trip is still the backstop.**
+///
+/// The one to keep. `writable_scopes` models widening and nothing else, so every
+/// refusal it does not model — a refused section, an absolute `run.skills`,
+/// whatever io-harness tightens next — still has to be caught by `write` reading
+/// the file back and restoring what was there. A criterion that asserted only the
+/// predicate would pass just as well over a `write` that stopped checking.
+///
+/// **`[browser]` names a program to execute**, so io-harness refuses the section
+/// from any file inside the workspace — and it is not a widening *value*, so
+/// `widens_workspace` answers false for it and the picker offers all three scopes.
+/// That is the hole, and this is what covers it.
+#[test]
+fn f6_a_refusal_the_predicate_does_not_model_still_restores_absence() {
+    let s = scopes("", "", "");
+    let root = s.root.path();
+
+    // The predicate does not see it.
+    assert!(
+        !configure::widens_workspace("browser.binary", "/usr/bin/chromium"),
+        "a refused section is not a widening value, which is exactly why the round \
+         trip cannot be dropped",
+    );
+
+    let _guard = env_lock();
+    std::env::set_var("IO_CONFIG", &s.user);
+    let refused = configure::write(
+        root,
+        Scope::Project,
+        &[io_cli::edit::Edit::set(
+            "browser.binary",
+            "\"/usr/bin/chromium\"",
+        )],
+    );
+    std::env::remove_var("IO_CONFIG");
+
+    assert!(
+        refused.is_err(),
+        "io-harness refuses `[browser]` from a file inside the workspace and the \
+         write reported success",
+    );
+    // Absent, not empty. The file did not exist before the call, so what it goes
+    // back to is "not there" — an empty `io.toml` left behind is a project file
+    // this operator never wrote.
+    assert!(
+        !root.join("io.toml").exists(),
+        "a refused write left a project file behind that the operator never wrote",
+    );
+}
+
 // --- F3: the write lands in the scope that was picked, and takes effect -------
 
 #[test]
@@ -937,19 +1321,82 @@ fn f1_only_three_keys_are_authored_text() {
     );
 }
 
-/// `app.io-cli.gates.command` is a list and not text.
+/// The two list keys are lists and not text.
 ///
-/// Sabotage: classify it as authored text. Under it this test fails, and the
+/// Sabotage: classify either as authored text. Under it this test fails, and the
 /// surface writes a bare string into a key io-harness reads as `Vec<String>` —
 /// a value the harness cannot read back at all.
+///
+/// **`app.io-cli.browser.args` is the second, and it needed no new arm anywhere**
+/// (0.40.0). It is the same act `app.io-cli.gates.command` has been since 0.24.0 —
+/// the remaining words are the value — so the release that made it settable added
+/// a catalogue row, a `kind_of` arm and a shape sentence, and touched no writer.
 #[test]
-fn f1_the_command_key_is_the_one_list() {
-    let lists: Vec<&str> = configure::CATALOGUE
+fn f1_the_list_keys_are_the_two_lists() {
+    let mut lists: Vec<&str> = configure::CATALOGUE
         .iter()
         .copied()
         .filter(|key| configure::kind_of(key) == Some(configure::Kind::List))
         .collect();
-    assert_eq!(lists, vec!["app.io-cli.gates.command"]);
+    lists.sort_unstable();
+    assert_eq!(
+        lists,
+        vec!["app.io-cli.browser.args", "app.io-cli.gates.command"]
+    );
+}
+
+/// `app.io-cli.containment.max_total_duration` is a duration, and no scalar is a
+/// value for it.
+///
+/// **This is the control the exclusion argument rests on, and it is a real round
+/// trip rather than a reading of serde's derive** (0.40.0). `Containment` holds
+/// `Option<Duration>` with no `#[serde(with)]` on it, so what deserializes is a
+/// struct of `secs` and `nanos` — which means the bare `60` an operator would
+/// type fails for exactly the reason the quoted `"60"` this release removes fails.
+/// The key is settable because `Kind::Duration` writes the table for them, and
+/// that is the one shape in the catalogue an operator is not asked to know.
+///
+/// Sabotage: give the key `Kind::Number { signed: false }`. `source_for` then
+/// writes a bare `60`, and the deserialization below refuses it.
+#[test]
+fn f1_the_wall_clock_ceiling_is_written_as_the_table_serde_reads() {
+    assert_eq!(
+        configure::kind_of("app.io-cli.containment.max_total_duration"),
+        Some(configure::Kind::Duration)
+    );
+    let source = configure::source_for(
+        "app.io-cli.containment.max_total_duration",
+        &["3600".to_string()],
+    )
+    .expect("a whole number of seconds is a value for it");
+
+    // Through io-cli's own settings type, because that is what fails at a session
+    // start when the section cannot be read — the failure this release exists to
+    // stop happening in silence.
+    let file = format!(
+        "max_total_agents = 12\nmax_concurrent_agents = 4\nmax_depth = 2\n\
+         max_total_tokens = 200000\nmax_total_duration = {source}\n"
+    );
+    let read: io_harness::Containment =
+        toml::from_str(&file).expect("the value io writes is a value io-harness reads back");
+    assert_eq!(
+        read.max_total_duration,
+        Some(std::time::Duration::from_secs(3_600))
+    );
+
+    // And the two spellings a person would reach for are both refused, which is
+    // why the key has a kind of its own rather than being a number.
+    for scalar in ["3600", "\"3600\""] {
+        let file = format!(
+            "max_total_agents = 12\nmax_concurrent_agents = 4\nmax_depth = 2\n\
+             max_total_tokens = 200000\nmax_total_duration = {scalar}\n"
+        );
+        assert!(
+            toml::from_str::<io_harness::Containment>(&file).is_err(),
+            "`{scalar}` is not a value io-harness reads as a duration, so writing one \
+             would fail the whole [app.io-cli] section behind a single warning line",
+        );
+    }
 }
 
 /// `prices.as_of` is written by machinery and is never offered for typing.

@@ -63,6 +63,15 @@ irreversible in front of something reviewable.
     `brew` reads a tap's **default branch**, which is `develop`, so the tap is live when that pull
     request merges and needs no `main` merge of its own.
 
+    **It is a step of the release, not an errand after it, and 0.39.0 is why this paragraph
+    exists.** That release shipped on 2026-09-06 and both files still named 0.38.2 — so for
+    everyone installing through `brew` or `scoop`, the release notes described a version they could
+    not get, and `release.yml`'s note that the tap follows "shortly after" was untrue for anyone
+    reading it. The release is not finished until this pull request is merged and a `brew install`
+    resolves to the version the notes name. `tests/packaging.rs` asserts the two files agree with
+    each other and name a released version; it cannot assert they name the *newest* one, because
+    the tree that would have to know is the tree that has not shipped yet.
+
 ## What the workflow builds
 
 `release.yml` builds four targets — `aarch64-apple-darwin`, `x86_64-apple-darwin`,

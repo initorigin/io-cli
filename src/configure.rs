@@ -182,6 +182,38 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.diff",
     "app.io-cli.glyphs",
     "app.io-cli.plain",
+    // Whether io asks a provider for its model catalogue at all. 0.39.0 shipped
+    // this as the way to turn that network call off and left it unsettable: the
+    // fall-through quoted it, `CliSettings` could not read `"false"` back, and the
+    // whole of `[app.io-cli]` failed behind one warning line. A key that is the
+    // documented escape hatch for a network call is the last key that may be
+    // unsettable, which is why it leads this release rather than closing it.
+    "app.io-cli.reference_catalogue",
+    // **The containment ceilings, all six.** Five of them were typed correctly by
+    // `kind_of` and named by no catalogue row, which is the asymmetry `kind_of`'s
+    // own doc says must not exist: a key that can be spelled and cannot be found
+    // is a key an operator meets only by reading this crate's source.
+    //
+    // `max_total_cost` is here and io-harness documents it as reserved and **not
+    // enforced** (`io-harness-0.83.0/src/containment.rs:97-107`). It is listed
+    // because it deserializes, so an operator who writes it has a file that
+    // parses and a ceiling that does nothing — and the row is where that can be
+    // said. `docs/config.example.toml` says it beside the example.
+    "app.io-cli.containment.max_total_agents",
+    "app.io-cli.containment.max_concurrent_agents",
+    "app.io-cli.containment.max_depth",
+    "app.io-cli.containment.max_total_tokens",
+    "app.io-cli.containment.max_total_cost",
+    "app.io-cli.containment.max_total_duration",
+    // **The browser, less its binary.** `[app.io-cli.browser]` is io-harness's own
+    // `BrowserConfig`, and every scalar of it is here except `binary` — see
+    // [`EXCLUDED`], which says why a program name is the one field of this table
+    // that is not offered at a shell door.
+    "app.io-cli.browser.headless",
+    "app.io-cli.browser.width",
+    "app.io-cli.browser.height",
+    "app.io-cli.browser.timeout_secs",
+    "app.io-cli.browser.args",
     // The three `TaskContract` ceilings io-harness gives no key of its own, so
     // io-cli names them here and `/config` is where an operator meets them.
     "app.io-cli.max_parallel_reads",
@@ -195,6 +227,10 @@ pub const CATALOGUE: &[&str] = &[
     // setting, and it is reached the way `/provider` and `/mcp` reach a list.
     "prices.as_of",
     "app.io-cli.prices.source_url",
+    // How many models the last catalogue read held. io-cli's own count and not
+    // io-harness's `[prices.models]` table, which is a list of model prices and is
+    // still deliberately not a row.
+    "app.io-cli.prices.models",
     // What "done" means here. Every key of the section and not a chosen few,
     // because the section refuses rather than defaults: exactly one of `command`,
     // `file` and `rubric` may be set, and an operator meeting three of the eight
@@ -235,6 +271,59 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.routing.downshift_under.model",
 ];
 
+/// The `[app.io-cli]` leaves this surface deliberately does not offer, each with
+/// its reason.
+///
+/// **A list cannot notice what is missing from it**, which is the whole reason
+/// this constant exists. [`CATALOGUE`] is checked against the documentation and
+/// the documentation against [`CATALOGUE`], and both directions were satisfied
+/// while eight keys of `CliSettings` were reachable from neither — including the
+/// one 0.39.0 shipped as the way to turn a network call off. So `tests/docs.rs`
+/// now walks the *settings struct* and requires every scalar leaf of it to be in
+/// one of these two lists. A key added to `CliSettings` and to neither fails the
+/// build, which is what makes a fourteenth key impossible rather than unlikely.
+///
+/// Being excluded is a decision with a sentence, never a gap. Each entry here is
+/// still readable through [`settings`] and still editable as text in the file; what
+/// it is not is a row offered at a value picker.
+pub const EXCLUDED: &[(&str, &str)] = &[
+    (
+        "app.io-cli.keys",
+        "a map of action name to chord, not a setting with one value — `/keys` is where a \
+         binding is chosen, and `app.io-cli.keys.accept 1` is a legitimate single-character \
+         binding whose bare `1` would take the whole section down",
+    ),
+    (
+        "app.io-cli.mcp",
+        "a list of servers, added and removed through `/mcp` and `io mcp`, which address an \
+         entry by its content rather than by a row index",
+    ),
+    (
+        "app.io-cli.lsp",
+        "a list of language servers, for the same reason as `mcp` and through the same door",
+    ),
+    (
+        "app.io-cli.skills",
+        "a directory rather than a file, and the value picker's `File` kind offers the \
+         workspace's files — a picker that offered files for a directory would be worse than \
+         no picker at all",
+    ),
+    (
+        "app.io-cli.browser.binary",
+        "it names a program to execute. io-harness refuses a whole `[browser]` section from \
+         any file inside the workspace for exactly that reason, and it cannot apply that \
+         rule to `[app.io-cli]`, which it reads as one opaque value — so a program path is \
+         written by hand, in the file you chose, rather than offered at a door that would \
+         take a scope",
+    ),
+    (
+        "app.io-cli.prices.source",
+        "written by the price refresh rather than typed, and unlike `prices.as_of` it names \
+         where the table came from rather than when — a provenance an operator can overwrite \
+         is a provenance that says nothing",
+    ),
+];
+
 /// How a value for a key is obtained.
 ///
 /// **The kind says how a value is *obtained*, never what it means.** io-harness
@@ -268,14 +357,28 @@ pub enum Kind {
     File,
     /// A list of strings, written through [`crate::edit::array`].
     ///
-    /// Exactly one key — `app.io-cli.gates.command` is `Option<Vec<String>>`
-    /// (`src/gates.rs:84`) — and it has its own kind rather than being folded into
-    /// [`Kind::Text`] because a scalar written to that key is a value io-harness
-    /// cannot read back. The generic "type a value" editor this release replaces
-    /// would have written exactly that.
+    /// **Two keys since 0.40.0** — `app.io-cli.gates.command` is
+    /// `Option<Vec<String>>` (`src/gates.rs:84`) and `app.io-cli.browser.args` is
+    /// io-harness's `Vec<String>`. They have their own kind rather than being
+    /// folded into [`Kind::Text`] because a scalar written to either is a value
+    /// io-harness cannot read back. The generic "type a value" editor 0.28.0
+    /// replaced would have written exactly that.
+    ///
+    /// A list is the one kind whose value routinely begins with a dash, so the
+    /// shell door takes its words after a `--` — see `crate::manage`.
     List,
     /// Text no menu can hold: a substring to look for, a rubric, a URL. Three keys.
     Text,
+    /// A number of seconds, written as the inline table `std::time::Duration`
+    /// deserializes from.
+    ///
+    /// Exactly one key — `app.io-cli.containment.max_total_duration` is
+    /// `Option<Duration>` with no `#[serde(with)]` on it, so what serde reads is a
+    /// struct of `secs` and `nanos` and **no scalar an operator can type is a value
+    /// for it**. A bare `60` fails to deserialize exactly as `"60"` does, which is
+    /// why this is its own kind rather than a [`Kind::Number`]: the number the
+    /// operator means is right and the spelling is not theirs to know.
+    Duration,
     /// Written by machinery, not by a person, and so never offered for typing.
     ///
     /// One key, `prices.as_of`. It is in the catalogue because a date an operator
@@ -291,7 +394,7 @@ pub enum Kind {
 ///
 /// **Both halves are the dependency's since io-harness 0.71.0, and neither is
 /// written here any more**: the list is `Effect::ALL`
-/// (`io-harness-0.82.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
+/// (`io-harness-0.83.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
 /// (`:145`), which is the word io-harness's own deserializer reads.
 ///
 /// Until this release io-cli held a copy of both — an array naming three variants
@@ -318,7 +421,7 @@ pub fn effects() -> Vec<String> {
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **The list is `ExecMode::ALL` (`io-harness-0.82.0/src/sandbox.rs:453`) and the
+/// **The list is `ExecMode::ALL` (`io-harness-0.83.0/src/sandbox.rs:453`) and the
 /// spellings are `ExecMode::as_str` (`:460`).** io-cli wrote the variant list out
 /// by hand until this release for a reason that was the dependency's and not a
 /// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:407`), and
@@ -395,6 +498,20 @@ pub const APP_PREFIX: &str = "app.io-cli.";
 /// io-harness's own words. A refusal at write time is strictly better than a
 /// silently wrong file.
 pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
+    // **[`EXCLUDED`] is enforced here, and until this was written it enforced
+    // nothing.** The list was added in 0.40.0 as the other half of the gate that
+    // walks the settings struct, and the adversarial review found that both
+    // `/config` doors reached the fall-through below regardless: `kind_of` answers
+    // `None` for `app.io-cli.browser.binary`, so it fell to the arm that quotes any
+    // unrecognised `app.io-cli.*` word and produced a perfectly valid string for an
+    // `Option<String>` field. `io config set app.io-cli.browser.binary /usr/bin/x
+    // --scope project` succeeded and took effect — the exact act the entry's own
+    // reason says must not be offered, in the one section io-harness reads
+    // opaquely and never widening-checks. The reason strings had no reader at all;
+    // now they are what an operator is told.
+    if let Some((_, why)) = EXCLUDED.iter().find(|(named, _)| *named == key) {
+        return Err(format!("`{key}` is not set from here: {why}"));
+    }
     let kind = kind_of(key);
     if matches!(kind, Some(Kind::Machine)) {
         return Err(format!(
@@ -403,9 +520,10 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
              refresh that writes it"
         ));
     }
-    // The one key whose value is a list (`app.io-cli.gates.command`), so the
-    // remaining words are the value rather than a mistake. A scalar written there
-    // is a value io-harness cannot read back.
+    // The two keys whose value is a list — `app.io-cli.gates.command` and, since
+    // 0.40.0, `app.io-cli.browser.args` — so the remaining words are the value
+    // rather than a mistake. A scalar written to either is a value io-harness
+    // cannot read back.
     if matches!(kind, Some(Kind::List)) {
         if words.is_empty() {
             // **No command word in the sentence, because two doors reach it
@@ -476,6 +594,18 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
             // that a form TOML would reject (`+5`, a leading zero run) becomes
             // the value it meant instead of a refused write.
             Ok(number.to_string())
+        }
+        // Seconds in, an inline table out. The operator types the number they
+        // mean; the spelling belongs to serde's `Duration`, and asking a person to
+        // know it is asking them to know a dependency's derive.
+        Some(Kind::Duration) => {
+            let seconds: u64 = word.parse().map_err(|_| {
+                format!(
+                    "`{word}` is not a whole number of seconds, and `{key}` is a wall-clock \
+                     ceiling counted in them"
+                )
+            })?;
+            Ok(format!("{{ secs = {seconds}, nanos = 0 }}"))
         }
         // A model name, a path and free text are strings in the file, and all
         // three are escaped rather than wrapped in quotes by hand.
@@ -604,6 +734,7 @@ fn offered(key: &str, kind: Option<&Kind>) -> String {
                 .join(", ")
         ),
         Some(Kind::Number { .. }) => "it takes a whole number".to_string(),
+        Some(Kind::Duration) => "it takes a whole number of seconds".to_string(),
         // Named without a command word for the same reason as the two refusals
         // above: both doors reach this sentence.
         _ => format!("reading `{key}` shows what it is set to now"),
@@ -642,7 +773,9 @@ pub fn kind_of(key: &str) -> Option<Kind> {
         | "app.io-cli.plain"
         | "app.io-cli.detached_spawns"
         | "app.io-cli.gates.allow_self_review"
-        | "app.io-cli.conversational" => Kind::Flag,
+        | "app.io-cli.conversational"
+        | "app.io-cli.reference_catalogue"
+        | "app.io-cli.browser.headless" => Kind::Flag,
         // The one signed number: a process may be expected to exit negative.
         "app.io-cli.gates.expect_exit" => Kind::Number { signed: true },
         "run.max_steps"
@@ -672,12 +805,23 @@ pub fn kind_of(key: &str) -> Option<Kind> {
         | "app.io-cli.containment.max_concurrent_agents"
         | "app.io-cli.containment.max_depth"
         | "app.io-cli.containment.max_total_tokens"
-        | "app.io-cli.containment.max_total_cost" => Kind::Number { signed: false },
+        | "app.io-cli.containment.max_total_cost"
+        // io-cli's own count of what the last catalogue read held, and the three
+        // `BrowserConfig` numbers. All four were quoted by the fall-through until
+        // this release, and each one of them alone failed the whole section.
+        | "app.io-cli.prices.models"
+        | "app.io-cli.browser.width"
+        | "app.io-cli.browser.height"
+        | "app.io-cli.browser.timeout_secs" => Kind::Number { signed: false },
         "app.io-cli.gates.reviewer"
         | "app.io-cli.routing.escalate_after.model"
         | "app.io-cli.routing.downshift_under.model" => Kind::Model,
         "app.io-cli.gates.file" => Kind::File,
-        "app.io-cli.gates.command" => Kind::List,
+        // Two lists now, and the second needs no arm of its own anywhere: a
+        // command line and a browser's extra arguments are both "the remaining
+        // words are the value", which is what [`Kind::List`] already means.
+        "app.io-cli.gates.command" | "app.io-cli.browser.args" => Kind::List,
+        "app.io-cli.containment.max_total_duration" => Kind::Duration,
         "app.io-cli.gates.contains"
         | "app.io-cli.gates.rubric"
         | "app.io-cli.prices.source_url" => Kind::Text,
@@ -692,7 +836,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 /// preference — but half of the old reason is now false and the correction is
 /// worth writing down.** io-harness 0.71.0 names its own defaults:
 /// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
-/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.82.0/src/contract.rs:755,773,789`),
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.83.0/src/contract.rs:780,798,814`),
 /// re-exported at the crate root. "There is nothing to read" was true when this
 /// was written and is not true now. What is still true is that none of it anchors
 /// *this* ladder:
@@ -790,6 +934,15 @@ pub fn spell_value(kind: &Kind, value: &str) -> String {
     let bare = value.trim().trim_matches('"');
     match kind {
         Kind::Flag | Kind::Number { .. } => bare.to_string(),
+        // **Unreachable today, and written as the correct answer rather than as a
+        // guess.** The one caller is the session's value picker, and `value_rows`
+        // returns `None` for a duration before any such pick exists — so nothing
+        // routes here. It is spelled anyway because the match is exhaustive over
+        // io-cli's own enum: a wildcard would quote a duration into a string the
+        // moment a later release gave the kind a picker, which is the failure this
+        // whole function exists to prevent. By then the value is already the
+        // inline table `source_for` built, so passing it through is right.
+        Kind::Duration => bare.to_string(),
         Kind::List => {
             let words: Vec<&str> = bare.split_whitespace().collect();
             crate::edit::array(&words)
@@ -824,6 +977,14 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
         "app.io-cli.prices.source_url" => {
             "a URL returning a model catalogue — for example: https://openrouter.ai/api/v1/models"
         }
+        "app.io-cli.browser.args" => {
+            "extra arguments for the browser, split on spaces into a list — for example: \
+             --disable-gpu --no-sandbox"
+        }
+        "app.io-cli.containment.max_total_duration" => {
+            "a whole number of seconds for the whole tree, written into the file as the table \
+             io-harness reads a duration from — for example: 3600"
+        }
         "prices.as_of" => {
             "written by the price refresh rather than typed; choose it on `/config` and the \
              refresh that re-reads the catalogue is the row after `leave it`"
@@ -843,7 +1004,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
 /// **Read from the dependency's own table since io-harness 0.71.0, not scraped
-/// out of the files.** `PriceTable::models` (`io-harness-0.82.0/src/pricing.rs:268`)
+/// out of the files.** `PriceTable::models` (`io-harness-0.83.0/src/pricing.rs:268`)
 /// lists every model the table can actually price, and [`Config::prices`] has
 /// always built that table out of the three scopes — so the merged question this
 /// used to hand-roll is precisely the one the accessor answers, and the gap filed
@@ -869,7 +1030,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 ///
 /// **This takes the `Config` the caller already holds, and must never re-discover
 /// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
-/// it reads (`io-harness-0.82.0/src/config.rs:627`), so a second discovery re-runs
+/// it reads (`io-harness-0.83.0/src/config.rs:627`), so a second discovery re-runs
 /// an operator's credential commands — which for a `${cmd:}` fetching a key out of
 /// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
 /// the picker opens. Taking a `&Config` is not an optimisation; it is the
@@ -950,7 +1111,7 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
 #[must_use]
 pub fn widens_workspace(key: &str, value: &str) -> bool {
     /// The clause io-harness's widening refusal always carries
-    /// (`io-harness-0.82.0/src/config.rs:2949`). Matched rather than the whole
+    /// (`io-harness-0.83.0/src/config.rs:2949`). Matched rather than the whole
     /// sentence, which interpolates the path, the key and the destination scope.
     const WIDENS: &str = "widens the boundary";
 
@@ -962,6 +1123,85 @@ pub fn widens_workspace(key: &str, value: &str) -> bool {
     };
 
     Config::from_toml(&document).is_err_and(|refusal| refusal.to_string().contains(WIDENS))
+}
+
+/// The scopes a key may actually be written to with this value, each with its
+/// file.
+///
+/// **The two `/config` doors disagreed, and this is what makes them agree**
+/// (0.40.0). The value arm has checked [`widens_workspace`] since 0.28.0 and
+/// refuses before it writes; the scope arm offered all three files and let
+/// `write`'s round trip refuse two of them afterwards. So an operator choosing
+/// `sandbox.mode = "full-access"` was shown `io.toml` and `io.local.toml` as
+/// places to put it, picked one, and met a refusal the surface already knew was
+/// coming — and the refusal is not of the key but of *the whole file*, which is
+/// the worst moment to learn the rule.
+///
+/// The predicate is a pure function of the pair and both are in hand when the
+/// picker is built, so a scope that will be refused is not offered at all.
+///
+/// **`configure::write`'s round trip stays, and it is not redundant.** It is what
+/// restores "absent" rather than "empty" for every refusal this predicate does not
+/// model — the refused *sections*, an absolute `run.skills`, anything io-harness
+/// tightens next. A predicate that hid the backstop would be a copy of the rules
+/// again, which is exactly what [`widens_workspace`] was rewritten to stop being.
+#[must_use]
+pub fn writable_scopes(
+    root: &std::path::Path,
+    key: &str,
+    value: &str,
+) -> Vec<(Scope, std::path::PathBuf)> {
+    let refused_in_workspace = widens_workspace(key, value) || user_scope_only(key);
+    [Scope::User, Scope::Project, Scope::Local]
+        .into_iter()
+        .filter(|scope| !(refused_in_workspace && matches!(scope, Scope::Project | Scope::Local)))
+        .filter_map(|scope| scope_path(root, scope).map(|path| (scope, path)))
+        .collect()
+}
+
+/// Keys io-cli itself keeps out of a file inside the workspace, and why.
+///
+/// **io-harness cannot hold this line and it is this crate's to hold** (0.40.0).
+/// The harness refuses a whole top-level `[browser]` section from any file inside
+/// a workspace, because it names a program to execute and `io.toml` arrives with a
+/// `git clone` while `io.local.toml` sits in a root the run's own agent can write
+/// to. `[app.io-cli.browser]` is the same table under a section the harness reads
+/// as one opaque value, so `refuse_widening` never sees it — and this release is
+/// what built a door to it.
+///
+/// `binary` is on [`EXCLUDED`] and is refused at both doors outright. `args` is a
+/// catalogue row, because an operator has to be able to set it and the `[browser]`
+/// section is theirs — but the browser's argument vector is where a
+/// `--proxy-server=https://user:pass@host` or a `--load-extension` goes, which
+/// io-harness redacts from its own `Debug` for exactly that reason
+/// (`io-harness-0.83.0/src/browser.rs:163`). Committing one is the same act as
+/// committing the binary, one word further along.
+///
+/// A pair rather than a bare list, so the refusal says why. Found by the
+/// adversarial review, which noticed the release had written down the argument
+/// against this for `binary` and then built the door for `args`.
+pub const USER_SCOPE_ONLY: &[(&str, &str)] = &[(
+    "app.io-cli.browser.args",
+    "it is the argument vector of a program, which is where a proxy carrying \
+     credentials or a loaded extension goes — io-harness refuses a whole `[browser]` \
+     section from a file inside the workspace for that reason, and cannot apply the \
+     rule to `[app.io-cli]`, which it reads as one opaque value; write it with \
+     `--scope user` for yourself",
+)];
+
+/// Is `key` one io-cli keeps out of a workspace file whatever its value?
+#[must_use]
+pub fn user_scope_only(key: &str) -> bool {
+    USER_SCOPE_ONLY.iter().any(|(named, _)| *named == key)
+}
+
+/// Why `key` may not be written inside the workspace, if it may not.
+#[must_use]
+pub fn why_user_scope_only(key: &str) -> Option<&'static str> {
+    USER_SCOPE_ONLY
+        .iter()
+        .find(|(named, _)| *named == key)
+        .map(|(_, why)| *why)
 }
 
 /// The `/config` row that re-reads the price catalogue.
@@ -1085,7 +1325,7 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`substitute`, `io-harness-0.82.0/src/config.rs:3159`, the `cmd` arm at
+/// (`substitute`, `io-harness-0.83.0/src/config.rs:3159`, the `cmd` arm at
 /// `:3279`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or
@@ -1197,7 +1437,24 @@ pub fn said(setting: &Setting) -> String {
 
 /// One key, resolved.
 pub fn setting(config: &Config, key: &str) -> Setting {
-    let origins = config.origin(key);
+    // **A duration is a table in the file, so io-harness's origins name its fields
+    // and never the key itself** (0.40.0). `Config::origin` walks the merged
+    // document to a leaf, and `max_total_duration` is not one — its leaves are
+    // `secs` and `nanos`. Asking for the key alone answered nothing, so a value
+    // just written read back as unset, and `io config get` said `default` for a
+    // ceiling the operator had set. `secs` is asked for rather than either leaf
+    // because `nanos` may legitimately be absent from a hand-written table.
+    let origins = match kind_of(key) {
+        Some(Kind::Duration) => {
+            let inner = config.origin(&format!("{key}.secs"));
+            if inner.is_empty() {
+                config.origin(key)
+            } else {
+                inner
+            }
+        }
+        _ => config.origin(key),
+    };
     let decided = match origins.last() {
         // The last origin is the winning one: the scopes merge in precedence
         // order, and a key more than one file named lists them in that order.

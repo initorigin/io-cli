@@ -1829,7 +1829,7 @@ fn f5_servers_in_both_scopes_are_merged_and_a_collision_is_named() {
 /// **F7 — a tilde is a home directory, never a directory named `~`.**
 ///
 /// io-harness substitutes `${env:…}` and `${file:…}` and nothing else — there is
-/// no tilde branch anywhere in `io-harness-0.82.0/src/config.rs` — so a `~` an
+/// no tilde branch anywhere in `io-harness-0.83.0/src/config.rs` — so a `~` an
 /// operator writes in `[run] skills` reaches `Skills::discover` verbatim and the
 /// harness looks inside a directory whose name is one character long. The
 /// operator's skills sit exactly where they said they would, and the session
@@ -2093,6 +2093,54 @@ fn f11_asking_for_the_default_explicitly_changes_nothing() {
     assert!(built.detached_spawns);
 }
 
+/// **F5 — a `[run] max_steps` a file named beats the gated cap.**
+///
+/// The one number an operator is most likely to write was the one value that did
+/// nothing. `configured` applies io-cli's own floor of a thousand before
+/// `Config::apply_to` runs, and `apply_to` sets the field unconditionally when
+/// the key is present — so `[run] max_steps = 1000` produced a contract
+/// indistinguishable from having written nothing, and a gated headless run took
+/// forty steps against a file asking for a thousand.
+///
+/// **Through a real `io.toml`, because the whole question is whether a file named
+/// the key.** `Config::from_toml` has no file and therefore no origins, which is
+/// exactly why `tests/gates.rs` cannot hold this row and points here instead.
+///
+/// Sabotage: drop the `origin` check from `contract::gated_bound`. The first
+/// assertion goes red and the second stays green.
+#[test]
+fn f5_a_max_steps_a_file_named_beats_the_gated_cap() {
+    let _guard = env_lock();
+    let gate = "[app.io-cli.gates]\ncommand = [\"false\"]\nexpect_exit = 0\n";
+
+    let (dir, config) = discovered(&[(
+        "io.toml",
+        &format!(
+            "{gate}\n[run]\nmax_steps = {}\n",
+            io_cli::contract::MAX_STEPS
+        ),
+    )]);
+    let contract =
+        io_cli::contract::configured("goal", dir.path().to_path_buf(), &config, &config.plugins());
+    assert_eq!(
+        io_cli::contract::gated_bound(contract, &config).max_steps,
+        io_cli::contract::MAX_STEPS,
+        "a thousand steps an operator wrote in a file is a thousand steps they get",
+    );
+
+    // The companion: the floor still caps a gated run that wrote nothing, which is
+    // the behaviour 0.38.1 added and this release must not have removed while
+    // making the value above mean what it says.
+    let (dir, config) = discovered(&[("io.toml", gate)]);
+    let contract =
+        io_cli::contract::configured("goal", dir.path().to_path_buf(), &config, &config.plugins());
+    assert_eq!(
+        io_cli::contract::gated_bound(contract, &config).max_steps,
+        io_cli::contract::GATED_MAX_STEPS,
+        "a gated run the operator gave no budget at all is still bounded",
+    );
+}
+
 /// **N3 — 0.27.0 adds no configuration key, so an operator who runs none of it
 /// gets the contract 0.26.0 built.**
 ///
@@ -2109,15 +2157,26 @@ fn f11_asking_for_the_default_explicitly_changes_nothing() {
 ///
 /// Sabotage: add a key to `CATALOGUE` — under which only this fails, and it
 /// fails by saying a release that promised to add no configuration added one.
+///
+/// **0.40.0 is the release that moved it, and it moved it by thirteen.** The
+/// number stays written out and the reason is written beside it, because the
+/// point of the gate is that growing this surface is a decision recorded here
+/// rather than a line added elsewhere. Each of the thirteen was already
+/// reachable by hand-editing the file and each was mis-typed by the shell door;
+/// none of them is new configuration. `browser.binary` is deliberately not among
+/// them — it is on `configure::EXCLUDED`, which `tests/docs.rs` holds to covering
+/// every leaf this list does not.
 #[test]
-fn n3_this_release_adds_no_configuration_key() {
-    let before_0_27_0 = 37;
+fn n3_the_key_catalogue_grows_only_when_a_release_says_so() {
+    let through_0_39_0 = 37;
+    let added_by_0_40_0 = 13;
     assert_eq!(
         io_cli::configure::CATALOGUE.len(),
-        before_0_27_0,
-        "0.27.0 adds three commands and no keys; a different number here means a \
-         release that promised an operator nothing would change gave them \
-         something to configure",
+        through_0_39_0 + added_by_0_40_0,
+        "a different number here means a release changed what an operator has to \
+         configure without saying so. 0.40.0 added thirteen rows — \
+         `reference_catalogue`, `prices.models`, the five browser keys it offers \
+         and the six containment ceilings.",
     );
 }
 

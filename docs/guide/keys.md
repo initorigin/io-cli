@@ -15,7 +15,7 @@
 | `Esc` | at an empty prompt, ask whether to undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `Ctrl+F` | show the fleet: the children this turn has spawned |
-| `y / a / n` | answer an approval: allow once, allow this session, deny |
+| `y / a / n` | choose an approval's answer: allow once, allow this session, deny — `Enter` gives it |
 | `Esc` | stop the running turn, or close a picker without choosing |
 | `Tab` | in any list, take the row under the marker; `Shift+Tab` steps back |
 | `/` | open the command palette — at the prompt or while a turn runs |
@@ -136,6 +136,14 @@ The rest of the table is not rebindable, because those keys belong to whatever
 owns the keyboard while it is up — the composer, an approval, a picker — and an
 approval's `y`, `a` and `n` are the *words* of the answer rather than shortcuts
 for it.
+
+**From 0.40.0 an approval waits for `Enter`, and this is a change to a key you
+already know.** `y`, `a` and `n` move the highlight to that answer; nothing
+resolves until you press `Enter`, which is the same two-step the arrow keys have
+always used. It costs one keystroke and it buys the thing that was wrong: a
+letter inside a sentence can no longer decide a write. Typing "no, not that one"
+at an approval used to deny with the `n` and leave the rest of the sentence in the
+composer, which was then sent as a prompt.
 
 **`Ctrl+C` is fixed, and it is the only one that is.** It interrupts a running
 turn and leaves `io`, so a configuration file able to take it away is one able to

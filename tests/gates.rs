@@ -886,7 +886,7 @@ fn f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap() {
     let build = |config: &Config| {
         let contract =
             io_cli::contract::configured("goal", workspace.clone(), config, &config.plugins());
-        io_cli::contract::gated_bound(contract).max_steps
+        io_cli::contract::gated_bound(contract, config).max_steps
     };
 
     assert_eq!(
@@ -919,27 +919,19 @@ fn f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap() {
         );
     }
 
-    // **The one colliding value, asserted so it is a chosen cost.** `[run]
-    // max_steps = 1000` is the documented default written down, and
-    // `Config::apply_to` sets the field unconditionally — so it is
-    // indistinguishable from the floor `configured` applied, and the gated run
-    // takes forty. io-harness's `run` section is private, so nothing here can ask
-    // whether the key was present; this row exists so that the behaviour is
-    // recorded rather than discovered. Any other number, `1001` included, is
-    // honoured as written — which the row below proves, so this is a collision at
-    // exactly one value and not a rule.
-    assert_eq!(
-        build(&gated(&format!(
-            "[run]\nmax_steps = {}\n",
-            io_cli::contract::MAX_STEPS
-        ))),
-        io_cli::contract::GATED_MAX_STEPS,
-        "writing the default explicitly is indistinguishable from not writing it",
-    );
+    // **The collision at exactly the floor is F5's, and it is asserted where a
+    // real file exists (0.40.0).** `[run] max_steps = 1000` used to read as "no
+    // cap set", because `Config::apply_to` sets the field unconditionally and an
+    // explicit thousand is indistinguishable from the floor `configured` applied.
+    // What distinguishes them is `Config::origin`, which names the files that set
+    // a key — and `Config::from_toml` has no file, so this fixture cannot tell the
+    // two apart and must not pretend to. The rows that do are
+    // `f5_a_max_steps_a_file_named_beats_the_gated_cap` and its companion in
+    // `tests/contract.rs`, which discover a real `io.toml`.
     assert_eq!(
         build(&gated("[run]\nmax_steps = 1001\n")),
         1001,
-        "and one step either side of the collision is honoured as written",
+        "and one step either side of it is honoured as written, as it always was",
     );
 }
 

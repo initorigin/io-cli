@@ -227,7 +227,7 @@ const PAGE: usize = 8;
 ///
 /// A constant because two things need it to be the same string: the row that
 /// draws it, and the test that proves an ignored key is not ignored silently.
-pub const ONLY_THREE_KEYS: &str = "press y, a or n";
+pub const ONLY_THREE_KEYS: &str = "y, a or n chooses — enter answers";
 
 /// An open question, and the answer being chosen.
 ///
@@ -313,9 +313,11 @@ impl Approval {
 
     /// A keystroke. `Some` means the operator answered and this overlay is over.
     ///
-    /// Two ways in, on purpose: a letter for the reader who knows the key, and
-    /// arrows with `Enter` for the one who does not. A key that only works when
-    /// you already know it is not an interface.
+    /// **Only `Enter` ever returns `Some` (0.40.0).** Two ways in are still two
+    /// ways in — a letter for the reader who knows the key, arrows for the one who
+    /// does not — but both move the highlight and neither decides. A key that only
+    /// works when you already know it is not an interface; a key that decides a
+    /// write because it happened to be the first letter of a sentence is worse.
     pub fn key(&mut self, key: KeyEvent) -> Option<Answer> {
         // Cleared up front and set again only by the arm that refuses, so the
         // mark always describes the key that has just arrived. Doing it in the
@@ -371,14 +373,36 @@ impl Approval {
                 None
             }
             KeyCode::Enter => Some(self.chosen()),
+            // **A letter moves the highlight and answers nothing (0.40.0).** Until
+            // this release `y`, `a` and `n` each resolved the approval on their
+            // own, which meant an operator who began typing their next instruction
+            // while an approval was up had already answered it with whatever letter
+            // came first. The 2026-09-05 field test caught it as the `n` in "end"
+            // denying a command, leaving the composer holding `lways enE.`, which
+            // was then sent as a prompt.
+            //
+            // The two ways in are still two ways in — a letter for the reader who
+            // knows the key, arrows for the one who does not — and both now end at
+            // the same `Enter`. What is given up is one keystroke; what is bought
+            // is that no single character an operator types can decide a write.
+            //
+            // Buffering the sentence and replaying it into the composer is the
+            // fuller answer and is deliberately not here: it makes this path
+            // conditional on buffer state, and stopping the unintended decision is
+            // the part that could not wait.
             KeyCode::Char(c) => {
-                let answer = Answer::ALL
+                let found = Answer::ALL
                     .into_iter()
-                    .find(|answer| answer.key() == c.to_ascii_lowercase());
-                // A letter that is not one of the three is the operator typing
-                // prose into a modal. It answers nothing, and now it says so.
-                self.nudged = answer.is_none();
-                answer
+                    .position(|answer| answer.key() == c.to_ascii_lowercase());
+                match found {
+                    Some(index) => {
+                        self.chosen = index;
+                    }
+                    // A letter that is not one of the three is the operator typing
+                    // prose into a modal. It moves nothing, and it says so.
+                    None => self.nudged = true,
+                }
+                None
             }
             _ => {
                 self.nudged = true;

@@ -145,25 +145,26 @@ pub const GATED_MAX_STEPS: u32 = 40;
 /// either of those, which is why the bound has to be a property of the contract
 /// there and need not be here.
 ///
-/// **The test for "the operator set no step cap" is that the floor survived.**
-/// `configured` calls `with_max_steps(MAX_STEPS)` *before* `Config::apply_to`, so
-/// a `[run] max_steps` in the file has already overwritten it by the time this
-/// runs — the same reading `crate::status` takes of the same field, rather than a
-/// second question put to the configuration.
+/// **The test for "the operator set no step cap" is two questions, and it used to
+/// be one.** The first is that the floor survived: `configured` calls
+/// `with_max_steps(MAX_STEPS)` *before* `Config::apply_to`, so a `[run] max_steps`
+/// in the file has already overwritten it by the time this runs. The second is
+/// whether a file named the key at all, which is what [`Config::origin`] answers.
 ///
-/// **It has one collision and it is stated rather than hidden: `[run] max_steps =
-/// 1000` reads as "no cap set".** `Config::apply_to` calls `with_max_steps`
-/// unconditionally when the key is present, so an explicit thousand is
-/// indistinguishable from the floor, and a gated run configured that way takes
-/// forty. io-harness's `run` section is private, so there is no way to ask
-/// whether the key was written — only what it produced. The cost is bounded and
-/// one-directional: an operator who meant a thousand gets forty and sees exit `3`
-/// naming the ceiling, which is diagnosable and one edit from fixed; any other
-/// number, including `1001`, behaves exactly as written. Asserted as a row in
-/// `f3_a_gated_headless_run_with_no_budget_takes_the_gated_cap` so it is a chosen
-/// cost rather than an unnoticed one. Found by the adversarial review.
+/// **The collision this used to state as a chosen cost is closed (0.40.0), and it
+/// was never a cost worth choosing.** `[run] max_steps = 1000` read as "no cap
+/// set", because `Config::apply_to` calls `with_max_steps` unconditionally when
+/// the key is present and an explicit thousand is indistinguishable from the
+/// floor — so a gated run configured that way took forty steps against a file
+/// asking for a thousand, and the number an operator was most likely to write was
+/// the one value that did nothing. The old comment here said io-harness's `run`
+/// section is private so there was no way to ask whether the key was written. The
+/// section is private and the question is still answerable: `Config::origin`
+/// names the files that set a key and is empty for one no file names, its own
+/// doctest is `run.max_steps`, and `/config` has told a file value from a default
+/// through it since 0.28.0.
 #[must_use]
-pub fn gated_bound(contract: TaskContract) -> TaskContract {
+pub fn gated_bound(contract: TaskContract, config: &Config) -> TaskContract {
     // **The contract's own criterion, never the configuration's.** The first
     // draft asked `criterion_of(config)`, and the adversarial review found that
     // it answers a different question than the one that matters:
@@ -180,7 +181,16 @@ pub fn gated_bound(contract: TaskContract) -> TaskContract {
     // actually run, put there by the same call that built everything else here.
     let ungated = matches!(contract.verify, io_harness::Verification::None);
     let budgeted = contract.max_duration.is_some() || contract.max_tokens.is_some();
-    if ungated || budgeted || contract.max_steps != MAX_STEPS {
+    // **The one value an operator is most likely to write used to read as unset
+    // (0.40.0).** `Config::apply_to` calls `with_max_steps` unconditionally when
+    // the key is present, so `[run] max_steps = 1000` produced a contract
+    // indistinguishable from io-cli's own floor and a gated run took forty steps
+    // against a file that asked for a thousand. The comment that stood here said
+    // there was no way to ask whether the key had been written; there is, and
+    // `/config` has used it since 0.28.0 to tell a file value from a default.
+    // `Config::origin` is empty for a key no file names.
+    let wrote_it = !config.origin("run.max_steps").is_empty();
+    if ungated || budgeted || wrote_it || contract.max_steps != MAX_STEPS {
         return contract;
     }
     contract.with_max_steps(GATED_MAX_STEPS)
@@ -527,7 +537,7 @@ pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> Tas
 /// sits ahead of a cache breakpoint and removing a definition would save its
 /// tokens once and pay a cache *write* on every later turn (`src/tools/mod.rs:40`).
 /// A mask in fact **adds** a sentence to the user prompt naming the withheld tools
-/// (`io-harness-0.82.0/src/run/prompts.rs:1381`, `withheld_sentence`), placed after the observations
+/// (`io-harness-0.83.0/src/run/prompts.rs:1418`, `withheld_sentence`), placed after the observations
 /// precisely so it costs no cache entry. A turn that withholds three tools is
 /// marginally more expensive than the same turn without the mask, not less.
 #[must_use]
@@ -779,7 +789,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
 /// is not there — it returns `Error::Config("skills directory … does not exist")`
-/// (`io-harness-0.82.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// (`io-harness-0.83.0/src/skills.rs`), and `TaskContract::discover_skills`
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
@@ -804,7 +814,7 @@ fn default_skills() -> Option<PathBuf> {
 ///
 /// **One expansion for two keys, applied after both have had their say.**
 /// io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}` and nothing else
-/// (`substitute`, `io-harness-0.82.0/src/config.rs:3159` — there is no tilde
+/// (`substitute`, `io-harness-0.83.0/src/config.rs:3159` — there is no tilde
 /// branch anywhere in it, and 0.71.0 narrowed the forms rather than widening
 /// them: a plugin manifest now refuses all three), so a `~` an operator wrote in
 /// `[run] skills` or `[app.io-cli] skills`

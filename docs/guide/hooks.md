@@ -59,8 +59,10 @@ this machine and `io.toml` is the file a `git clone` delivers. There is no
 that. What it changes is the words: io-harness's own sentence, which names the
 key, the reason and the two files that may carry it, under a line saying which
 file was being read. Before this it arrived as a bare error string from a program
-that had already exited, against a repository you had just cloned. Write the
-table in `io.local.toml` or in your user file.
+that had already exited, against a repository you had just cloned. **Write the
+table in your user file** — since io-harness 0.74.0 `io.local.toml` is refused
+too, because it sits in a root the run's own agent can write to, so one
+`write_file` of it would declare a program the next start runs.
 
 ---
 

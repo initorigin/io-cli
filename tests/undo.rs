@@ -445,6 +445,83 @@ fn the_file_confirmation_discloses_what_a_restore_overwrites() {
     assert!(detail.contains("overwritten"), "{detail}");
 }
 
+/// **F4 — `/undo` leaves nothing of the turn behind.**
+///
+/// The half that runs. `Events::forget` is what `/expand` reads through, so an
+/// undo that does not call it leaves the undone turn's thought printable — the one
+/// thing an operator undoes a turn to be rid of, kept by the act meant to remove
+/// it.
+#[test]
+fn f4_forgetting_a_turn_takes_the_thought_expand_would_print() {
+    let mut events = io_cli::events::Events::new(io_cli::theme::DARK);
+    let rendered = events.event(
+        &io_harness::RunEvent::new(
+            1,
+            1,
+            io_harness::EventKind::Reasoning {
+                text: "the parser is where this belongs".into(),
+                tokens: 40,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    assert!(!rendered.is_empty(), "a thought commits its one row");
+    assert_eq!(
+        events.thought(),
+        Some("the parser is where this belongs"),
+        "`/expand` has the thought to print before the undo",
+    );
+
+    events.forget();
+    assert_eq!(
+        events.thought(),
+        None,
+        "after the turn is forgotten, `/expand` has nothing of it left to print",
+    );
+}
+
+/// **F4's other half — both undo paths call it.**
+///
+/// A source-text gate, and said plainly rather than dressed up as a behavioural
+/// test: the whole-turn undo's call site is in `src/main.rs`, which no test binary
+/// links, so a guard written there cannot be run and cannot be sabotaged. What can
+/// be asserted is that the call is in each of the two functions that take a turn
+/// back — the driver's `undo_whole_turn` and `App::undo_turn`, the mid-turn
+/// abandon path, which has always been the one that got it right.
+///
+/// Sliced by function rather than counted over the file, because `src/app.rs` has
+/// a second `events.forget()` on a different act and a count would pass with the
+/// undo path missing its own.
+///
+/// Sabotage: delete either call. The naming half of this goes red.
+#[test]
+fn f4_both_undo_paths_forget_the_events() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (file, opening) in [
+        ("src/main.rs", "fn undo_whole_turn("),
+        ("src/app.rs", "pub fn undo_turn("),
+    ] {
+        let text = std::fs::read_to_string(repo.join(file)).expect("the source is readable");
+        let from = text
+            .find(opening)
+            .unwrap_or_else(|| panic!("{file} declares `{opening}`"));
+        // To the end of the function, which at these two sites is the first line
+        // that closes a block at the declaration's own indentation.
+        let body = &text[from..];
+        let closing = if file == "src/app.rs" {
+            "\n    }"
+        } else {
+            "\n}"
+        };
+        let body = &body[..body.find(closing).expect("the function closes")];
+        assert!(
+            body.contains("events.forget()"),
+            "{file}'s `{opening}` takes a turn back and never forgets what the turn \
+             rendered, so `/expand` still prints the undone turn's thought",
+        );
+    }
+}
+
 /// `Grain` is a description of what was asked for and nothing more.
 ///
 /// It carries no `label()`: the confirmations build their own sentences and the
