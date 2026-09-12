@@ -180,6 +180,56 @@ One ceiling worth knowing about: a hunk is a fragment of a file, and each of its
 lines is highlighted from a clean parse. A block comment or a multi-line string
 that was opened *above* the hunk is not known here, so those lines read as code.
 
+## Three ways io can refuse, and only one of them asks
+
+From 0.41.0 a refusal can become a question. **Which refusals, and which never,
+is the whole of what makes that safe** — so it is written down here rather than
+left to be discovered.
+
+**This release widens nothing a configuration file could not already express.**
+It changes *when io asks*, never *what io permits*. Every verdict is still
+io-harness's; io-cli holds no policy engine and evaluates nothing.
+
+| Where the refusal came from | What happens | Can you lift it? |
+|---|---|---|
+| `policy.defaults` — the tier that applies when **no rule matched** | **It asks.** The approval overlay opens, and your answer holds for the call, for the session, or for good | Yes, by answering |
+| A `[[policy.layers]]` rule you wrote | **It refuses.** Silently, always. Nothing is drawn and nothing is asked | Only by editing the rule |
+| A path outside the workspace root | **It refuses**, and no setting anywhere lifts it | No |
+
+The middle row is the floor. A default is io-harness answering *because nothing
+said otherwise*; a layer rule is a decision you wrote down, and io asking whether
+to ignore it would make the writing down worthless. So `.env`, `*.pem`, `id_rsa`
+and everything else the built-in secrets layer denies stay denied — under every
+posture, under escalation, and under `--full-access`.
+
+The last row is not a policy verdict at all. The tool layer holds one workspace
+root and refuses an escape from it before any policy is consulted, with no layer
+to attribute it to. That is why the agent cannot read or write `~/.io-cli/io.toml`
+through the file tools at *any* posture, full access included — **use `/config` to
+change it**, which is the surface that exists for exactly this.
+
+Turn the asking off with `[app.io-cli] escalate = false`, which restores 0.40.0's
+behaviour exactly.
+
+## What the pin brings, and what it still does not
+
+**A provider's error body is redacted before io ever sees it.** io-harness 0.86.0
+replaces the value of every JSON field whose name ends `_id` with `[redacted]` on
+the way into the error, so an identifier in a 400 no longer reaches the transcript.
+io-cli adds no redaction of its own — a second pass over an already-cleaned string
+would be a second opinion about it. What that pass cannot reach, stated rather than
+implied: a value split across two fields, a body that is not field-shaped, and an
+identifier sitting in ordinary prose.
+
+**The shell tool's rules are stated to the model rather than met one at a time.**
+The complete set of constructs it refuses is carried in the tool's own description,
+so a model is told before it tries. io-cli holds no copy of that list: it renders
+the tool catalogue it is handed.
+
+**A shell-made change can be put back, except an in-place edit.** See
+[the store](store.md#putting-work-back) for which redirections journal and why
+`sed -i` does not.
+
 ---
 
 [README](../../README.md) · [All guides](../CAPABILITIES.md) · [What you may depend on](../CONTRACT.md)

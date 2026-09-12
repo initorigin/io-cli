@@ -12,10 +12,10 @@ breaking change is a minor bump; there is no other room for one.
 ## The argv surface
 
 ```
-io [-C DIR] [-m MODEL] [--profile NAME] [--plain] [<subcommand>]
+io [-C DIR] [-m MODEL] [--profile NAME] [--plain] [--full-access] [<subcommand>]
 ```
 
-All four flags are `global`, which means they are accepted on **either side** of a subcommand:
+All five flags are `global`, which means they are accepted on **either side** of a subcommand:
 `io -C dir exec "…"` and `io exec -C dir "…"` are the same command. A flag whose acceptance
 depends on which side of a word it is typed is a flag that works only on its author's machine,
 and 0.5.0 shipped that defect once.
@@ -36,6 +36,30 @@ With no subcommand, `io` opens an interactive session.
 
 `--plain` reaches an interactive session and stops there. `io exec` builds no theme, draws
 nothing and animates nothing already, so there is no second thing for the flag to switch off.
+
+**`--full-access` runs unconfined** (0.41.0): every tier default becomes `allow` and the turn
+runs under io-harness's `ExecMode::FullAccess`, which is what reaches a call the sandbox refuses
+structurally rather than by policy. What you may depend on about it: it is **not** in the
+`Shift+Tab` cycle and there are still exactly three postures; it is **marked on every frame** it
+is in force; it is **never written to any file**, so it lasts the session and no longer; it
+cannot be requested by the agent; and it **does not unlock a `[[policy.layers]]` rule** — `.env`
+stays denied under it. See [the limits](guide/limits.md) for the three sources a refusal can come
+from and which one asks.
+
+**`-C` on a path that is not an existing directory is refused before any run opens**, with exit
+`1`, and creates nothing. Through 0.40.0 it created the directory and ran inside it.
+
+Two more things a script may depend on, both new in 0.41.0 and both exit codes rather than text:
+
+- **`io config get <key>` exits `1` when there is no such key** and `0` otherwise. The line it
+  prints is unchanged. A key the catalogue names that no file sets is a successful read that
+  says `default` — "nothing set it" and "there is no such key" are different answers, and only
+  the second is an error.
+- **`io config set` on a list key refuses a single quoted command line**, with exit `1` and a
+  message naming the form that works. The two list keys are `app.io-cli.gates.command` and
+  `app.io-cli.browser.args`, and their words go after `--`:
+  `io config set app.io-cli.gates.command -- python3 --version`. After `--` a single element
+  containing a space is taken at its word, so a program path with a space stays expressible.
 
 `io exec` additionally takes `--json`, `--sandbox <read-only|workspace-write|full-access>`,
 `--policy <workspace|read-only>` and `--provider <openrouter|anthropic|openai>`.

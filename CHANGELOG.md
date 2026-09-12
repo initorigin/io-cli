@@ -6,6 +6,101 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-12
+
+Everything the 0.40.0 field report found, fixed on io's side — and the permission
+surface stops being the thing that blocks you.
+
+### Upgrading
+
+- **A refusal that came from a *default* now asks instead of refusing.** This is on
+  out of the box. When the agent is stopped by `policy.defaults` — the tier that
+  applies when no rule matched — you get the approval overlay rather than a dead
+  end, and your answer holds for that call, for the session, or for good.
+
+  **A refusal that came from a rule you wrote still refuses, silently and always.**
+  A `[[policy.layers]]` deny is never escalated, never drawn and never asked, and
+  neither is a path outside the workspace root. This release changes *when io
+  asks*, never *what io permits*: it widens nothing a configuration file could not
+  already express. Set `[app.io-cli] escalate = false` for 0.40.0's behaviour.
+
+- **`io resume` with no argument now lists.** It used to fail with
+  `the following required arguments were not provided: <RUN_ID>`, which the
+  top-level help already contradicted. `--list` still works and prints the same
+  thing. A script that relied on bare `io resume` exiting non-zero will now get a
+  listing and exit `0`.
+
+- **`io config get` on a key that does not exist now exits `1`.** It exited `0`,
+  so `if io config get some.key >/dev/null; then` took the success branch for a key
+  io has never heard of. The line printed is unchanged. A key that *is* in the
+  catalogue but that no file sets still exits `0` and says `default` — "nothing set
+  it" and "there is no such key" are different answers.
+
+- **`io -C <dir>` on a path that does not exist is now an error.** It used to
+  create the directory and work inside it, so a mistyped workspace quietly became a
+  real one. If you were relying on `-C` to make a directory, make it first.
+
+- **A gate set with a quoted command line is now refused.**
+  `io config set app.io-cli.gates.command "python3 --version"` stored one argv
+  element containing a space, which can never run. Write the words after `--`:
+  `io config set app.io-cli.gates.command -- python3 --version`.
+
+- **A note the agent writes about its own work no longer reaches that same run.**
+  This is io-harness 0.85.0's doing rather than io's: a run's prompt is now
+  append-only between folds, because re-reading the memory block every turn threw
+  the provider's prefix cache away for the rest of the run. The note takes effect at
+  the next fold or the next run, and `/recall` counts it as drawn then.
+
+### Added
+
+- **`--full-access` runs a session unconfined**, in one word, for an operator who
+  means it. It sets every tier default to `allow` and puts the turn on
+  io-harness's `ExecMode::FullAccess` — which is the only thing in io that reaches
+  a call the sandbox refuses structurally rather than by policy, such as a
+  `bind()`, at every posture.
+
+  It is deliberately **not** in the `Shift+Tab` cycle: `Posture::ALL` still has
+  three entries, so the widest grant in the product is not one keypress from
+  `read-only`. It is **marked on every frame** it is in force. It is **never
+  written to a file**, so it lasts the session and cannot be committed. It cannot
+  be requested by the agent. And it still does not unlock what a
+  `[[policy.layers]]` rule refused — `.env` stays denied under full access.
+
+- **`[app.io-cli] escalate`**, the switch for the escalation above. Absent means
+  on; it is the one key in this section whose absence is not "behave as before".
+
+- **A failed gate says why.** io-harness 0.86.0 emits `gate_output` carrying the
+  command's output and its exit code, and the transcript now quotes the first lines
+  of it. A gate that printed nothing says so; one killed by a signal or a sandbox
+  cap is named as killed rather than given an invented exit code. `io exec --json`
+  forwards the whole bounded string.
+
+### Fixed
+
+- **`gates.retries` bounds a headless run at last.** The session has honoured it
+  since 0.24.0; `io exec` never has, because it runs one turn and keeps no loop of
+  its own — so a mis-set gate failed on every step until the forty-step cap. One
+  observed run made twenty-one gate attempts across sixteen steps over more than
+  fifteen minutes, every one a paid completion. `retries = 1` now means two
+  attempts, and the run says which number ran out. The exit code is unchanged: a
+  run whose gate failed still exits `6`.
+
+- **The contentless gate line is gone.** It read "the gate command printed output"
+  — a sentence announcing that a diagnosis exists without being one — and it is
+  replaced by the line that carries the text.
+
+### Changed
+
+- **io-harness is pinned to 0.86.0**, up from 0.83, across three releases. Provider
+  error bodies are now redacted at the source, so an identifier in a provider's 400
+  no longer reaches the transcript; MCP server stderr is captured as a store row
+  instead of leaking onto io's own error channel; the shell tool's refused
+  constructs are stated to the model in its own tool description rather than met one
+  refusal at a time; and a shell stage's writes through `>`, `>>`, `tee`, `cp` and
+  `mv` are journalled, so `/undo` can put them back. An in-place editor such as
+  `sed -i` is still outside the journal, which io-harness states as a limit of its
+  own.
+
 ## [0.40.0] - 2026-09-07
 
 Every key io documents can be set from either door, and nothing decides on your
@@ -3843,7 +3938,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/initorigin/io-cli/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/initorigin/io-cli/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/initorigin/io-cli/compare/v0.38.2...v0.39.0
 [0.38.2]: https://github.com/initorigin/io-cli/compare/v0.38.1...v0.38.2
