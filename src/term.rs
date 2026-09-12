@@ -324,12 +324,19 @@ impl Screen<CrosstermBackend<io::Stdout>> {
         .map_err(|error| {
             io::Error::new(
                 error.kind(),
+                // **No version in a runtime message.** This ended "`io exec` and a
+                // non-interactive mode are 0.5.0", which was written when they were
+                // forthcoming and read, on every binary since, as though they still
+                // were — a field pass met it on 0.40.0 and took it for a stale
+                // build. A release number is a fact about history and belongs in
+                // `CHANGELOG.md`; what an operator holding this binary needs is the
+                // command that works, which they have right now.
                 format!(
                     "{error}. io asks the terminal where its cursor is before it \
                      draws anything, and this one did not answer. That usually \
                      means stdout is not a real terminal — a pipe, a CI job, or a \
-                     pty with nothing behind it. `io exec` and a non-interactive \
-                     mode are 0.5.0."
+                     pty with nothing behind it. Run `io exec \"<goal>\"` instead, \
+                     which needs no terminal."
                 ),
             )
         })?;

@@ -2433,3 +2433,78 @@ fn f1_the_session_door_spells_a_config_value_through_the_one_speller() {
          source; that is what wrote `allow` as a bare word TOML cannot parse",
     );
 }
+
+/// **No message an operator can be shown names a release number.**
+///
+/// The no-TTY refusal ended "`io exec` and a non-interactive mode are 0.5.0". That
+/// was written when both were forthcoming, and it went on saying so for
+/// thirty-five releases: a field pass met it on a **0.40.0** binary and read it as
+/// a stale build, which is what a version in a runtime message means to anybody
+/// holding a later one.
+///
+/// A release number is a fact about history and `CHANGELOG.md` is where it lives.
+/// What an operator stopped by a refusal needs is the thing that works now.
+///
+/// **Comments are stripped first** by [`code_of`], for the reason the agent-loop
+/// sweep above strips them: this crate's prose names releases on almost every page
+/// — including the paragraph you are reading — and a gate that reads comments
+/// forbids a file from explaining itself.
+///
+/// **Deliberately narrow.** It looks for a version behind a word that *dates*
+/// something (`are 0.`, `since 0.`, `in 0.`), not for any number with dots: a
+/// citation like `io-harness-0.86.0/src/…` is a reference rather than a claim
+/// about this binary, and a version compared at runtime is data rather than prose.
+///
+/// Sabotage: put `are 0.5.0.` back into `src/term.rs` and this names the file.
+#[test]
+fn n7_no_operator_facing_string_names_a_release_number() {
+    // **The phrasing that promises, not every phrasing that mentions.** A version
+    // in a message is not wrong by itself: `servers::OLDER_BINARY` says an
+    // `enabled` key is "understood from 0.29.0" so an operator knows whether a
+    // colleague's older binary will honour it, which is a compatibility fact that
+    // is useful precisely because it names a release — and this crate already has
+    // a gate holding that constant's shape.
+    //
+    // What is always wrong is a message dating a capability as though it were
+    // still ahead of the reader. "`io exec` and a non-interactive mode ARE 0.5.0"
+    // was true when written and false in every binary since, which is how a field
+    // pass on 0.40.0 read it as a stale build.
+    const DATING: &[&str] = &["are 0.", "arrives in 0.", "arrive in 0.", "will be 0."];
+
+    // **Swept over the whole file rather than line by line, and the first draft of
+    // this gate was VACUOUS for exactly that reason.** It collected `"…"` pairs per
+    // line, and this crate writes long messages as one literal continued across
+    // lines with a trailing `\` — so the line carrying `mode are 0.5.0."` opens no
+    // quote of its own, matched nothing, and the gate passed while the defect it
+    // was written for sat two files away. Found by putting the bad sentence back
+    // and watching it stay green, which is the only way this class is ever found.
+    //
+    // Comments are gone by here, so an occurrence in what is left is in code, and
+    // `are 0.` in code is a sentence somebody wrote for a person to read.
+    let mut found: Vec<String> = Vec::new();
+    for (path, text) in sources() {
+        let code = code_of(&text);
+        // No exclusion for a citation of the pinned harness. An early draft carried
+        // one, and it had to go for a reason worth keeping: spelling the prefix out
+        // put a version string into THIS file, which `tests/docs.rs`'s citation
+        // gate then read as a citation of an io-harness nobody pins. The narrowed
+        // phrases below cannot match a citation anyway — `io-harness-0.86.0/src/…`
+        // contains none of them — so the guard was buying a false positive in one
+        // gate to prevent one that could not happen in this one.
+        for lead in DATING {
+            if let Some(at) = code.find(lead) {
+                let line = code[..at].lines().count();
+                let excerpt: String = code[at..].chars().take(60).collect();
+                found.push(format!("{}:{line}: …{excerpt}…", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "these operator-facing strings date something by release, which reads as a \
+         stale build to anybody holding a later binary. Move the fact to \
+         CHANGELOG.md and tell them what works now:\n{}",
+        found.join("\n"),
+    );
+}

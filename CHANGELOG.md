@@ -111,6 +111,29 @@ surface stops being the thing that blocks you.
   attempts, and the run says which number ran out. The exit code is unchanged: a
   run whose gate failed still exits `6`.
 
+- **A slash command typed in full runs on the first `Enter`.** Typing `/cost` and
+  pressing `Enter` accepted the completion — replacing `/cost` with `/cost` — and
+  did nothing else, so it took a second press. A *partial* query still completes
+  rather than running, which is what a palette is for.
+
+- **`/contain on` typed in one go now matches `/contain`.** The palette filtered on
+  the whole string, so io's own notice told you to type a form io then refused. The
+  command half is what is matched; `Enter` still submits the whole line, argument
+  and all, rather than choosing the row and dropping it.
+
+- **A slash command typed into an open picker says where it went.** It silently
+  became a filter, leaving `No row matches "/memory"` and nothing to explain it.
+  The picker names itself and says `Esc` first.
+
+- **The palette's `⋯ N more` counter moves.** It counted the whole list minus what
+  fits — a constant — so it read `⋯ 53 more` on the first row of fifty-eight and
+  `⋯ 53 more` again on the last. It counts what is below the window now, and
+  disappears when the end is visible.
+
+- **The no-TTY message no longer dates itself.** It ended "`io exec` and a
+  non-interactive mode are 0.5.0", which was true when written and read as a stale
+  build on every binary since.
+
 - **`--sandbox` is accepted on either side of the subcommand.** `-C`, `-m`,
   `--profile` and `--plain` all were; this one was not, so
   `io --sandbox full-access exec "…"` failed while every neighbouring flag worked.
