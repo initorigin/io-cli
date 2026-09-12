@@ -1155,6 +1155,26 @@ impl Events {
                         "{separator}no rule named it: the tier default decided"
                     )),
                 }
+                // **The one refusal that names its cure (0.41.0).** A path inside
+                // io's own configuration home is refused by the tool layer's
+                // workspace-root check, before any policy is consulted and with no
+                // layer to attribute it to — so it is the single refusal in the
+                // product that no posture, no `[[policy.layers]]` rule and no
+                // sandbox mode can lift, `--full-access` included.
+                //
+                // It is also the one an operator meets while trying to configure io
+                // from inside io, which is exactly when a bare refusal is most
+                // useless: the thing they wanted is a keystroke away and the
+                // sentence did not say so.
+                //
+                // Only for that path. A refusal that named `/config` for an
+                // ordinary denied write would send an operator to a surface that
+                // cannot help, which is worse than saying nothing.
+                if let Some(home) = crate::home::authored() {
+                    if std::path::Path::new(target.as_str()).starts_with(&home) {
+                        text.push_str(&format!("{separator}use /config to change it"));
+                    }
+                }
                 let mut lines = self.flush_text();
                 lines.push(theme.notice(Tone::Refused, text));
                 lines

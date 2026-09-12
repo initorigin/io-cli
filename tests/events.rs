@@ -3537,3 +3537,63 @@ fn f8_a_spawned_childs_outcome_is_drawn_as_words() {
         }
     }
 }
+
+/// **The one refusal that names its cure.**
+///
+/// A path inside io's own configuration home is refused by the tool layer's
+/// workspace-root check — before any policy is consulted, with no layer to
+/// attribute it to — so it is the single refusal in the product that no posture,
+/// no `[[policy.layers]]` rule and no sandbox mode can lift, `--full-access`
+/// included. It is also the one an operator meets while trying to configure io
+/// from inside io, which is when a bare refusal is most useless: the thing they
+/// wanted is a keystroke away and the sentence did not say so.
+///
+/// **The negative is the half that keeps it useful.** Naming `/config` on an
+/// ordinary denied write would send an operator to a surface that cannot help
+/// them, which is worse than saying nothing at all.
+///
+/// Sabotage: drop the `starts_with` guard and the second assertion fails, because
+/// every refusal then advertises a surface that will not help.
+#[test]
+fn the_configuration_home_refusal_names_the_surface_that_can_change_it() {
+    let Some(home) = io_cli::home::authored() else {
+        // No home on this machine means no such refusal to render. Skipping is
+        // honest here; asserting on a path that cannot occur would be a test of
+        // the fixture rather than of the product.
+        return;
+    };
+
+    let mut events = Events::new(DARK);
+    let inside = home.join("io.toml");
+    let drawn = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "write".into(),
+            target: inside.display().to_string(),
+            rule: None,
+            layer: None,
+        },
+    );
+    assert!(
+        drawn.contains("/config"),
+        "the one refusal nothing can lift does not name the surface that can \
+         change it: {drawn:?}",
+    );
+
+    // An ordinary refusal inside the workspace says nothing of the sort.
+    let mut events = Events::new(DARK);
+    let ordinary = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "write".into(),
+            target: "src/main.rs".into(),
+            rule: Some("src/*".into()),
+            layer: Some("app".into()),
+        },
+    );
+    assert!(
+        !ordinary.contains("/config"),
+        "an ordinary refusal advertises `/config`, which cannot help with a rule \
+         in a policy layer: {ordinary:?}",
+    );
+}

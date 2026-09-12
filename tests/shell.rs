@@ -401,3 +401,78 @@ fn f4_foreign_output_cannot_erase_the_transcript() {
         );
     }
 }
+
+/// **The shell's refused constructs reach the model in its own tool description.**
+///
+/// A field pass watched the agent rediscover the rules one refusal at a time — a
+/// stream merge on a piped stage, a parameter expansion, a glob — each costing a
+/// wasted round trip. The rules themselves are defensible; meeting them one at a
+/// time is what was not.
+///
+/// io-harness 0.86.0 splices its own `REFUSED_CONSTRUCTS` into the shell tool's
+/// description, so the model is told before it tries. **io-cli holds no copy of
+/// that list and must not**: the table is `pub(crate)` upstream, and a second copy
+/// here would be a second opinion about somebody else's rules that goes stale the
+/// first time one is added.
+///
+/// So what is asserted is the thing io-cli actually depends on — that the pinned
+/// harness still ships the grammar in the description it hands a provider. If
+/// upstream ever stops, `docs/guide/limits.md`'s claim becomes false and this goes
+/// red rather than the claim quietly rotting.
+///
+/// Sabotage: point `harness_source_at` at a file with no such splice and this
+/// fails naming what it looked for.
+#[test]
+fn f10_the_pinned_harness_states_its_shell_grammar_to_the_model() {
+    let prompts = support::harness_source_at(&["run", "prompts.rs"]);
+    assert!(
+        prompts.contains("REFUSED_CONSTRUCTS"),
+        "the pinned io-harness no longer splices its refused constructs into a \
+         prompt, so `docs/guide/limits.md`'s claim that the grammar reaches the \
+         model is no longer true",
+    );
+
+    // And the table it splices is a real, populated one rather than an empty
+    // placeholder — an empty list would satisfy the needle above and tell the
+    // model nothing.
+    let shell = support::harness_source_at(&["tools", "shell.rs"]);
+    let declared = shell
+        .split("REFUSED_CONSTRUCTS")
+        .nth(1)
+        .unwrap_or_default()
+        .split("];")
+        .next()
+        .unwrap_or_default();
+    let named = declared.matches('"').count() / 2;
+    assert!(
+        named > 5,
+        "the refused-construct table has {named} entries, which is not a grammar \
+         worth telling a model about",
+    );
+}
+
+/// **A shell-made change can be put back, and the one that still cannot is named.**
+///
+/// `/undo` reported "no file was put back" for anything the agent wrote with
+/// `echo >>`, `>` or `mv` — and those are exactly the tools a model reaches for
+/// when asked to use the shell, so the undo journal had a hole the size of the
+/// shell.
+///
+/// io-harness 0.86.0 journals the write targets of the redirections and the two
+/// file-moving builtins before the stage runs. **An in-place editor is still
+/// outside it**, which io-harness states as a limit of its own rather than
+/// guessing at what such a command touched — and `docs/guide/store.md` says so,
+/// because a restore that silently does not happen is worse than one that says it
+/// cannot.
+///
+/// Sabotage: none is possible from here — this asserts a property of the pinned
+/// dependency, and the thing it protects is a sentence in a shipped page.
+#[test]
+fn f10_the_pinned_harness_journals_what_a_shell_stage_writes() {
+    let shell = support::harness_source_at(&["tools", "shell.rs"]);
+    assert!(
+        shell.contains("journal"),
+        "the pinned io-harness does not journal a shell stage's writes, so \
+         `docs/guide/store.md`'s claim that `/undo` can put one back is false",
+    );
+}

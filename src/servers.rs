@@ -393,6 +393,42 @@ pub fn costed(servers: &mut [Server], cost: &BTreeMap<String, u64>) {
 }
 
 /// How a server is reached, in one short string.
+/// What a server's own process wrote to its stderr during `run_id`.
+///
+/// **It used to land on io's stderr, and that is what the pin fixed.** Every run
+/// loading an MCP server printed the server's banner into io's own error channel —
+/// `semlith 0.8.0: serving 1 store on initorigin` in the middle of a CI log — so
+/// third-party output and io's own diagnostics were the same stream. io-harness
+/// 0.86.0 captures it as a `ContextEvent` of kind `mcp_stderr` instead.
+///
+/// **Which leaves it readable but nowhere read, and that is what this is for.** A
+/// server that will not start writes its reason there, so the text is worth
+/// exactly as much as it was before and needs a surface rather than a stream. The
+/// rows carry `<id>: <text>`, so the id is recovered by splitting on the first
+/// colon — io-harness composes them that way and this is the reader of a format it
+/// writes.
+///
+/// Empty for a run with no MCP server, for a store that will not answer, and for a
+/// server that said nothing — three different facts that all mean "there is
+/// nothing to show", which is why they share an answer here and are told apart by
+/// the caller's own sentence.
+#[must_use]
+pub fn stderr_of(store: &io_harness::Store, run_id: i64, id: &str) -> Vec<String> {
+    let Ok(events) = store.context_events(run_id) else {
+        return Vec::new();
+    };
+    events
+        .into_iter()
+        .filter(|event| event.kind == "mcp_stderr")
+        .filter_map(|event| event.detail)
+        .filter_map(|detail| {
+            let (server, text) = detail.split_once(':')?;
+            (server.trim() == id).then(|| text.trim().to_string())
+        })
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
 /// Everything `io mcp get` shows about one server, as labelled rows.
 ///
 /// **`get` printed exactly what `list` printed, and the help promised otherwise.**

@@ -10546,6 +10546,25 @@ async fn manage_main(
                             println!("\t{label}\t{value}");
                         }
                     }
+                    // **What the server's own process said, from the last run that
+                    // loaded it.** io-harness 0.86.0 stopped letting an MCP
+                    // server's stderr onto io's own error channel — a banner in
+                    // the middle of every CI log — and keeps it as a store row
+                    // instead. That fixed the pollution and left the text
+                    // unreadable, which matters because a server that will not
+                    // start writes its reason there. This is the surface for it,
+                    // and `get` is the verb whose whole job is the detail.
+                    if let Some(store) = io_cli::settings::store_path()
+                        .and_then(|path| io_harness::Store::open(&path).ok())
+                    {
+                        if let Ok(runs) = store.runs() {
+                            for run in runs.into_iter().rev().take(1) {
+                                for line in io_cli::servers::stderr_of(&store, run, id) {
+                                    println!("\tstderr\t{line}");
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
