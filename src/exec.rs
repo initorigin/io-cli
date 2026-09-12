@@ -973,7 +973,21 @@ impl WithProvider for Headless {
         if let Some(said) = said {
             eprintln!("io: {said}");
         }
+        // **The gate's own budget, and only when a gate is configured.** With no
+        // criterion there is nothing to count and this observer never fires; with
+        // one, it is what stops a mis-set gate spending the whole step cap on the
+        // same failure. See `gates::Budget` for why it is an observer rather than
+        // a contract field, and why cancelling through it still exits `6`.
+        //
+        // **On both headless doors.** A resume is what an operator reaches for
+        // after the first door ended badly, and a fix that landed on one of these
+        // and not the other is the shape 0.38.1 paid for.
+        let budget = crate::contract::gate_budget(&self.config);
+
         let mut observers: Vec<&dyn Observer> = vec![observer];
+        if let Some(budget) = &budget {
+            observers.push(budget);
+        }
         if let Some(hooks) = &hooks {
             observers.push(hooks);
         }
@@ -1023,6 +1037,24 @@ impl WithProvider for Headless {
             let _ = out.flush();
         }
         eprintln!("io: {}", describe(&result.outcome));
+        // **A run this crate stopped says so in its own words, before the outcome
+        // is read as something the operator did.** `describe` renders a
+        // `Cancelled` run as "was cancelled", which is true of the mechanism and
+        // wrong about the cause: nobody pressed anything. The budget is the only
+        // thing in `io exec` that cancels, so if it is spent it is what happened,
+        // and saying which number ran out is what turns the stop into an
+        // instruction — the gate is wrong, or `retries` is too low.
+        if let Some(budget) = &budget {
+            if budget.spent() {
+                let allowed = budget.allowed();
+                eprintln!(
+                    "io: the gate failed {allowed} time{} and `[app.io-cli.gates] retries` allows \
+                     no more, so the run was stopped rather than sent back to the same failure; \
+                     raise `retries`, or fix the criterion",
+                    if allowed == 1 { "" } else { "s" }
+                );
+            }
+        }
         if let Some(parked) = parked(&result.outcome, result.run_id) {
             eprintln!("io: {parked}");
         }
@@ -1710,7 +1742,21 @@ impl WithProvider for Resuming {
         if let Some(said) = said {
             eprintln!("io: {said}");
         }
+        // **The gate's own budget, and only when a gate is configured.** With no
+        // criterion there is nothing to count and this observer never fires; with
+        // one, it is what stops a mis-set gate spending the whole step cap on the
+        // same failure. See `gates::Budget` for why it is an observer rather than
+        // a contract field, and why cancelling through it still exits `6`.
+        //
+        // **On both headless doors.** A resume is what an operator reaches for
+        // after the first door ended badly, and a fix that landed on one of these
+        // and not the other is the shape 0.38.1 paid for.
+        let budget = crate::contract::gate_budget(&self.config);
+
         let mut observers: Vec<&dyn Observer> = vec![observer];
+        if let Some(budget) = &budget {
+            observers.push(budget);
+        }
         if let Some(hooks) = &hooks {
             observers.push(hooks);
         }

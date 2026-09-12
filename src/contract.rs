@@ -566,6 +566,18 @@ pub fn masking(contract: TaskContract, mask: &io_harness::ToolMask) -> TaskContr
 /// This is what lets `io exec` fold the gate rows the same way a session does —
 /// without it the headless arm reads io-harness's `phase = "none"` bookkeeping as
 /// a failed gate, and a bare `file` criterion is never evaluated at all.
+/// The budget a headless run's gate is allowed, when one is configured.
+///
+/// **One reader of `retries` for both headless doors**, so `io exec` and
+/// `io resume` cannot disagree about how many attempts an operator asked for —
+/// the divergence that let `io resume` miss both of 0.38.1's fixes. `None` when
+/// no criterion resolves, which is what makes the observer cost nothing on a run
+/// with no gate.
+pub fn gate_budget(config: &Config) -> Option<crate::gates::Budget> {
+    let gates = crate::settings::stored(config).0?.gates?;
+    criterion_of(config).map(|_| crate::gates::Budget::new(gates.retries()))
+}
+
 pub fn criterion_of(config: &Config) -> Option<crate::gates::Criterion> {
     let gates = crate::settings::stored(config).0?.gates?;
     let working = config

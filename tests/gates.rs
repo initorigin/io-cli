@@ -982,3 +982,100 @@ fn f3_a_gate_inside_a_section_that_will_not_parse_refuses_the_run() {
         "a readable gate is in force and must not be refused",
     );
 }
+
+/// **F6 — `retries` bounds a headless run's gate, which it never did.**
+///
+/// The session has honoured `retries` since 0.24.0 through [`gates::may_retry`].
+/// `io exec` has one turn and no loop of its own, so nothing between io-cli and
+/// io-harness was counting: a gate of `["false"]` failed on every step until the
+/// gated step cap. A field pass measured twenty-one attempts across sixteen steps
+/// over fifteen minutes, every one a paid completion.
+///
+/// Asserted on the observer rather than on a run, because a run needs a provider.
+/// The arm that proves it reaches a real `io exec` is in the live suite — a unit
+/// test hands the counter its own events and cannot prove the door attaches it.
+///
+/// Sabotage: return `Flow::Continue` unconditionally from `Budget::event` and the
+/// third assertion fails; count `gate_output` beside `gate_phase_failed` and the
+/// last one does.
+#[test]
+fn f6_a_headless_gate_stops_when_retries_is_spent() {
+    use io_harness::{EventKind, Observer, RunEvent};
+
+    let failed = || {
+        RunEvent::new(
+            1,
+            1,
+            EventKind::Sandbox {
+                kind: gates::PHASE_FAILED.to_string(),
+                backend: None,
+            },
+        )
+    };
+
+    // `retries = 1` is two attempts: the first, and the one more it earns. The
+    // same reading `may_retry` gives it and the same words `/gates` shows.
+    let budget = gates::Budget::new(1);
+    assert_eq!(
+        budget.allowed(),
+        2,
+        "a retry is one attempt beyond the first"
+    );
+
+    assert!(
+        !budget.event(&failed()).is_cancel(),
+        "the first failure spent the whole budget, so `retries = 1` bought nothing",
+    );
+    assert!(!budget.spent(), "one failure of two is not a spent budget");
+
+    assert!(
+        budget.event(&failed()).is_cancel(),
+        "the second failure did not stop the run, so `retries` still buys an \
+         unbounded number of attempts and a mis-set gate still costs a completion \
+         per step until the step cap",
+    );
+    assert!(
+        budget.spent(),
+        "the budget is spent and the door must say so"
+    );
+
+    // **`retries = 0` is one attempt, not zero.** A gated run always evaluates its
+    // criterion once; `retries` counts what comes after that.
+    let none = gates::Budget::new(0);
+    assert_eq!(none.allowed(), 1);
+    assert!(
+        none.event(&failed()).is_cancel(),
+        "with no retries the first failure is the last",
+    );
+
+    // **Only the event that says a criterion answered.** `gate_output` is the same
+    // attempt reported a second time with the text in it, and counting both would
+    // halve every budget an operator writes.
+    let paired = gates::Budget::new(1);
+    let _ = paired.event(&failed());
+    assert!(
+        !paired
+            .event(&RunEvent::new(
+                1,
+                1,
+                EventKind::GateOutput {
+                    output: "false".into(),
+                    exit_code: Some(1),
+                },
+            ))
+            .is_cancel(),
+        "a `gate_output` was counted as a second attempt, so every budget is half \
+         what the operator asked for",
+    );
+    assert_eq!(paired.failures(), 1, "one attempt, reported twice");
+
+    // A run with no gate never builds one of these, and a passing gate emits no
+    // failing event, so nothing here fires on a healthy run.
+    let quiet = gates::Budget::new(0);
+    assert!(
+        !quiet
+            .event(&RunEvent::new(1, 1, EventKind::Stalled))
+            .is_cancel(),
+        "an unrelated event was counted as a gate failure",
+    );
+}
