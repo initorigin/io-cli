@@ -1637,6 +1637,38 @@ fn config_set(args: &Args) -> Result<Request, String> {
         }
         (None, _) => {}
     }
+
+    // **A quoted command line is one argv element, and storing it was worse than
+    // refusing it.** 0.40.0 taught this parser the `--` form, which is what makes
+    // a list key settable at all — but it left the shape an operator reaches for
+    // first working and wrong: `io config set app.io-cli.gates.command "python3
+    // --version"` is one positional word, so it stored the single element
+    // `["python3 --version"]` and exited 0. `execvp` is then handed a binary whose
+    // name is the whole command line, and the gate fails every step of every run
+    // with nothing anywhere saying why. A field pass met exactly that: fourteen
+    // failures in one run while the agent's own `exec python3` returned 0 beside
+    // them.
+    //
+    // **Only when `--` was not used, which is what makes this precise rather than
+    // a heuristic.** After `--` the operator has spelled the vector out, so a
+    // single element containing a space is a program path with a space in it and
+    // is taken at its word. Without `--` a lone space-bearing value is a command
+    // line that has not been split, and there is no reading of it that this key
+    // can use. So the refusal costs nothing expressible and the escape is the one
+    // the message names.
+    if listed && args.opaque.is_none() {
+        if let [only] = words.as_slice() {
+            if only.chars().any(char::is_whitespace) {
+                return Err(format!(
+                    "`{key}` is a command and its arguments, and `{only}` arrived as a single \
+                     word — quoted, it would be stored as one argv element and run as a program \
+                     whose name contains a space, which fails on every step. Write the words \
+                     after `--`, as in `config set {key} -- {only}`"
+                ));
+            }
+        }
+    }
+
     let value = config_value(&key, &words)?;
 
     // Reported here rather than discovered by the round trip, because the round

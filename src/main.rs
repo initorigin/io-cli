@@ -130,6 +130,24 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     }
 
     let root = match cli.dir {
+        // **A workspace is named, never created, and this is the only place that
+        // can hold that line.** `io -C /tmp/typo exec "…"` used to *make*
+        // `/tmp/typo` and work inside it: the agent reported `pwd` as the new
+        // directory, wrote files there, and the run reported success, so a
+        // mistyped path silently became a workspace and the work went somewhere
+        // nobody would look for it again. Nothing below can refuse it — the check
+        // has to precede `home::adopt` and the discovery under it, both of which
+        // derive their own paths from this one.
+        //
+        // **`is_dir` and not `exists`**, so a `-C` pointed at a *file* is refused
+        // too rather than failing later with something about a store.
+        Some(dir) if !dir.is_dir() => {
+            return Err(format!(
+                "`-C {}` is not a directory that exists, and io does not create a workspace from \
+                 a path that names nothing — make it first if that is what you meant",
+                dir.display()
+            ));
+        }
         Some(dir) => dir,
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
@@ -10287,6 +10305,23 @@ async fn manage_main(
                 setting.value.as_deref().unwrap_or(""),
                 setting.decided.word()
             );
+            // **A key that does not exist is not a successful read, and until this
+            // release it exited `0`.** Any script probing for a key got a false
+            // pass: `io config get nope.nope` printed `no such key` in the origin
+            // column and reported success, so `if io config get k >/dev/null;
+            // then` took the branch for a key io has never heard of. The verb
+            // dispatcher already got this right — `io config bogusverb` exits 1 —
+            // so `get` was the one door in this surface that lied to a caller.
+            //
+            // **The line is still printed and no second message is added.** A
+            // caller reading stdout sees exactly what it saw before; what changes
+            // is only the code beside it, which is the half a script actually
+            // branches on. `1` and not `2`: `docs/CONTRACT.md` gives `1` as a
+            // command line that was not understood and `2` as a boundary refusal,
+            // and asking for a key that is not in the catalogue is the former.
+            if matches!(setting.decided, io_cli::configure::Decided::Unknown) {
+                return Ok(1);
+            }
         }
         io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::List) => {
             // **The origin column, and it is not optional.** A headless listing
