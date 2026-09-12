@@ -925,6 +925,32 @@ pub fn session_policy(
     effective_policy(&policy, remembered)
 }
 
+/// Every act allowed: the tier defaults `--full-access` and `/policy full-access`
+/// put in force.
+///
+/// **A constant rather than a fourth `Posture`, and that is the whole of what
+/// keeps it safe to spell in one word.** `Posture::ALL` still has three entries,
+/// so `Shift+Tab` cycles `workspace`, `ask-writes` and `read-only` and cannot
+/// reach this — the widest grant in the product must not be one keypress from
+/// `read-only`, and a fourth variant would have put it there by construction
+/// rather than by anybody deciding to.
+///
+/// **It replaces the tier defaults and nothing else.** A layer that denies a
+/// secret is not a default, so this cannot unlock what a `[[policy.layers]]` rule
+/// refused: `.env`, `*.pem` and the rest stay denied under full access exactly as
+/// they stay denied under every posture. The widest grant io offers still does not
+/// defeat a rule the operator wrote down.
+///
+/// It is never written to a file by io. It lasts the session, so it cannot be left
+/// on by accident, cannot be committed into a repository, and cannot be requested
+/// by the agent.
+pub const UNCONFINED: io_harness::policy::Defaults = io_harness::policy::Defaults {
+    read: io_harness::Effect::Allow,
+    write: io_harness::Effect::Allow,
+    exec: io_harness::Effect::Allow,
+    net: io_harness::Effect::Allow,
+};
+
 /// The same tier defaults with every `Deny` turned into an `Ask`.
 ///
 /// **This is the whole of the escalation, and where it sits is the whole of why

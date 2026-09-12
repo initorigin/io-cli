@@ -349,6 +349,12 @@ pub struct App {
     /// and `true` when no file names it — see [`crate::settings::CliSettings`]
     /// for why that default is the one key here whose absence is not "as before".
     escalate: bool,
+    /// Whether this session is running unconfined.
+    ///
+    /// Set by `--full-access` at startup and by `/policy full-access` behind a
+    /// confirmation. Never read from and never written to a configuration file:
+    /// the grant lasts the session and no longer.
+    full_access: bool,
     /// Whether this turn has already been told why its git tools did nothing.
     ///
     /// **One paragraph per turn, not one per refused call.** A model that reaches
@@ -382,6 +388,7 @@ impl App {
             // — the driver's, and every test that builds an `App` directly —
             // meets the shipped behaviour rather than the disabled one.
             escalate: true,
+            full_access: false,
             queued: Vec::new(),
             prompts: Vec::new(),
             queue_open: false,
@@ -717,10 +724,36 @@ impl App {
     /// Say which posture the session started under. The status line follows it.
     pub fn set_posture(&mut self, posture: Option<Posture>) {
         self.posture = posture;
+        // **Full access outranks the posture word on this field, because it
+        // outranks the posture.** The three postures describe tier defaults that
+        // `Shift+Tab` moves between; full access has replaced all four of them
+        // with `allow`, so drawing `policy:workspace` beside an unconfined session
+        // would put a true-looking word next to a boundary that is not there. The
+        // one thing worse than an unconfined session is one that looks ordinary.
+        if self.full_access {
+            self.status.policy = Some(Posture::FULL_ACCESS.to_string());
+            return;
+        }
         self.status.policy = Some(match posture {
             Some(posture) => posture.short().to_string(),
             None => "custom".to_string(),
         });
+    }
+
+    /// Put the session on full access, or take it back off.
+    ///
+    /// Never written to a file — it lasts the session, which is what stops it
+    /// being left on by accident or committed into a repository. Re-running
+    /// [`App::set_posture`] is what redraws the field, so the marker and the
+    /// posture word cannot disagree.
+    pub fn set_full_access(&mut self, full_access: bool) {
+        self.full_access = full_access;
+        self.set_posture(self.posture);
+    }
+
+    /// Whether this session is unconfined.
+    pub fn full_access(&self) -> bool {
+        self.full_access
     }
 
     /// Move to the next posture. One key, no menu, always visible — and it takes

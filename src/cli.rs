@@ -23,6 +23,33 @@ pub struct Cli {
     #[arg(short = 'C', long, value_name = "DIR", global = true)]
     pub dir: Option<PathBuf>,
 
+    /// Run unconfined: every act allowed, and the sandbox out of the way.
+    ///
+    /// **The one word for an operator who means it, and the only thing in io that
+    /// reaches an act no policy key can permit.** A sandbox denies some calls
+    /// structurally rather than by policy — a `bind()` is refused at every posture
+    /// because the backend gives the process no route to make one — so an operator
+    /// whose task genuinely needs that had nothing to reach for short of editing
+    /// two sections of a file.
+    ///
+    /// It sets all four `policy.defaults` to `allow` and puts the turn's contract
+    /// on `ExecMode::FullAccess` through io-harness's own `with_full_access`.
+    ///
+    /// **What it deliberately is not.** It is not in the `Shift+Tab` cycle and
+    /// `Posture::ALL` still has three entries, because the widest grant in the
+    /// product must not be one keypress from `read-only`. It is never written to a
+    /// file: it lasts the session and no longer, so it cannot be left on by
+    /// accident or committed into a repository. It is not requestable by the
+    /// agent. And it is marked on every frame it is in force, because the one
+    /// thing worse than an unconfined session is an unconfined session that looks
+    /// like an ordinary one.
+    ///
+    /// `global` for the reason `-C` is: it is typed on either side of a
+    /// subcommand, and `io exec --policy full-access` is the headless spelling of
+    /// the same grant.
+    #[arg(long, global = true)]
+    pub full_access: bool,
+
     /// A named profile from the configuration file, for this run only.
     ///
     /// `[profile.<name>]` is io-harness's own — a profile body is the file

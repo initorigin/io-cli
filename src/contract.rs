@@ -548,6 +548,35 @@ pub fn masking(contract: TaskContract, mask: &io_harness::ToolMask) -> TaskContr
     contract.with_tool_mask(mask.clone())
 }
 
+/// The sandbox half of `--full-access`: `ExecMode::FullAccess` on the contract.
+///
+/// **A sibling of [`buying`] and [`masking`] rather than a parameter of
+/// [`session`], for the reason those two are.** `session` is held to reproducing
+/// io-harness's `default_contract` field for field when nothing is configured,
+/// asserted by Debug equality — a sixth parameter would put a branch inside the
+/// one function that gate exists to keep branch-free. Applied at the turn doors
+/// and the resume door, which is where the other two are applied and for the same
+/// reason: three `session` callers build contracts nothing ever runs, and nothing
+/// under `tests/` links `src/main.rs`.
+///
+/// **The policy half is not here, and the two are genuinely different axes.**
+/// `approval::UNCONFINED` decides what the agent may *attempt*; this decides what
+/// the sandbox lets a command that ran actually *do*. Only the second reaches a
+/// `bind()` — a sandbox denies that structurally rather than by policy, at every
+/// posture, which is why the field report's `socket().bind()` failed with
+/// `Operation not permitted` under a policy that allowed everything. Setting one
+/// without the other would give an operator who asked for full access a session
+/// that still refused the one call they asked for it to make.
+///
+/// `false` returns the contract untouched, so a session that did not ask for this
+/// is byte-for-byte the contract it was before the release.
+pub fn unconfined(contract: TaskContract, full_access: bool) -> TaskContract {
+    if !full_access {
+        return contract;
+    }
+    contract.with_full_access()
+}
+
 /// The criterion this configuration resolves to, with its reviewer already built.
 ///
 /// `None` covers every case in which the run must not be gated: no section, a

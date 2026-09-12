@@ -637,6 +637,14 @@ impl Posture {
         }
     }
 
+    /// The word the status line and `--policy` use for an unconfined session.
+    ///
+    /// **Beside the three rather than among them.** It is an associated constant
+    /// and not a fourth [`Posture`] variant, so [`Posture::ALL`] still has three
+    /// entries and `Shift+Tab` still cannot reach it. One spelling, shared by the
+    /// flag, the status field and the headless door, so those three cannot drift.
+    pub const FULL_ACCESS: &'static str = "full-access";
+
     /// The next posture in the cycle. It wraps, because one key that only ever
     /// moves one way is a key you press three times to undo.
     pub fn next(self) -> Self {

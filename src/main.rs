@@ -408,6 +408,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         // run* would quietly stop meaning anything after the first prompt.
         cli.profile,
         plain,
+        cli.full_access,
         // Taken, not borrowed: from here the session owns the report and `main` has
         // nothing left to say on its behalf.
         std::mem::take(report),
@@ -440,6 +441,11 @@ async fn drive(
     // and a second read of the file at this depth would be a second answer to a
     // question already settled — one that silently drops the flag.
     plain: bool,
+    // `--full-access`, threaded down for the reason `plain` is: it is a flag, it
+    // outranks the file, and it must not be re-read from a configuration that has
+    // never heard of it. Nothing writes it back — the grant lasts this session and
+    // no longer, which is what stops it being left on or committed.
+    full_access: bool,
     // What `home::adopt` did, carried down from `run` rather than asked for again
     // here: `adopt` moves files, so a second call would be a second migration, and
     // by the time there is an `App` to say this in the environment already names
@@ -455,7 +461,20 @@ async fn drive(
         return Err("no provider is configured; run `io setup`".into());
     };
 
-    let policy = config.policy().unwrap_or_default();
+    let mut policy = config.policy().unwrap_or_default();
+    // **`--full-access` replaces the tier defaults and nothing else**, which is
+    // the same rule a posture follows and the reason it is safe to spell in one
+    // word: a layer that denies a secret is not a default, so the flag cannot
+    // unlock what a `[[policy.layers]]` rule refused. It is the widest grant in
+    // the product and it still does not defeat a rule the operator wrote down.
+    //
+    // The sandbox half rides the contract rather than the policy — see
+    // `contract::unconfined` — because the two are different axes: this is what
+    // the agent may attempt, and `ExecMode` is what the sandbox lets a command
+    // that ran actually do.
+    if full_access {
+        policy.defaults = io_cli::approval::UNCONFINED;
+    }
     // `[app.io-cli]` again, read through the harness rather than parsed here. It
     // is read in `drive` rather than in `run` because `run` may hand control to
     // the wizard, which writes the file this then reads back.
@@ -703,6 +722,7 @@ async fn drive(
             templates,
             theme,
             plain,
+            full_access,
             containment,
             capabilities,
             holdings,
@@ -951,6 +971,10 @@ struct Interactive<'a, 'b> {
     templates: Templates,
     theme: Theme,
     plain: bool,
+    /// Whether `--full-access` was given. Carried beside `plain` because it is the
+    /// same kind of fact: a flag, outranking the file, belonging to this run and
+    /// never written back.
+    full_access: bool,
     /// The caps a fan-out runs under, from `[app.io-cli.containment]`. `None`
     /// means the session cannot fan out at all, which is every session that
     /// configures nothing.
@@ -1015,6 +1039,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.templates,
             self.theme,
             self.plain,
+            self.full_access,
             self.containment,
             self.capabilities,
             self.holdings,
@@ -1050,6 +1075,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     templates: Templates,
     theme: Theme,
     plain: bool,
+    full_access: bool,
     // Mutable since 0.39.0: `/contain on` with nothing configured offers to write
     // a section, and an operator who accepts meant the next turn rather than the
     // next session.
@@ -1166,6 +1192,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.
     app.set_posture(Posture::of(&policy.defaults));
+    // **After the posture, because it replaces the word that one drew.** With
+    // `--full-access` in force every tier default is `allow`, so `Posture::of`
+    // above answers `None` and the field would otherwise read `policy:custom` —
+    // true of the struct and useless to a reader, who needs to know the session is
+    // unconfined rather than that io could not name its shape.
+    app.set_full_access(full_access);
+    // **`[app.io-cli] escalate`, and absent means on.** Read here beside the
+    // posture because the two answer the same question from opposite ends — the
+    // posture is what the tier defaults *are*, and this is whether the strictest
+    // of them refuses or asks. Every site that builds a turn's policy reads it
+    // back off `app`, so a session cannot hold two answers.
+    app.set_escalate(
+        settings::stored(&config)
+            .0
+            .and_then(|stored| stored.escalate)
+            .unwrap_or(true),
+    );
     // Said once, before the first prompt, and only where there is something to
     // say. A contained turn is a different turn — it is the only one that reaches
     // io-harness's spawn loop — and a session that silently switched into it
@@ -7780,6 +7823,13 @@ async fn turn<P: Provider>(
     // carries, and io-harness appends one sentence naming what is withheld. So
     // this line makes the request marginally larger and can never make it smaller.
     let contract = io_cli::contract::masking(contract, mask);
+    // **And the sandbox half of full access, on the same door and for the same
+    // reason.** The policy half replaced the tier defaults at startup; this is
+    // what lets a command that ran actually do what the policy permitted. Only
+    // this reaches a `bind()`, which a sandbox refuses structurally rather than
+    // by policy — so without it an operator who asked for full access would still
+    // meet the one refusal they asked for it to lift.
+    let contract = io_cli::contract::unconfined(contract, app.full_access());
     // Set while a fold has been asked for and no `Compacted` event has arrived.
     // A one-shot: io-harness spends the request whether or not it folds, so what
     // this guards is the report and never a retry.
@@ -11324,6 +11374,10 @@ async fn resume_pending<P: Provider>(
     // own note. A posture that held on every turn except a resumed one would be
     // the 0.26.0 defect above in a second shape.
     let continuing = io_cli::contract::masking(continuing, mask);
+    // And full access on the resume door too, for the reason the two lines above
+    // are here: a grant that held on every turn except a resumed one is the 0.26.0
+    // defect in a third shape.
+    let continuing = io_cli::contract::unconfined(continuing, app.full_access());
     let (observer, mut events) = bridge::channel();
     let canceller = observer.canceller();
     let (approver, mut asks) = approval::channel();

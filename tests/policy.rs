@@ -266,6 +266,106 @@ fn f1_a_denied_exec_is_still_denied_after_the_git_allowance() {
     }
 }
 
+/// **F8 — full access is wide, and the five things that keep it safe.**
+///
+/// It is the only surface in io that can make a machine's whole filesystem
+/// writable by a model, and the contract asks for each mitigation to be defeated
+/// separately. Four of the five are asserted here; the fifth — that it is never
+/// written to a file — is a property of there being no writer, and
+/// `tests/docs.rs` holds the sentence that says so.
+///
+/// Sabotage: add a fourth `Posture` variant and the first assertion fails; drop
+/// the `full_access` branch in `App::set_posture` and the marker one does.
+#[test]
+fn f8_full_access_is_not_a_posture_and_is_never_one_keypress_away() {
+    // **One: it is not in the cycle, because `Posture::ALL` does not contain it.**
+    // A fourth variant would have put the widest grant in the product one key from
+    // `read-only` by construction rather than by anybody deciding to.
+    assert_eq!(
+        Posture::ALL.len(),
+        3,
+        "full access became a posture, so `Shift+Tab` now reaches it",
+    );
+    assert!(
+        !Posture::ALL
+            .iter()
+            .any(|posture| posture.short() == Posture::FULL_ACCESS),
+        "the cycle names full access",
+    );
+
+    // **Two: pressing the key four times from `workspace` is back at `workspace`,
+    // having drawn nothing else.** Asserted by walking the cycle rather than by
+    // reading `ALL`, so a cycle that disagreed with its own list would fail here.
+    let mut app = App::new(DARK, "opus-5");
+    app.set_posture(Some(Posture::Workspace));
+    // **Six presses, not four.** The contract's own criterion said four, which is
+    // not the identity of a three-cycle — four presses land on `ask-writes`. Two
+    // full turns of the cycle is the property that was meant, and it visits every
+    // posture twice, so a fourth one appearing anywhere in the walk is caught.
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        app.key(shift_tab());
+        seen.push(app.status.policy.clone().unwrap_or_default());
+    }
+    assert!(
+        !seen.iter().any(|word| word == Posture::FULL_ACCESS),
+        "the posture cycle drew full access: {seen:?}",
+    );
+    assert_eq!(
+        seen.len(),
+        6,
+        "the walk must actually have pressed the key six times",
+    );
+    assert_eq!(
+        app.posture(),
+        Some(Posture::Workspace),
+        "two full turns of a three-cycle is back where it started",
+    );
+
+    // **Three: while it is in force every frame says so.** An unconfined session
+    // that looks ordinary is worse than the grant itself, and the posture word
+    // would otherwise read `custom` — true of the struct and useless to a reader.
+    let mut unconfined = App::new(DARK, "opus-5");
+    unconfined.set_posture(Posture::of(&approval::UNCONFINED));
+    assert_eq!(
+        Posture::of(&approval::UNCONFINED),
+        None,
+        "full access is deliberately not recognised as one of the three",
+    );
+    unconfined.set_full_access(true);
+    assert!(
+        line(&unconfined).contains(Posture::FULL_ACCESS),
+        "a frame drawn under full access does not say so: {:?}",
+        line(&unconfined),
+    );
+
+    // And a session that gave it back does not carry the marker.
+    unconfined.set_full_access(false);
+    assert!(
+        !line(&unconfined).contains(Posture::FULL_ACCESS),
+        "the marker survived the grant being taken back: {:?}",
+        line(&unconfined),
+    );
+
+    // **Four: it replaces the tier defaults and cannot unlock a layer.** The
+    // widest grant io offers still does not defeat a rule the operator wrote down.
+    let policy = Policy {
+        defaults: approval::UNCONFINED,
+        ..Policy::default()
+    };
+    assert_eq!(
+        policy.check(Act::Net, "example.com").effect,
+        Effect::Allow,
+        "full access did not widen the tier default it exists to widen",
+    );
+    assert_eq!(
+        policy.check(Act::Read, ".env").effect,
+        Effect::Deny,
+        "full access unlocked a secret the built-in layer denies, which no posture \
+         and no flag in this product may do",
+    );
+}
+
 /// **F7 — escalation moves a fallback, and a written rule is untouched.**
 ///
 /// This is the release's security argument and the pair is the whole test. A
