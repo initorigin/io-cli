@@ -1333,3 +1333,108 @@ fn f10_the_driver_writes_into_the_scope_the_lookup_found() {
          on, so the verb cannot go dead by either half being retyped",
     );
 }
+
+/// **`io mcp get` shows a reference and never a value.**
+///
+/// This is the surface most likely to be asked to print a credential: an MCP
+/// server's `env` table is where a token goes, and an HTTP server's headers are
+/// where an `Authorization` goes. io-cli reads no credential anywhere, and the
+/// inspection has to keep that true — a value echoed here lands in a terminal, a
+/// scrollback and a CI log at once.
+///
+/// `${env:NAME}` is a *name*, so it is drawn whole: it is the form `/import`
+/// writes and the thing an operator needs to see to know which variable to export.
+/// Anything else is somebody's literal and is reported as set without being shown.
+///
+/// Sabotage: return the value unchanged from `servers::reference` and the last two
+/// assertions fail together.
+#[test]
+fn f9_an_inspection_shows_a_reference_and_never_a_secret() {
+    // The transport is built by hand: `McpServer` publishes no `with_env`, and the
+    // env table is the whole subject of this test.
+    let mut stdio = io_harness::McpServer::stdio("semlith", "semlith");
+    stdio.transport = io_harness::McpTransport::Stdio {
+        command: "semlith".into(),
+        args: vec!["--store".into(), "/tmp/store".into(), "mcp".into()],
+        env: BTreeMap::from([
+            ("TOKEN".to_string(), "${env:SEMLITH_TOKEN}".to_string()),
+            ("PASTED".to_string(), "sk-a-real-looking-secret".to_string()),
+        ]),
+    };
+
+    let rows = servers::detail(&stdio);
+    let rendered: String = rows
+        .iter()
+        .map(|(label, value)| format!("{label}\t{value}\n"))
+        .collect();
+
+    assert!(
+        rendered.contains("command\tsemlith"),
+        "the command is not shown: {rendered}",
+    );
+    assert!(
+        rendered.contains("--store"),
+        "the arguments are not shown: {rendered}",
+    );
+    assert!(
+        rendered.contains("${env:SEMLITH_TOKEN}"),
+        "a reference is what an operator needs and it is not shown: {rendered}",
+    );
+    assert!(
+        !rendered.contains("sk-a-real-looking-secret"),
+        "a literal value was echoed into the inspection, which puts it in a \
+         terminal, a scrollback and a CI log at once: {rendered}",
+    );
+    assert!(
+        rendered.contains("PASTED") && rendered.contains("not shown"),
+        "a literal must still be reported as set, or an operator cannot tell it \
+         from an absent one: {rendered}",
+    );
+}
+
+/// **A server's own stderr is readable, now that it no longer pollutes io's.**
+///
+/// Every run loading an MCP server printed the server's banner onto io's own error
+/// channel — `semlith 0.8.0: serving 1 store on initorigin` in the middle of a CI
+/// log — so third-party output and io's diagnostics were one stream. io-harness
+/// 0.86.0 captures it as a `ContextEvent` of kind `mcp_stderr` instead.
+///
+/// That fixed the pollution and left the text unreadable, which matters: a server
+/// that will not start writes its reason there. `io mcp get` is the surface for
+/// it, and this is the reader under that.
+///
+/// **The wrong server's output must not be attributed to this one**, which is the
+/// assertion that keeps the reader honest — the rows carry `<id>: <text>` and a
+/// naive `contains` would mix two servers' diagnostics into one inspection.
+///
+/// Sabotage: drop the id comparison and the last assertion fails.
+#[test]
+fn f9_a_servers_own_stderr_is_read_back_under_its_own_id() {
+    let dir = tempfile::tempdir().expect("a workspace");
+    let store = io_harness::Store::open(dir.path().join("runs.db")).expect("a store");
+    let run = store.start_run("a goal", "").expect("a run");
+
+    for (server, text) in [
+        ("semlith", "semlith 0.8.0: serving 1 store"),
+        ("other", "other: a different server entirely"),
+    ] {
+        store
+            .record_context_event(run, &io_harness::ContextEvent::mcp_stderr(1, server, text))
+            .expect("the row records");
+    }
+
+    let mine = servers::stderr_of(&store, run, "semlith");
+    assert!(
+        mine.iter().any(|line| line.contains("serving 1 store")),
+        "the server's own stderr did not come back: {mine:?}",
+    );
+    assert!(
+        !mine.iter().any(|line| line.contains("different server")),
+        "another server's diagnostics were attributed to this one, which is worse \
+         than not showing them at all: {mine:?}",
+    );
+
+    // A server that said nothing, and a run that has none, are both empty rather
+    // than an error — the caller's sentence tells those apart.
+    assert!(servers::stderr_of(&store, run, "silent").is_empty());
+}

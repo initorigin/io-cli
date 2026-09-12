@@ -15,7 +15,8 @@
 | `Esc` | at an empty prompt, ask whether to undo the last turn — its files and all |
 | `Ctrl+T` | put the whole conversation back into the scrollback |
 | `Ctrl+F` | show the fleet: the children this turn has spawned |
-| `y / a / n` | choose an approval's answer: allow once, allow this session, deny — `Enter` gives it |
+| `Ctrl+E` | put the running step's full text into the scrollback — what `/expand` shows, without typing a command while a step is moving |
+| `y / a / w / n` | choose an approval's answer: allow once, allow this session, allow and write it down, deny — `Enter` gives it |
 | `Esc` | stop the running turn, or close a picker without choosing |
 | `Tab` | in any list, take the row under the marker; `Shift+Tab` steps back |
 | `/` | open the command palette — at the prompt or while a turn runs |
@@ -122,6 +123,11 @@ rewind = "ctrl+r ctrl+r"
 | `transcript` | `Ctrl+T` |
 | `rewind` | `Esc` |
 | `fleet` | `Ctrl+F` |
+| `expand` | `Ctrl+E` |
+
+**`Ctrl+E` may already belong to your terminal or your multiplexer**, and if it
+does, rebind it — that is what this table is for. It was chosen over `Ctrl+X` and
+`Ctrl+R`, which readline and every shell built on it have spoken for.
 
 A binding is a chord, or two chords separated by a space. Modifiers are `ctrl`,
 `alt` and `shift`, joined to the key with `+`, in any order and any case; a key is
@@ -187,9 +193,9 @@ product had and withheld.
 than how harmless it looks.** A command that reassigns the session or the
 provider, writes the store or a configuration file, or submits a turn of its own
 is refused: `/exit`, `/setup`, `/model`, `/resume`, `/fork`, `/commit`,
-`/remember`, `/memory`, `/skills`, `/mcp`, `/provider`, `/plugin`, `/import`,
-`/profile`, `/effort`, `/contain`, `/undo`, `/plan`, `/clear`, `/store`,
-`/export`, `/gates`, and a `!` line.
+`/policy`, `/remember`, `/memory`, `/skills`, `/mcp`, `/provider`, `/plugin`,
+`/import`, `/profile`, `/effort`, `/contain`, `/undo`, `/plan`, `/clear`,
+`/store`, `/export`, `/gates`, and a `!` line.
 
 **`/config` joined the first list in 0.33.0, and only in its bare form.** Through
 0.32.0 it was refused in every form, because the bare list carried a row that

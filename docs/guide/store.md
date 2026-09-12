@@ -75,6 +75,20 @@ because the previous contents were not kept; nothing changed because this run
 never wrote that path. The last two both mean your file is untouched, and they
 mean it for different reasons.
 
+**A change the shell made can be put back, from 0.41.0.** It could not before: an
+agent that appended with `echo >>`, redirected with `>`, or moved a file with `mv`
+was outside the journal entirely, so `/undo` reported that no file was put back and
+the line survived — and those are exactly the tools a model reaches for when asked
+to use the shell. io-harness 0.86.0 journals the write targets of `>`, `>>`, `2>`,
+`2>>`, `tee`, `cp` and `mv` before the stage runs, so they restore through the same
+three grains above.
+
+**An in-place editor is still outside it.** `sed -i`, and anything else that
+rewrites a file it opened rather than being redirected into one, leaves no restore
+point — io-harness states that as a limit of its own rather than guessing at what
+such a command touched. You get the fourth sentence above: nothing changed, because
+the previous contents were not kept.
+
 **Undoing a step is order-sensitive.** Reverse-applying one step's diff while a
 later step's change still sits on the same lines finds context that has moved,
 and io-harness leaves the file alone rather than fuzzy-matching it into

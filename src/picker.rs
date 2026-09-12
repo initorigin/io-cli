@@ -490,7 +490,25 @@ impl Picker {
     /// filter whose result the operator cannot account for is worse than a filter
     /// that misses.
     fn refilter(&mut self) {
-        self.matches = fuzzy::rank(self.rows.iter().map(|row| row.label.as_str()), &self.query);
+        // **A query with an argument in it is matched on its command half
+        // (0.41.0).** io's own message tells an operator to type `/contain on`,
+        // and typing it matched nothing: the whole string went to the matcher,
+        // every row is a bare command, and `contain on` is not a subsequence of
+        // `/contain`. So the product instructed a form it then refused, and the
+        // working sequence — type `/contain`, Enter to accept, then type ` on` —
+        // is one nobody would guess.
+        //
+        // The argument is dropped for MATCHING only. It is still in the composer,
+        // still submitted, and still the thing the command runs with; this decides
+        // which row is offered and nothing else.
+        //
+        // Split at the first space rather than the last, because the command is
+        // the first word and everything after it belongs to the command.
+        let against = match self.query.split_once(' ') {
+            Some((command, _)) if !command.is_empty() => command,
+            _ => &self.query,
+        };
+        self.matches = fuzzy::rank(self.rows.iter().map(|row| row.label.as_str()), against);
         // **Headings survive only an empty query.** With anything typed the order
         // is the matcher's alone, and a heading left in it would sit above
         // whatever happened to rank there.
@@ -740,7 +758,31 @@ impl Picker {
                     .matches
                     .get(self.cursor)
                     .is_some_and(|index| self.rows[*index].heading);
-                if self.matches.is_empty() || on_heading {
+                // **A query carrying an argument is a whole line, even though a row
+                // now matches it (0.41.0).** `refilter` matches `/contain on`
+                // against its command half, so the right row is offered instead of
+                // `No row matches` — but CHOOSING that row would put `/contain` in
+                // the composer and drop the ` on` the operator typed, which is a
+                // worse answer than the papercut it replaced. So the display
+                // matches on the command and the key hands back the line.
+                let carries_an_argument = self.takes_a_line && self.query.contains(' ');
+                // **A command typed in full submits on the first `Enter` (0.41.0).**
+                // Typing `/cost` and pressing `Enter` accepted the completion —
+                // replacing `/cost` with `/cost` — and did nothing else, so it took
+                // a second press to run. It is consistent once learned and every
+                // new operator types a command, presses `Enter`, and watches
+                // nothing happen.
+                //
+                // Only on an EXACT match, so completion still does its job: `/co`
+                // completes and does not run, which is the whole point of a
+                // palette. The comparison carries the slash the composer strips,
+                // because the rows are spelled with it.
+                let typed_in_full = self.takes_a_line
+                    && self
+                        .matches
+                        .get(self.cursor)
+                        .is_some_and(|index| self.rows[*index].label == format!("/{}", self.query));
+                if self.matches.is_empty() || on_heading || carries_an_argument || typed_in_full {
                     // **`Enter` only, never `Tab`.** Completion on a query that
                     // completes to nothing is nothing; submitting is a different
                     // act and takes the key that means it.
@@ -875,6 +917,24 @@ impl Picker {
                 fit(&nothing, width, &theme.glyphs),
                 theme.style(Tone::Muted),
             )));
+            // **A slash command typed into a picker says where it went (0.41.0).**
+            // This surface owns the keyboard while it is open, so `/memory` typed
+            // over the model picker silently became a filter and the operator read
+            // `No row matches "/memory"` with nothing saying why — the command
+            // looked broken rather than captured, which is the same confusion the
+            // line above exists to prevent one level up.
+            //
+            // Named rather than general: "this picker has the keyboard" is the fact
+            // the operator is missing, and the title is what they can see at the top
+            // of it. `Esc` is how you get out, and saying so costs one line on a
+            // surface that is already telling them nothing matched.
+            if self.query.starts_with('/') && !self.takes_a_line {
+                let captured = format!("{} has the keyboard — Esc first", self.title);
+                lines.push(Line::from(Span::styled(
+                    fit(&captured, width, &theme.glyphs),
+                    theme.style(Tone::Refused),
+                )));
+            }
         }
 
         let taken = visible.max(1);
@@ -1007,15 +1067,38 @@ impl Picker {
         }
         self.opened = opened_at;
 
-        // What the list could not show. Counted against everything the query
-        // admits rather than against what is below the window, because a row
-        // scrolled off the top is just as absent as one below the bottom.
+        // **How much is left below you, and it moves (0.41.0).**
+        //
+        // This counted everything the query admits minus what fits on screen, with
+        // the reasoning that "a row scrolled off the top is just as absent as one
+        // below the bottom". True of absence, and useless as a reading: that
+        // quantity is a constant for a given list and terminal, so the counter
+        // showed `⋯ 53 more` on the first row of fifty-eight and `⋯ 53 more` again
+        // sitting on the last one. A number that never changes while you scroll is
+        // furniture, and an operator holding the last row was being told there were
+        // fifty-three entries still to come.
+        //
+        // Counted below the WINDOW instead: everything the query admits, less what
+        // has scrolled past the top and what is on screen. It falls as you scroll,
+        // because `offset` is what scrolling moves, and reaches zero exactly when
+        // the last row is visible — which is the one thing a reader wants from it,
+        // namely whether there is any point pressing down again.
+        //
+        // **Below the window and not below the cursor**, which is the near miss.
+        // Counting from the cursor makes a list that fits entirely on screen report
+        // `⋯ 1 more` while the row in question is drawn directly underneath — a
+        // counter that lies about a row the operator can already see, which is
+        // worse than one that never moves. A row above the window is not counted
+        // either: one you have already passed is not one you are being offered.
         let drawn = taken.min(
             self.matches
                 .len()
                 .saturating_sub(self.offset.min(self.matches.len())),
         );
-        let hidden = self.matches.len().saturating_sub(drawn);
+        let hidden = self
+            .matches
+            .len()
+            .saturating_sub(self.offset.saturating_add(drawn));
         if hidden > 0 {
             let note = format!("{} {hidden} more", theme.glyphs.elision);
             lines.push(Line::from(Span::styled(

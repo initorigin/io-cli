@@ -88,7 +88,7 @@ fn guarded() -> Policy {
         .allow_read("*")
         .deny_read("secret.txt")
         .deny_read("vault/*");
-    approval::session_policy(&file, Some(Posture::ReadOnly), &[])
+    approval::session_policy(&file, Some(Posture::ReadOnly), &[], false)
 }
 
 /// **F3.** `@` at a word boundary opens completion, and nowhere else.

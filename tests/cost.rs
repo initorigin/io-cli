@@ -1282,3 +1282,71 @@ fn the_table_in_force_and_its_date_come_from_the_section_that_prices_the_calls()
         "an install with no prices reported a date it does not have",
     );
 }
+
+/// **The headless total is `/cost`'s figure, because it is the same computation
+/// over the same rows.**
+///
+/// `io exec --json` carried no money at all: a sweep of a whole run's stream for
+/// `cost`, `usd` or `price` returned nothing, on the one surface — CI — where a
+/// budget signal matters most, while the TUI status bar and `/cost` both had it.
+///
+/// The criterion is *equality with `/cost`*, and the only way to hold that through
+/// later changes is to compute it from the same source rather than to reimplement
+/// it. This asserts that against a real store: rows in, both figures out, and they
+/// must agree — including the unpriced count, because a run with unpriced calls is
+/// reporting a floor rather than a total and a consumer that reads the money
+/// without that number is being lied to by omission.
+///
+/// Sabotage: price `spent` from anything other than `Total::of` over
+/// `Store::provider_calls` — summing the events, say — and the first assertion
+/// fails on the unpriced call, which has tokens but no price.
+#[test]
+fn the_headless_total_is_the_same_figure_cost_reports() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let store = Store::open(dir.path().join("runs.db")).expect("a store opens on disk");
+    let run = store.start_run("a goal", "").expect("a run row");
+
+    // Three calls: two priced by the fixture table, and one on a model it has no
+    // price for. The third is what separates a total from a floor.
+    let priced = split();
+    store
+        .record_provider_call(run, &call(Some(PRICED), Some(priced)))
+        .expect("the call records");
+    store
+        .record_provider_call(run, &call(Some(PRICED), Some(priced)))
+        .expect("the call records");
+    store
+        .record_provider_call(run, &call(Some(UNPRICED), Some(priced)))
+        .expect("the call records");
+
+    let table = table();
+    let calls = store.provider_calls(run).expect("the calls read back");
+    let expected = Total::of(&calls, &table);
+
+    let line = cost::spent(&store, run, &table).expect("a cost line");
+    let micros = expected.micros as f64 / 1_000_000.0;
+
+    assert_eq!(
+        line["total_cost_usd"].as_f64().expect("a number"),
+        micros,
+        "the headless total is not `/cost`'s figure for the same run",
+    );
+    assert_eq!(
+        line["unpriced_calls"].as_u64().expect("a number"),
+        expected.unpriced,
+        "the floor is reported as a total: a consumer reading the money without \
+         this number cannot tell one from the other",
+    );
+    assert_eq!(
+        line["unpriced_calls"].as_u64(),
+        Some(1),
+        "the fixture must contain an unpriced call or this test proves nothing",
+    );
+    assert_eq!(line["calls"].as_u64(), Some(3));
+    assert_eq!(line["run_id"].as_i64(), Some(run));
+    assert_eq!(
+        line["event"].as_str(),
+        Some("cost"),
+        "every line of this stream is keyed by `event`, and a reader selects on it",
+    );
+}

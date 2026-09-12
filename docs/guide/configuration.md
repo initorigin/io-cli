@@ -285,7 +285,7 @@ path does not: that directory is one you already have.
 **`/profile`** switches to a named `[profile.<name>]` for the session, and
 `--profile <name>` picks one for a single run without writing anything.
 
-Ten keys live there, and eight tables:
+Eleven keys live there, and eight tables:
 
 | Key | Is |
 | --- | --- |
@@ -293,6 +293,7 @@ Ten keys live there, and eight tables:
 | `diff` | `unified` — the default, and what an absent key means — or `minimal`, the changed lines and the `@@` header without the context, for reviewing by file rather than by hunk. |
 | `glyphs` | `unicode` or `ascii`. Absent asks the locale. |
 | `plain` | `true` runs every session in plain mode. The same switch as `--plain`, which wins over it. |
+| `escalate` | `false` turns off asking. Absent means **on**: a refusal that came from a *default* raises the approval overlay instead of refusing, so a permission is granted once per class of thing rather than ending the work. A refusal that came from a `[[policy.layers]]` rule you wrote is never escalated, never drawn and never asked — see [the limits](limits.md). |
 | `skills` | a directory of skills for the agent. They appear in the `/` palette by name, and the agent reads them itself. Absent, it is `skills/` under the home in force — `~/.io-cli/skills` unless `$IO_CONFIG` or `$IO_CONFIG_HOME` moved it. A leading `~` is your home directory — io-cli expands it before io-harness sees the path, because io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}`, and a tilde is none of the three. |
 | `max_parallel_reads` | how many read-only tool calls one turn may run at once. Absent, it is io-harness's own 10; `0` is clamped to 1 rather than meaning none. A `TaskContract` field with no io-harness configuration key of its own, which is why it is named here. |
 | `spawn_background_after_secs` | how long a spawned child may run before it is backgrounded. Absent, a child is waited for however long it takes. |

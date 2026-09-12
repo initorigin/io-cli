@@ -453,6 +453,102 @@ fn the_token_field_is_the_session_and_not_the_last_step() {
     );
 }
 
+/// **A child's containment outranks its parent's on this line.**
+///
+/// During a fan-out the parent and every child emit a `Contained` of their own,
+/// and taking whichever arrived last let a parent's word describe a child's act. A
+/// field pass read `read-only/macos-sandbox-exec` off this line while a shell
+/// `echo >> a.txt` running in the child succeeded and changed the file on disk —
+/// for an interface whose whole claim is showing what it is allowed to do, a label
+/// that contradicts what just happened is the worst available bug.
+///
+/// The deepest run wins: during a fan-out the acts an operator is watching are the
+/// children's.
+///
+/// Sabotage: drop the depth comparison in `Status::note_contained` and the second
+/// assertion fails, because the parent's event arrives second.
+#[test]
+fn a_contained_turns_label_describes_the_child_and_not_the_parent() {
+    let mut app = App::new(DARK, "opus-5");
+
+    // The parent, at depth 0.
+    app.event(
+        &RunEvent::at_depth(
+            1,
+            0,
+            0,
+            EventKind::Contained {
+                mode: "read-only".into(),
+                backend: "macos-sandbox-exec".into(),
+                roots: 0,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    // Then the child, which is where the shell actually runs.
+    app.event(
+        &RunEvent::at_depth(
+            2,
+            0,
+            1,
+            EventKind::Contained {
+                mode: "workspace-write".into(),
+                backend: "macos-sandbox-exec".into(),
+                roots: 1,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    let line = app.status.line(160, &DARK).to_string();
+    assert!(
+        line.contains("workspace-write"),
+        "the child's posture is not on the line: {line:?}",
+    );
+
+    // **And the parent's event arriving AFTER the child's does not take it back**,
+    // which is the ordering that produced the field report's reading.
+    app.event(
+        &RunEvent::at_depth(
+            1,
+            1,
+            0,
+            EventKind::Contained {
+                mode: "read-only".into(),
+                backend: "macos-sandbox-exec".into(),
+                roots: 0,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    let line = app.status.line(160, &DARK).to_string();
+    assert!(
+        line.contains("workspace-write"),
+        "a parent's event overwrote the child's, so the line claims a boundary the \
+         shell that just ran did not have: {line:?}",
+    );
+
+    // A new run clears it, so the next turn does not inherit a child's word.
+    app.status.forget_run();
+    app.event(
+        &RunEvent::at_depth(
+            3,
+            0,
+            0,
+            EventKind::Contained {
+                mode: "read-only".into(),
+                backend: "macos-sandbox-exec".into(),
+                roots: 0,
+            },
+        ),
+        std::time::Duration::ZERO,
+    );
+    let line = app.status.line(160, &DARK).to_string();
+    assert!(
+        line.contains("read-only"),
+        "the previous turn's child still owns the field: {line:?}",
+    );
+}
+
 /// **F9, containment.** The mode is what was asked for and the backend is what
 /// answered on this host, and io-harness's own documentation says a surface
 /// showing the first without the second is reading an intention rather than a
@@ -3234,5 +3330,51 @@ fn the_splash_card_dates_its_facts_rather_than_contradicting_the_status_line() {
     assert!(
         !bare.contains("opened with"),
         "a caption over an empty table is a heading for nothing: {bare:?}",
+    );
+}
+
+/// **A window nobody has announced says it is a fallback.**
+///
+/// A field pass read `context: nothing assembled yet — the window is 24.0k` off
+/// this page while every run of the same session emitted `context_ceiling` with
+/// `max_tokens 1171456`. Both numbers were true of different moments — before the
+/// first request io-cli has no ceiling and falls back to io-harness's — and
+/// nothing on either surface said which was which, so the two read as a
+/// forty-eight-fold contradiction.
+///
+/// io-cli cannot supply the model's real window before a request: it holds no
+/// catalogue, and `Provider::context_window` answers only from one a provider has
+/// already fetched on that instance. What it can do is stop presenting a fallback
+/// as the answer, in io-harness's own word for it.
+///
+/// **And stop saying it the moment a run announces one**, which is the half that
+/// keeps the note from becoming furniture.
+///
+/// Sabotage: draw the marker unconditionally and the second assertion fails,
+/// because a real announced ceiling would then be labelled a guess.
+#[test]
+fn f6_a_window_no_run_has_announced_is_marked_as_a_fallback() {
+    let fixture = fixture();
+    let mut app = App::new(DARK, "opus-5");
+
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+    assert!(
+        page.contains("fallback"),
+        "the window shown before the first request is io-harness's fallback and \
+         does not say so, which is what made it read as a contradiction of the \
+         run's own `context_ceiling`:\n{page}",
+    );
+
+    // A run announces one: the marker goes, because the number is now the model's.
+    app.status.ceiling = Some(1_171_456);
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+    assert!(
+        !page.contains("fallback"),
+        "an announced ceiling is still called a fallback, which makes the note \
+         noise rather than an explanation:\n{page}",
+    );
+    assert!(
+        page.contains("1171.5k"),
+        "the announced ceiling is not the number drawn:\n{page}",
     );
 }

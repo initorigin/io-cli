@@ -359,9 +359,13 @@ fn f1_equal_scores_keep_the_first_row_still_between_keystrokes() {
     // stated rather than derived from `COMMANDS.len()` on purpose: a count that
     // recomputed itself would keep passing while the narrowing it describes
     // quietly stopped happening.
+    // Eleven from 0.41.0: `/policy` carries a `c` and is the command this release
+    // added. The count is stated rather than derived for the reason above — a
+    // number that recomputed itself would keep passing while the narrowing it
+    // describes quietly stopped happening.
     let mut picker = palette();
     type_at(&mut picker, "c");
-    assert_eq!(picker.matching(), 10);
+    assert_eq!(picker.matching(), 11);
     // `clear` and not `copy` since the list became grouped: the tie-break is the
     // order the rows were handed in, and the session group now leads. The
     // PROPERTY is unchanged and is what this test is about — the marked row must

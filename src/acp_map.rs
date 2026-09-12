@@ -116,6 +116,36 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
         "a per-step token breakdown, which ACP has no vocabulary for either — and \
          for the same reason as its neighbour above rather than a new one",
     ),
+    // **Three kinds io-harness 0.84.0 and 0.85.0 declared, placed where the enum
+    // declares them — immediately after `step_usage` — and all three `None`.**
+    // ACP's `SessionNotification` has no vocabulary for a cache statistic or a
+    // provider's rate-limit window, and the two things it does have that could
+    // carry one are both wrong: an agent message chunk would put accounting into
+    // the conversation as if the model had said it, and a tool call would invent
+    // a call nobody made. This is the same reason `step_attributed` and
+    // `step_usage` above are `None`, and it is recorded per row rather than
+    // inherited, because a wildcard is how a variant becomes an editor that
+    // silently never shows an edit.
+    (
+        "prefix_broke",
+        Update::None,
+        "a cacheable prefix ending early is an economic fact about the request, \
+         not a thing the client said or the agent did; ACP has no notification \
+         for one, and `io exec --json` carries the step, the byte and the reason",
+    ),
+    (
+        "cache_miss",
+        Update::None,
+        "the same reason as its neighbour above rather than a new one — \
+         reprocessed tokens are accounting, and a client cannot act on them",
+    ),
+    (
+        "rate_limit",
+        Update::None,
+        "what a provider has left in its windows is between io and the provider; \
+         a client that has not been refused anything can do nothing with it, and \
+         a refusal, when it comes, arrives as an error rather than as a statistic",
+    ),
     (
         "image_attached",
         Update::None,
@@ -244,6 +274,25 @@ pub const MAPPING: &[(&str, Update, &str)] = &[
         Update::None,
         "the boundary is io-cli's status line and `/status`; ACP has no field for a \
          backend or a probe, and a client cannot act on one",
+    ),
+    // **io-harness 0.86.0, declared immediately after `sandbox` and placed
+    // there.** Not to be confused with the `gate_output` that is a *value of the
+    // `kind` field* on the `sandbox` row above, which carries no payload; this is
+    // a variant of its own carrying `output` and `exit_code`.
+    //
+    // **A `ToolCallUpdate` rather than `None`, and it is the one place this table
+    // differs in judgement from `triage`'s reasoning about the same kind.** A
+    // gate is a command the run actually executed, and ACP's tool-call vocabulary
+    // is exactly the shape for "something ran, here is what it printed and how it
+    // exited". Sending it as `None` would leave an ACP client watching a run fail
+    // verification with no way to learn why — the same hole this release closes
+    // for the terminal, left open for the editor.
+    (
+        "gate_output",
+        Update::ToolCallUpdate,
+        "the gate ran, and its bounded output and exit code are what a client \
+         needs to show why verification did not hold; io-cli forwards the string \
+         io-harness bounded and re-bounds nothing",
     ),
     (
         "mcp",

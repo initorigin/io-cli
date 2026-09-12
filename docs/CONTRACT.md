@@ -12,10 +12,10 @@ breaking change is a minor bump; there is no other room for one.
 ## The argv surface
 
 ```
-io [-C DIR] [-m MODEL] [--profile NAME] [--plain] [<subcommand>]
+io [-C DIR] [-m MODEL] [--profile NAME] [--plain] [--full-access] [<subcommand>]
 ```
 
-All four flags are `global`, which means they are accepted on **either side** of a subcommand:
+All five flags are `global`, which means they are accepted on **either side** of a subcommand:
 `io -C dir exec "…"` and `io exec -C dir "…"` are the same command. A flag whose acceptance
 depends on which side of a word it is typed is a flag that works only on its author's machine,
 and 0.5.0 shipped that defect once.
@@ -36,6 +36,45 @@ With no subcommand, `io` opens an interactive session.
 
 `--plain` reaches an interactive session and stops there. `io exec` builds no theme, draws
 nothing and animates nothing already, so there is no second thing for the flag to switch off.
+
+**`--full-access` runs unconfined** (0.41.0): every tier default becomes `allow` and the turn
+runs under io-harness's `ExecMode::FullAccess`, which is what reaches a call the sandbox refuses
+structurally rather than by policy. What you may depend on about it: it is **not** in the
+`Shift+Tab` cycle and there are still exactly three postures; it is **marked on every frame** it
+is in force; it is **never written to any file**, so it lasts the session and no longer; it
+cannot be requested by the agent; and it **does not unlock a `[[policy.layers]]` rule** — `.env`
+stays denied under it. See [the limits](guide/limits.md) for the three sources a refusal can come
+from and which one asks.
+
+**`-C` on a path that is not an existing directory is refused before any run opens**, with exit
+`1`, and creates nothing. Through 0.40.0 it created the directory and ran inside it.
+
+Two more things a script may depend on, both new in 0.41.0 and both exit codes rather than text:
+
+- **`io config get <key>` exits `1` when there is no such key** and `0` otherwise. The line it
+  prints is unchanged. A key the catalogue names that no file sets is a successful read that
+  says `default` — "nothing set it" and "there is no such key" are different answers, and only
+  the second is an error.
+- **`io config set` on a list key refuses a single quoted command line**, with exit `1` and a
+  message naming the form that works. The two list keys are `app.io-cli.gates.command` and
+  `app.io-cli.browser.args`, and their words go after `--`:
+  `io config set app.io-cli.gates.command -- python3 --version`. After `--` a single element
+  containing a space is taken at its word, so a program path with a space stays expressible.
+
+**`io exec --json` ends with a `cost` line** (0.41.0). It is a JSON object like every other line
+in the stream, keyed by `"event": "cost"`, and it carries `total_cost_usd`, `unpriced_calls`,
+`calls_without_usage`, `calls` and `run_id`. `total_cost_usd` is **the same figure `/cost` reports
+for that run**, computed by the same two calls over the same rows rather than by a second
+implementation.
+
+**Read `unpriced_calls` beside the money or do not read the money.** A run with unpriced calls in
+it is reporting a **floor**, not a total — no model was recorded, or no price is entered for the
+one that was. `calls_without_usage` counts calls that reported no token usage at all.
+
+**There is deliberately no per-step `cost_usd`.** `EventKind::StepUsage` carries no
+`server_tool_requests`, which pricing charges for, so a figure derived from that event would
+under-report any step that used a provider's own server tool — and a knowingly-low money figure
+is worse than none. The accurate total is what ships.
 
 `io exec` additionally takes `--json`, `--sandbox <read-only|workspace-write|full-access>`,
 `--policy <workspace|read-only>` and `--provider <openrouter|anthropic|openai>`.
@@ -136,7 +175,7 @@ the directory; otherwise the platform default. io-cli's only contribution is to 
 `$IO_CONFIG_HOME` to its own home when the operator has set neither.
 
 `[app.io-cli]` is the one section io-harness deliberately does not validate, so it is this
-crate's own and this page is its contract. It carries **eighteen** keys:
+crate's own and this page is its contract. It carries **nineteen** keys:
 
 | Key | Shape |
 | --- | --- |
@@ -144,6 +183,7 @@ crate's own and this page is its contract. It carries **eighteen** keys:
 | `diff` | `unified` or `minimal`; absent means `unified` |
 | `glyphs` | `unicode` or `ascii`; absent means "ask the locale" |
 | `plain` | bool; the same switch as `--plain`, and the flag wins |
+| `escalate` | bool; **absent means on**. A deny that came from `policy.defaults` asks instead of refusing. A deny that came from a `[[policy.layers]]` rule never does, and neither does a path outside the workspace root. `false` restores 0.40.0 |
 | `keys` | a table of action name to chord |
 | `containment` | the caps a fan-out runs under — **this key is what turns the fleet on** |
 | `mcp` | MCP servers, merged with io-harness's own by id |

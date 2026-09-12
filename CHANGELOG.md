@@ -6,6 +6,222 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-12
+
+Everything the 0.40.0 field report found, fixed on io's side — and the permission
+surface stops being the thing that blocks you.
+
+### Upgrading
+
+- **A refusal that came from a *default* now asks instead of refusing.** This is on
+  out of the box. When the agent is stopped by `policy.defaults` — the tier that
+  applies when no rule matched — you get the approval overlay rather than a dead
+  end. You answer it the way you answer any approval, with one more answer than
+  before: `y` allows that one call, `a` allows it for the rest of the session, `w`
+  allows it **and writes a rule into your own configuration**, `n` denies it.
+
+  **A refusal that came from a rule you wrote still refuses, silently and always.**
+  A `[[policy.layers]]` deny is never escalated, never drawn and never asked, and
+  neither is a path outside the workspace root. This release changes *when io
+  asks*, never *what io permits*: it widens nothing a configuration file could not
+  already express. Set `[app.io-cli] escalate = false` for 0.40.0's behaviour.
+
+- **`io resume` with no argument now lists.** It used to fail with
+  `the following required arguments were not provided: <RUN_ID>`, which the
+  top-level help already contradicted. `--list` still works and prints the same
+  thing. A script that relied on bare `io resume` exiting non-zero will now get a
+  listing and exit `0`.
+
+- **`io config get` on a key that does not exist now exits `1`.** It exited `0`,
+  so `if io config get some.key >/dev/null; then` took the success branch for a key
+  io has never heard of. The line printed is unchanged. A key that *is* in the
+  catalogue but that no file sets still exits `0` and says `default` — "nothing set
+  it" and "there is no such key" are different answers.
+
+- **`io -C <dir>` on a path that does not exist is now an error.** It used to
+  create the directory and work inside it, so a mistyped workspace quietly became a
+  real one. If you were relying on `-C` to make a directory, make it first.
+
+- **A gate set with a quoted command line is now refused.**
+  `io config set app.io-cli.gates.command "python3 --version"` stored one argv
+  element containing a space, which can never run. Write the words after `--`:
+  `io config set app.io-cli.gates.command -- python3 --version`.
+
+- **A note the agent writes about its own work no longer reaches that same run.**
+  This is io-harness 0.85.0's doing rather than io's: a run's prompt is now
+  append-only between folds, because re-reading the memory block every turn threw
+  the provider's prefix cache away for the rest of the run. The note takes effect at
+  the next fold or the next run, and `/recall` counts it as drawn then.
+
+### Added
+
+- **`--full-access` runs a session unconfined**, in one word, for an operator who
+  means it. It sets every tier default to `allow` and puts the turn on
+  io-harness's `ExecMode::FullAccess` — which is the only thing in io that reaches
+  a call the sandbox refuses structurally rather than by policy, such as a
+  `bind()`, at every posture.
+
+  It is deliberately **not** in the `Shift+Tab` cycle: `Posture::ALL` still has
+  three entries, so the widest grant in the product is not one keypress from
+  `read-only`. It is **marked on every frame** it is in force. It is **never
+  written to a file**, so it lasts the session and cannot be committed. It cannot
+  be requested by the agent. And it still does not unlock what a
+  `[[policy.layers]]` rule refused — `.env` stays denied under full access.
+
+- **`[app.io-cli] escalate`**, the switch for the escalation above. Absent means
+  on; it is the one key in this section whose absence is not "behave as before".
+
+- **`/policy` — what may be done without asking, and what you have written down.**
+  Bare, it reports the posture, whether a default's refusal asks, and every
+  `[[policy.layers]]` rule in force with the layer carrying it. `list` is that
+  listing alone, `revoke` takes back a rule **io wrote**, and `full-access` is the
+  session-wide grant behind a confirmation. It takes the product's last free
+  command slot.
+
+- **An approval can be answered `w` — allow and write it down.** It appends one
+  `{ act, effect = "allow", pattern }` rule to a layer in your **user-scope** file,
+  so the permission survives the session. A workspace file is never written: that
+  is the file a `git clone` hands to everybody and the one this run's own agent can
+  write. `/policy revoke` takes it back, and **io will only un-write what io
+  wrote** — a rule in any other layer is yours, very possibly a deny, and is
+  refused with the layer named.
+
+- **`Ctrl+E` puts the running step's full text into the scrollback.** The moment
+  that detail is worth reading is while the step is running, which is exactly when
+  typing `/expand` means opening the palette over a moving screen. Rebindable like
+  every other action, and refused if you point it at `Ctrl+C`.
+
+- **A finished child says what it concluded.** A fan-out told the parent only that
+  a child had succeeded — one observed parent said the sub-agents "returned no
+  message of their own" and redid both children's work. `/fleet` now shows each
+  finished child's last word under it, and a child that finished silently says so
+  rather than looking like one still being read.
+
+- **`io mcp get` inspects.** It printed the single line `list` prints; it now shows
+  the command, its arguments, and which environment variable each `env` entry
+  reads. **No value is ever echoed** — a `${env:NAME}` is shown as the reference it
+  is, and a literal somebody pasted into their configuration reads
+  `set (value not shown)` rather than landing in a scrollback or a CI log.
+
+- **`provider.kind`, `provider.model` and `provider.base_url` are readable keys.**
+  `io config get provider.model` answered `no such key`, so a script had no way to
+  ask which model was configured. They are **read-only**: `/provider` edits the
+  entry and `-m` overrides the model for one run, and a `config set` on any of the
+  three is refused with a message naming `/provider`.
+
+- **`io exec --json` ends with a `cost` line.** The status bar has shown money
+  since 0.22.0 and `/cost` reports per run, session and install — and the headless
+  stream carried none of it, on the one surface where a budget signal matters most.
+  It carries `total_cost_usd`, `unpriced_calls`, `calls_without_usage` and `calls`,
+  and the total is `/cost`'s own figure for that run rather than a second
+  implementation of it. **Read `unpriced_calls` beside the money**: a run with
+  unpriced calls is reporting a floor, not a total. There is deliberately no
+  per-step figure — `step_usage` carries no `server_tool_requests`, which pricing
+  charges for, so one derived from it would under-report and a knowingly-low money
+  figure is worse than none.
+
+- **A failed gate says why.** io-harness 0.86.0 emits `gate_output` carrying the
+  command's output and its exit code, and the transcript now quotes the first lines
+  of it. A gate that printed nothing says so; one killed by a signal or a sandbox
+  cap is named as killed rather than given an invented exit code. `io exec --json`
+  forwards the whole bounded string.
+
+- **`io setup` asks about the fan-out.** A fresh install could not decompose a turn
+  at all, and nothing said so — the caps in `[app.io-cli.containment]` are the
+  switch, and the only way to find that out was to type `/contain on` and be told.
+  The wizard now offers the same four ceilings `/contain on` offers, spelled out on
+  the row that writes them. Declining is the default answer and writes nothing, so
+  an install that says no produces the file 0.40.0 produced. Both doors render the
+  same section, and a test parses both back and compares them so they cannot drift.
+
+### Fixed
+
+- **`gates.retries` bounds a headless run at last.** The session has honoured it
+  since 0.24.0; `io exec` never has, because it runs one turn and keeps no loop of
+  its own — so a mis-set gate failed on every step until the forty-step cap. One
+  observed run made twenty-one gate attempts across sixteen steps over more than
+  fifteen minutes, every one a paid completion. `retries = 1` now means two
+  attempts, and the run says which number ran out. The exit code is unchanged: a
+  run whose gate failed still exits `6`.
+
+- **`/status` says when its window figure is a fallback.** Before the first
+  request io has no announced ceiling and falls back to io-harness's, which read as
+  `the window is 24.0k` while every run of the same session reported 1,171,456 —
+  two numbers forty-eight times apart with nothing saying which was which. The
+  fallback is now labelled, and the label goes the moment a run announces a real
+  one.
+
+- **A server's own stderr is readable instead of polluting io's.** io-harness
+  0.86.0 stopped letting an MCP server's banner onto io's error channel — it was
+  landing in the middle of CI logs — and keeps it as a store row. `io mcp get`
+  shows it, under the server that wrote it.
+
+- **The one refusal nothing can lift now names its cure.** A path inside io's own
+  configuration home is refused before any policy is consulted, so no posture, no
+  rule and no sandbox mode lifts it — `--full-access` included. It says `use
+  /config to change it`, which is the surface that exists for exactly that.
+
+- **A slash command typed in full runs on the first `Enter`.** Typing `/cost` and
+  pressing `Enter` accepted the completion — replacing `/cost` with `/cost` — and
+  did nothing else, so it took a second press. A *partial* query still completes
+  rather than running, which is what a palette is for.
+
+- **`/contain on` typed in one go now matches `/contain`.** The palette filtered on
+  the whole string, so io's own notice told you to type a form io then refused. The
+  command half is what is matched; `Enter` still submits the whole line, argument
+  and all, rather than choosing the row and dropping it.
+
+- **A slash command typed into an open picker says where it went.** It silently
+  became a filter, leaving `No row matches "/memory"` and nothing to explain it.
+  The picker names itself and says `Esc` first.
+
+- **The palette's `⋯ N more` counter moves.** It counted the whole list minus what
+  fits — a constant — so it read `⋯ 53 more` on the first row of fifty-eight and
+  `⋯ 53 more` again on the last. It counts what is below the window now, and
+  disappears when the end is visible.
+
+- **The no-TTY message no longer dates itself.** It ended "`io exec` and a
+  non-interactive mode are 0.5.0", which was true when written and read as a stale
+  build on every binary since.
+
+- **`--sandbox` is accepted on either side of the subcommand.** `-C`, `-m`,
+  `--profile` and `--plain` all were; this one was not, so
+  `io --sandbox full-access exec "…"` failed while every neighbouring flag worked.
+
+- **Every subcommand's `--help` names its verbs.** `io mcp --help` documented the
+  global options at length and never named `add`, `list`, `get`, `probe` or the
+  rest, so the only way to find one was to type a wrong word and read the error.
+  The same for `io plugin` and `io skill`.
+
+- **`io mcp list` with nothing configured says so** instead of printing nothing at
+  all, which at a terminal was indistinguishable from a verb that hung. The
+  sentence goes to stderr, so a script still reads zero rows.
+
+- **Bare `io resume` with nothing parked says so**, for the same reason and on the
+  same stream. It is the door you reach for when you do not know whether there is
+  anything to carry on, and it answered by printing nothing at all.
+
+- **`io config unset` takes the section header with the last key in it.** An
+  emptied `[app.io-cli.gates]` is not neutral — a gates section that names no kind
+  is *refused* rather than read as "no gate" — so the leftover header turned a key
+  you removed into a configuration that would not resolve.
+
+- **The contentless gate line is gone.** It read "the gate command printed output"
+  — a sentence announcing that a diagnosis exists without being one — and it is
+  replaced by the line that carries the text.
+
+### Changed
+
+- **io-harness is pinned to 0.86.0**, up from 0.83, across three releases. Provider
+  error bodies are now redacted at the source, so an identifier in a provider's 400
+  no longer reaches the transcript; MCP server stderr is captured as a store row
+  instead of leaking onto io's own error channel; the shell tool's refused
+  constructs are stated to the model in its own tool description rather than met one
+  refusal at a time; and a shell stage's writes through `>`, `>>`, `tee`, `cp` and
+  `mv` are journalled, so `/undo` can put them back. An in-place editor such as
+  `sed -i` is still outside the journal, which io-harness states as a limit of its
+  own.
+
 ## [0.40.0] - 2026-09-07
 
 Every key io documents can be set from either door, and nothing decides on your
@@ -3843,7 +4059,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/initorigin/io-cli/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/initorigin/io-cli/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/initorigin/io-cli/compare/v0.38.2...v0.39.0
 [0.38.2]: https://github.com/initorigin/io-cli/compare/v0.38.1...v0.38.2

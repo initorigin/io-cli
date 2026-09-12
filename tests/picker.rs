@@ -1212,10 +1212,17 @@ fn f5_enter_on_an_unmatched_query_hands_the_line_back() {
     .taking_a_line();
 
     type_into(&mut palette, "effort high");
+    // **The row matches now, and the line is still handed back (0.41.0).** This
+    // asserted `matching() == 0`, because the whole query went to the matcher and
+    // `effort high` is not a subsequence of `/effort` — which is also why io's own
+    // instruction to type `/contain on` matched nothing at all. The query is
+    // matched on its command half now, so the right row is offered; what must not
+    // change is that `Enter` hands back the LINE rather than choosing the row,
+    // because choosing it would drop the ` high` the operator typed.
     assert_eq!(
         palette.matching(),
-        0,
-        "the fixture needs an unmatched query"
+        1,
+        "a query carrying an argument should still offer its command's row",
     );
 
     assert_eq!(
@@ -1284,5 +1291,200 @@ fn f5_an_empty_query_is_not_a_line() {
     assert_eq!(
         palette.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         Outcome::Idle,
+    );
+}
+
+/// **The `⋯ N more` counter moves, and reaches zero at the end.**
+///
+/// It counted everything the query admits less what fits on screen — a constant
+/// for a given list and terminal — so a field pass read `⋯ 53 more` on the first
+/// row of fifty-eight and `⋯ 53 more` again while sitting on the last one. A
+/// number that does not change while you scroll is furniture, and an operator
+/// holding the final row was being told fifty-three entries were still to come.
+///
+/// Counted below the **window** now: it falls as the view scrolls and disappears
+/// exactly when the last row is visible, which is the one question it is asked —
+/// whether there is any point pressing down again.
+///
+/// Sabotage: count below the cursor instead and the last assertion fails, because
+/// a list that fits entirely on screen then claims a row it is already drawing.
+#[test]
+fn f8_the_more_counter_falls_as_the_list_scrolls_and_ends_at_zero() {
+    let rows: Vec<Row> = (0..30).map(|n| Row::new(format!("entry {n}"))).collect();
+    let total = rows.len();
+    let mut picker = Picker::new("Pick one", rows);
+
+    // A viewport that cannot hold thirty rows, so there is something to count.
+    let counted = |picker: &mut Picker| -> Option<usize> {
+        let (mut screen, _recorder) = support::screen_of(80, 24, 8);
+        screen
+            .draw(|frame| picker.render(frame, frame.area(), &DARK))
+            .expect("frame");
+        screen.viewport_text().lines().find_map(|line| {
+            let (_, rest) = line.split_once(' ')?;
+            let (count, tail) = rest.trim().split_once(' ')?;
+            tail.starts_with("more")
+                .then(|| count.parse::<usize>().ok())?
+        })
+    };
+
+    let first = counted(&mut picker).expect("a list this long has rows below the window");
+    assert!(
+        first > 0 && first < total,
+        "the first reading should count what is below the window, not the whole \
+         list and not nothing: {first} of {total}",
+    );
+
+    // Walk to the very bottom. The counter must fall on the way and end absent.
+    let mut previous = first;
+    for _ in 0..total {
+        picker.key(key(KeyCode::Down));
+        if let Some(now) = counted(&mut picker) {
+            assert!(
+                now <= previous,
+                "the counter went UP while scrolling down: {previous} then {now}",
+            );
+            previous = now;
+        }
+    }
+
+    assert_eq!(
+        counted(&mut picker),
+        None,
+        "the counter is still drawn on the last row, telling an operator there is \
+         more below when there is nothing",
+    );
+
+    // And a list that fits entirely on screen draws no counter at all — the near
+    // miss that counting below the *cursor* would produce.
+    let mut short = Picker::new("Pick one", vec![Row::new("only"), Row::new("two")]);
+    assert_eq!(
+        counted(&mut short),
+        None,
+        "a counter appeared for rows that are already on screen",
+    );
+}
+
+/// **A command typed with its argument offers that command's row.**
+///
+/// io's own notice tells an operator to type `/contain on`, and typing it matched
+/// **nothing**: the whole string went to the matcher, every row is a bare command,
+/// and `contain on` is not a subsequence of `/contain`. The product instructed a
+/// form it then refused, and the sequence that worked — type `/contain`, `Enter`
+/// to accept, then type ` on` — is one nobody would guess.
+///
+/// **And `Enter` still hands back the line.** Matching the command half means the
+/// right row is offered; CHOOSING it would put `/contain` in the composer and drop
+/// the ` on`, which is a worse answer than the papercut. Both halves are asserted,
+/// because either alone is a regression.
+///
+/// Sabotage: rank against the whole query in `Picker::refilter` and the first
+/// assertion fails; drop the `carries_an_argument` arm and the second one does.
+#[test]
+fn f8_a_command_typed_with_its_argument_matches_and_is_handed_back() {
+    let mut palette = Picker::new(
+        "Which command?",
+        vec![
+            Row::new("/contain"),
+            Row::new("/context"),
+            Row::new("/model"),
+        ],
+    )
+    .taking_a_line();
+
+    type_into(&mut palette, "contain on");
+    assert!(
+        palette.matching() >= 1,
+        "`/contain on` matched no row, which is what io's own message tells an \
+         operator to type",
+    );
+    assert!(
+        palette.rows()[palette.selected()]
+            .label
+            .starts_with("/contain"),
+        "the marker is not on the command that was typed: {:?}",
+        palette.rows()[palette.selected()].label,
+    );
+
+    assert_eq!(
+        palette.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Outcome::Typed,
+        "`Enter` chose the row instead of submitting the line, which drops the \
+         argument the operator typed",
+    );
+    assert_eq!(
+        palette.query(),
+        "contain on",
+        "the line handed back is not the line that was typed",
+    );
+
+    // **A command typed in FULL submits on the first `Enter` too.** Typing `/cost`
+    // and pressing `Enter` used to accept the completion — replacing `/cost` with
+    // `/cost` — and do nothing else, so it took a second press to run. Every new
+    // operator types a command, presses `Enter`, and watches nothing happen.
+    let mut whole = Picker::new("Which command?", vec![Row::new("/contain")]).taking_a_line();
+    type_into(&mut whole, "contain");
+    assert_eq!(
+        whole.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Outcome::Typed,
+        "a command typed in full still needed a second `Enter` to run",
+    );
+
+    // **And a PARTIAL query still completes rather than running**, which is the
+    // whole point of a palette and the thing the change above must not cost.
+    let mut partial = Picker::new("Which command?", vec![Row::new("/contain")]).taking_a_line();
+    type_into(&mut partial, "cont");
+    assert!(
+        matches!(
+            partial.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Outcome::Chosen(_)
+        ),
+        "a partial query ran a command instead of completing it, so the palette          has stopped being a palette",
+    );
+}
+
+/// **A slash command typed into an open picker says where it went.**
+///
+/// A picker owns the keyboard while it is open, so `/memory` typed over the model
+/// picker silently became a filter and the operator read `No row matches
+/// "/memory"` with nothing saying why — the command looked broken rather than
+/// captured. That is the same confusion the `No row matches` line itself exists to
+/// prevent, one level up.
+///
+/// **Not on the palette**, which is the one picker where a slash is the ordinary
+/// thing to type and where the line would fire on every keystroke.
+///
+/// Sabotage: drop the `starts_with('/')` guard and the palette arm below fails.
+#[test]
+fn f8_a_slash_typed_into_a_picker_says_the_picker_has_the_keyboard() {
+    let drawn = |picker: &mut Picker| -> String {
+        let (mut screen, _recorder) = support::screen_of(80, 24, 8);
+        screen
+            .draw(|frame| picker.render(frame, frame.area(), &DARK))
+            .expect("frame");
+        screen.viewport_text().to_string()
+    };
+
+    let mut models = Picker::new("Which model?", vec![Row::new("opus-5"), Row::new("haiku")]);
+    type_into(&mut models, "/memory");
+    let text = drawn(&mut models);
+    assert!(
+        text.contains("No row matches"),
+        "the fixture needs a query that matches nothing: {text:?}",
+    );
+    assert!(
+        text.contains("Which model?") && text.contains("keyboard"),
+        "the operator is not told which surface captured the command, so `/memory` \
+         reads as broken rather than as swallowed: {text:?}",
+    );
+
+    // **The palette is exempt.** A slash there is the ordinary thing to type, and
+    // the notice would fire on a query that has simply not been finished yet.
+    let mut palette = Picker::new("Which command?", vec![Row::new("/model")]).taking_a_line();
+    type_into(&mut palette, "/zzzz");
+    let text = drawn(&mut palette);
+    assert!(
+        !text.contains("keyboard"),
+        "the palette told an operator it had captured a slash they meant for it: {text:?}",
     );
 }

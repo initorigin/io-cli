@@ -72,6 +72,39 @@ pub trait WithProvider {
 /// Read rather than reconstructed: `ProviderSpec` is io-harness's own type and
 /// every arm of it carries a `model`, so a caller that wants the name should ask
 /// for it in one place instead of matching four arms at each site.
+/// The vendor a spec names, as the word an operator wrote in `kind`.
+///
+/// **For reading only.** `io config get provider.kind` answers from here; nothing
+/// writes a provider entry through the configuration surface, because `/provider`
+/// and `-m` already own that and a second writer over one value is a shape this
+/// product has corrected three times.
+///
+/// `ProviderSpec` is `#[non_exhaustive]`, so an arm this crate has never seen
+/// answers with the empty string and the row is left out rather than guessed at —
+/// the same choice [`model_of`] makes and for the same reason.
+pub fn kind_of(spec: &ProviderSpec) -> &'static str {
+    match spec {
+        ProviderSpec::OpenRouter { .. } => "openrouter",
+        ProviderSpec::Anthropic { .. } => "anthropic",
+        ProviderSpec::OpenAi { .. } => "openai",
+        ProviderSpec::Compatible { .. } => "compatible",
+        _ => "",
+    }
+}
+
+/// The endpoint a spec dials, where the spec names one.
+///
+/// Only `Compatible` carries an address: the three vendor arms dial their own
+/// vendor's, which is io-harness's to know and not a value in anybody's file.
+/// `None` is therefore a real answer and not a missing one, and the row is drawn
+/// with an empty value rather than with a URL this crate invented.
+pub fn base_url_of(spec: &ProviderSpec) -> Option<&str> {
+    match spec {
+        ProviderSpec::Compatible { base_url, .. } => base_url.as_deref(),
+        _ => None,
+    }
+}
+
 pub fn model_of(spec: &ProviderSpec) -> &str {
     match spec {
         ProviderSpec::OpenRouter { model, .. }

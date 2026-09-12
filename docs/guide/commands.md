@@ -54,6 +54,7 @@ above a row that ranked there for reasons having nothing to do with it.
 | Command | Does |
 | --- | --- |
 | `/config` | every setting, the value in force and the file that decided it |
+| `/policy` | what may be done without asking, what you have written down, and full access |
 | `/theme` | change the theme for this session |
 | `/remember` | remember a line of guidance, in the scope you choose |
 | `/memory` | what io remembers: the instruction files and the agent's own notes, each editable |

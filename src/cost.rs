@@ -229,6 +229,48 @@ pub fn table(config: &io_harness::Config) -> PriceTable {
     config.prices().unwrap_or_else(|| PriceTable::new(""))
 }
 
+/// What one run cost, as the line `io exec --json` ends with.
+///
+/// **The same two calls `/cost`'s "this run" section makes, in the same order,
+/// so the two figures cannot disagree.** The criterion this satisfies is that the
+/// headless total equals `/cost`'s for the same run, and the only way to hold that
+/// through later changes is to compute it from the same source rather than to
+/// reimplement it: `Store::provider_calls(run_id)` priced by [`Total::of`]. A
+/// second implementation would agree on the day it was written.
+///
+/// **`unpriced` is emitted beside the total and is not decoration.** A run with
+/// calls in it is reporting a *floor*, not a total — no model was recorded, or no
+/// price is entered for the one that was — and a consumer that reads the money and
+/// drops this number is being lied to by omission. `unknown` counts calls that
+/// reported no usage at all.
+///
+/// The store is read once, after the run, on the thread that owns it. It cannot be
+/// done from the observer that streams the events: `Store` is `!Sync`.
+pub fn spent(
+    store: &io_harness::Store,
+    run_id: i64,
+    table: &PriceTable,
+) -> Option<serde_json::Value> {
+    let calls = store.provider_calls(run_id).ok()?;
+    let total = Total::of(&calls, table);
+    Some(serde_json::json!({
+        "event": "cost",
+        "run_id": run_id,
+        "calls": total.calls,
+        "total_cost_usd": micros_to_usd(total.micros),
+        "unpriced_calls": total.unpriced,
+        "calls_without_usage": total.unknown,
+    }))
+}
+
+/// Micro-units to a dollar figure, as a JSON number.
+///
+/// Six decimal places, because a micro-unit is a millionth and rendering fewer
+/// would report a cheap run as costing nothing at all.
+fn micros_to_usd(micros: u64) -> serde_json::Value {
+    serde_json::json!(micros as f64 / 1_000_000.0)
+}
+
 /// The `/cost` page.
 ///
 /// `run` is the turn in flight or the last one; `session` is every turn of this

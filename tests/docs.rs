@@ -61,6 +61,74 @@ fn shipped_prose() -> Vec<(String, String)> {
         .collect()
 }
 
+/// **Every page describing the written-down answer names the scope it writes to.**
+///
+/// **This gate replaces its own opposite, and the history is the point.** It was
+/// written earlier in this release as `n7_no_shipped_page_promises_a_remembered_
+/// answer_that_is_written_down`, because the `always` answer had been cut and
+/// three shipped pages claimed it anyway — a permission an operator believes is
+/// recorded and is not. The cut was then reversed and the answer built, which made
+/// the gate forbid the documentation of a real feature. A gate whose premise has
+/// been overturned is not weakened, it is replaced by the one the new premise
+/// needs.
+///
+/// That premise: `w` writes to the **user scope** and to nothing else. A
+/// `[[policy.layers]]` rule inside the workspace is one a `git clone` hands to
+/// everybody and one the run's own agent can write, which is why io-harness
+/// refuses a widening from a workspace file at all. A page that described the
+/// answer without saying where it lands would leave an operator assuming the
+/// nearest file — and the nearest file is the dangerous one.
+///
+/// `CHANGELOG.md` is exempt as a diary, through [`shipped_prose`].
+///
+/// Sabotage: delete the user-scope sentence from `docs/guide/limits.md` and this
+/// names the page.
+#[test]
+fn n7_every_page_describing_the_written_answer_names_the_scope() {
+    // **Asserted per PAGE and not per paragraph, which is the third correction to
+    // this gate's aim.** The claim is a property of a page: a reader who learns
+    // that io writes a rule must, on that page, also learn where it lands. The
+    // sentence naming the scope is often a paragraph away from the one naming the
+    // layer — in `limits.md` the scope is stated where the answer is introduced
+    // and the layer where revoking is explained — and a paragraph-level gate calls
+    // that a defect when it is ordinary prose.
+    //
+    // Keyed on `io-remembered`: the layer nothing but a `w` answer puts a rule
+    // into, so it appears exactly where this claim is being made and nowhere it is
+    // not. Two looser drafts matched a guide index row and a paragraph about
+    // adding an MCP server.
+    let mut described = 0usize;
+    for (path, text) in shipped_prose() {
+        let lower = text.to_lowercase();
+        if !lower.contains("io-remembered") {
+            continue;
+        }
+        described += 1;
+        assert!(
+            lower.contains("user scope")
+                || lower.contains("user-scope")
+                || lower.contains("your own configuration"),
+            "{path} says io writes a `[[policy.layers]]` rule and never says the \
+             rule goes to the USER scope. The nearest file is the dangerous one — \
+             it arrives with a `git clone` and the run's own agent can write it.",
+        );
+        assert!(
+            lower.contains("never a workspace")
+                || lower.contains("not a workspace")
+                || lower.contains("never written to a workspace")
+                || lower.contains("and never a workspace file"),
+            "{path} names the user scope without ruling the workspace OUT, which is \
+             the half that matters: an operator assuming the nearest file is \
+             assuming the one a `git clone` hands to everybody.",
+        );
+    }
+    assert!(
+        described > 0,
+        "no shipped page describes where a remembered answer is written, which is \
+         the one thing an operator has to know about it",
+    );
+}
+
 /// One guide page, by slug.
 ///
 /// 0.30.2 moved the manual off the README and onto `docs/guide/`, and a needle
@@ -332,6 +400,10 @@ fn every_setting() -> io_cli::settings::CliSettings {
         diff: Some("unified".into()),
         glyphs: Some("ascii".into()),
         plain: Some(false),
+        // 0.41.0. `Some` rather than `None` for the reason this whole fixture is
+        // struct literals: a `None` is dropped by `skip_serializing_if`, and a key
+        // invisible to the walk is a key neither list has to name.
+        escalate: Some(false),
         keys: Some(Default::default()),
         // A struct literal from 0.40.0, not `Containment::new`, which leaves
         // `max_total_cost` and `max_total_duration` at `None` — and a `None` is
@@ -1120,10 +1192,28 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
         .find(|sub| sub.get_name() == "exec")
         .expect("`io exec` is a subcommand");
 
+    // **The subcommand's OWN flags are what this page owes a sentence for.** The
+    // `global` ones reach `io exec` too, but they reach every other subcommand
+    // equally and `docs/CONTRACT.md` documents them once at the argv surface —
+    // requiring each of `-C`, `--profile`, `--plain` and `--full-access` to be
+    // re-explained on the headless page would spread one fact over five pages to
+    // drift between.
     let flags: Vec<String> = exec
         .get_arguments()
         .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
         .filter(|long| long != "--help")
+        .collect();
+
+    // **The other direction consults the globals as well**, and 0.41.0 is why.
+    // `--sandbox` moved from `Exec` to a `global` on `Cli` in this release, so it
+    // stopped being one of this subcommand's own arguments while remaining a flag
+    // an operator types on `io exec` every day. A gate reading only the line above
+    // would have reported that the binary had *lost* it and invited somebody to
+    // delete a true sentence from the guide.
+    let reachable: Vec<String> = exec
+        .get_arguments()
+        .chain(cli.get_arguments().filter(|arg| arg.is_global_set()))
+        .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
         .collect();
 
     assert!(!flags.is_empty(), "there should be flags to check");
@@ -1134,10 +1224,11 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
         );
     }
 
-    // And nothing the guide promises has been removed from the binary.
+    // And nothing the guide promises has been removed from the binary — measured
+    // against everything `io exec` can be handed, its own and the globals alike.
     for promised in ["--json", "--sandbox", "--policy", "--provider"] {
         assert!(
-            flags.iter().any(|flag| flag == promised),
+            reachable.iter().any(|flag| flag == promised),
             "the guide documents {promised} and `io exec` no longer takes it",
         );
     }
@@ -2748,9 +2839,9 @@ fn n5_no_shipped_page_claims_a_span_was_delivered() {
 /// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
 /// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
 /// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.83.0/src/tools/mod.rs:33-42`).
+/// cache *write* on every later turn (`io-harness-0.86.0/src/tools/mod.rs:33-42`).
 /// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`io-harness-0.83.0/src/run/prompts.rs:1418`).
+/// naming what is withheld (`io-harness-0.86.0/src/run/prompts.rs:1418`).
 ///
 /// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
 /// its headline. That framing is what a writer reaches for, because "withhold" means

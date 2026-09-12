@@ -1,13 +1,13 @@
 {
-  "version": "0.38.2",
+  "version": "0.40.0",
   "description": "Terminal agent that shows what it may do, what it spends and what it refused",
   "homepage": "https://github.com/initorigin/io-cli",
   "license": "Apache-2.0",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/initorigin/io-cli/releases/download/v0.38.2/io-0.38.2-x86_64-pc-windows-msvc.zip",
-      "hash": "be8ea3dc313635a86909cd0cc386130102cda97bcabb78bc0e5986ec688a89f8",
-      "extract_dir": "io-0.38.2-x86_64-pc-windows-msvc"
+      "url": "https://github.com/initorigin/io-cli/releases/download/v0.40.0/io-0.40.0-x86_64-pc-windows-msvc.zip",
+      "hash": "e9687bd3695bf073fc9e3448cb60e753a896375d1f7591e8073fcbe9d29f4eee",
+      "extract_dir": "io-0.40.0-x86_64-pc-windows-msvc"
     }
   },
   "bin": "io.exe",

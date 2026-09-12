@@ -187,7 +187,7 @@ async fn f1_an_open_approval_commits_nothing_to_scrollback() {
         "the question was committed to scrollback: {bytes:?}",
     );
 
-    app.answer_approval(io_cli::approval::Answer::Deny);
+    let _ = app.answer_approval(io_cli::approval::Answer::Deny);
     deciding.await.expect("the approver did not panic");
 }
 
@@ -773,9 +773,19 @@ async fn f2_the_counts_agree_with_the_diff_drawn_beneath_them() {
 async fn f1_a_key_the_modal_does_not_take_is_refused_out_loud() {
     use io_cli::approval::ONLY_THREE_KEYS;
 
+    // **Four keys as of 0.41.0, not three.** `w` chooses "allow and write it down",
+    // the answer that appends a `[[policy.layers]]` rule to the operator's own
+    // configuration. The set is read from `Answer::ALL` rather than written out, so
+    // a fifth answer added later cannot leave this loop asserting that its key is
+    // refused — which would fail, and would be fixed by someone adding a letter to
+    // a list rather than by anyone deciding a keystroke may grant a permission.
+    let answers: Vec<char> = io_cli::approval::Answer::ALL
+        .iter()
+        .map(|answer| answer.key())
+        .collect();
     for byte in b' '..=b'~' {
         let c = byte as char;
-        if matches!(c.to_ascii_lowercase(), 'y' | 'a' | 'n') {
+        if answers.contains(&c.to_ascii_lowercase()) {
             continue;
         }
         let (drawn, answer) = struck(KeyCode::Char(c)).await;
@@ -1161,6 +1171,6 @@ async fn f7_a_paste_does_not_land_behind_an_open_approval() {
         app.composer.text(),
     );
 
-    app.answer_approval(io_cli::approval::Answer::Deny);
+    let _ = app.answer_approval(io_cli::approval::Answer::Deny);
     deciding.await.expect("the run was told");
 }

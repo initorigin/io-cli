@@ -449,6 +449,113 @@ pub fn may_retry(attempts: &[GateAttempt], retries: u8) -> bool {
     standing.outcome != GateOutcome::Passed && standing.attempt <= usize::from(retries)
 }
 
+/// The wire name io-harness gives the event that a criterion ran and did not pass.
+///
+/// A `kind` of [`io_harness::EventKind::Sandbox`] rather than a variant, which is
+/// why it is a string here at all. Named once so the counter below and anything
+/// that reads it later cannot spell it two ways.
+pub const PHASE_FAILED: &str = "gate_phase_failed";
+
+/// Stops a headless run whose gate keeps failing, once `retries` is spent.
+///
+/// **The session already honours `retries` and `io exec` never has, which is the
+/// whole of this type.** A session applies its gate turn by turn, with
+/// [`may_retry`] deciding whether to send the agent back and an operator watching
+/// either way. `io exec` has one turn and no loop of its own: it hands io-harness a
+/// contract carrying the criterion, io-harness evaluates it after every step, and
+/// nothing between them is counting. So a mis-set gate did not fail fast — it
+/// failed on every step until the gated step cap, which is forty. A field pass met
+/// exactly that: twenty-one gate attempts across sixteen steps over more than
+/// fifteen minutes, every one of them a paid completion, before it was killed by
+/// hand. That is the most expensive defect this release fixes and it is the only
+/// one that costs money per occurrence.
+///
+/// **An observer and not a contract field, because io-harness publishes no per-gate
+/// budget.** `TaskContract::max_retries` is next to it in the file and is not this:
+/// it bounds a failing *provider or tool step* before the run escalates the error,
+/// so borrowing it would cap the wrong thing and cap it for the wrong reason.
+/// Nothing else in the contract counts verification attempts. What io-harness does
+/// publish is [`io_harness::Flow::Cancel`] from an observer, so the budget is kept
+/// where the events are and io-harness stays the only thing driving the loop.
+///
+/// **Cancelling does not lose the exit code, and that was the thing to check
+/// before choosing this.** The run comes back `RunOutcome::Cancelled`, but
+/// [`crate::exec::verified_code`] reads the gate's *standing* ahead of the outcome
+/// and answers `UNVERIFIED` for a `GateOutcome::Failed` whatever the run says — so
+/// a script still reads `6`, which is the code that means the work was judged and
+/// did not hold up. A bound that silently changed a CI job's exit code would be a
+/// worse bug than the one it fixes.
+///
+/// **`retries` is a number of retries, so the budget is one more than it.**
+/// `retries = 0` allows the one attempt every gated run makes; `retries = 1` allows
+/// two. This is the same reading [`may_retry`] gives it on the other door, and the
+/// `/gates` panel's own sentence — "a turn that fails it earns one turn more".
+pub struct Budget {
+    /// Attempts allowed in total: `retries + 1`.
+    allowed: u32,
+    /// Failing evaluations seen so far.
+    failed: std::sync::atomic::AtomicU32,
+}
+
+impl Budget {
+    /// A budget for `retries` retries beyond the first attempt.
+    #[must_use]
+    pub fn new(retries: u8) -> Self {
+        Self {
+            allowed: u32::from(retries).saturating_add(1),
+            failed: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// How many failing evaluations have been seen.
+    #[must_use]
+    pub fn failures(&self) -> u32 {
+        self.failed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether the budget is spent, which is what stopped the run.
+    ///
+    /// Read by the door afterwards so the sentence an operator gets says the gate
+    /// ran out of attempts rather than that the run "was cancelled", which reads
+    /// as something the operator did.
+    #[must_use]
+    pub fn spent(&self) -> bool {
+        self.failures() >= self.allowed
+    }
+
+    /// The attempts this budget allows in total.
+    #[must_use]
+    pub fn allowed(&self) -> u32 {
+        self.allowed
+    }
+}
+
+impl io_harness::Observer for Budget {
+    fn event(&self, event: &io_harness::RunEvent) -> io_harness::Flow {
+        // Only the event that says a criterion ran and did not pass. A
+        // `gate_output` beside it is the same attempt reported twice, and
+        // counting both would halve every budget an operator writes.
+        let failing = matches!(
+            &event.kind,
+            io_harness::EventKind::Sandbox { kind, .. } if kind == PHASE_FAILED
+        );
+        if !failing {
+            return io_harness::Flow::Continue;
+        }
+        // `fetch_add` returns the value before the add, so the count after this
+        // attempt is one more than it.
+        let seen = self
+            .failed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        if seen >= self.allowed {
+            io_harness::Flow::Cancel
+        } else {
+            io_harness::Flow::Continue
+        }
+    }
+}
+
 /// The test command this repository proposes for itself, if it has one.
 ///
 /// **This crate holds no list of marker filenames and no list of test commands,
