@@ -393,6 +393,95 @@ pub fn costed(servers: &mut [Server], cost: &BTreeMap<String, u64>) {
 }
 
 /// How a server is reached, in one short string.
+/// What a server's own process wrote to its stderr during `run_id`.
+///
+/// **It used to land on io's stderr, and that is what the pin fixed.** Every run
+/// loading an MCP server printed the server's banner into io's own error channel —
+/// `semlith 0.8.0: serving 1 store on initorigin` in the middle of a CI log — so
+/// third-party output and io's own diagnostics were the same stream. io-harness
+/// 0.86.0 captures it as a `ContextEvent` of kind `mcp_stderr` instead.
+///
+/// **Which leaves it readable but nowhere read, and that is what this is for.** A
+/// server that will not start writes its reason there, so the text is worth
+/// exactly as much as it was before and needs a surface rather than a stream. The
+/// rows carry `<id>: <text>`, so the id is recovered by splitting on the first
+/// colon — io-harness composes them that way and this is the reader of a format it
+/// writes.
+///
+/// Empty for a run with no MCP server, for a store that will not answer, and for a
+/// server that said nothing — three different facts that all mean "there is
+/// nothing to show", which is why they share an answer here and are told apart by
+/// the caller's own sentence.
+#[must_use]
+pub fn stderr_of(store: &io_harness::Store, run_id: i64, id: &str) -> Vec<String> {
+    let Ok(events) = store.context_events(run_id) else {
+        return Vec::new();
+    };
+    events
+        .into_iter()
+        .filter(|event| event.kind == "mcp_stderr")
+        .filter_map(|event| event.detail)
+        .filter_map(|detail| {
+            let (server, text) = detail.split_once(':')?;
+            (server.trim() == id).then(|| text.trim().to_string())
+        })
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+/// Everything `io mcp get` shows about one server, as labelled rows.
+///
+/// **`get` printed exactly what `list` printed, and the help promised otherwise.**
+/// `io mcp …`'s own summary says "Add, list, **inspect**, change or remove", and a
+/// verb whose output is byte-identical to its neighbour's inspects nothing — an
+/// operator checking why a server will not start learned its id, its transport and
+/// its origin, which is what the row above it already said.
+///
+/// **A value is never printed, only the name it is read from.** io-cli reads no
+/// credential anywhere and this is the surface most likely to be asked to: an
+/// `env` entry is rendered as its key and the marker the file carries, so
+/// `${env:GITHUB_TOKEN}` is shown as a *reference* and a literal secret somebody
+/// pasted into their configuration is shown as `set` rather than echoed into a
+/// terminal, a scrollback or a CI log. Same rule for an HTTP header, where an
+/// `Authorization` value is exactly the thing that must not be drawn.
+///
+/// Exhaustive over `McpTransport` with no wildcard, for the reason [`transport`]
+/// below is: the enum is not `#[non_exhaustive]`, so a variant a later io-harness
+/// adds breaks this build rather than being silently omitted from an inspection.
+pub fn detail(server: &io_harness::McpServer) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    match &server.transport {
+        io_harness::McpTransport::Stdio { command, args, env } => {
+            rows.push(("command", command.clone()));
+            if !args.is_empty() {
+                rows.push(("args", args.join(" ")));
+            }
+            for (name, value) in env {
+                rows.push(("env", format!("{name}={}", reference(value))));
+            }
+        }
+        io_harness::McpTransport::Http { url, headers } => {
+            rows.push(("url", url.clone()));
+            for (name, value) in headers {
+                rows.push(("header", format!("{name}: {}", reference(value))));
+            }
+        }
+    }
+    rows
+}
+
+/// A configured value as it may be shown: the reference it is, or that it is set.
+///
+/// `${env:NAME}` is a name and not a secret, so it is drawn whole — that is the
+/// form `/import` writes and the form an operator needs to see to know which
+/// variable to export. Anything else is a value this crate will not echo.
+fn reference(value: &str) -> String {
+    match value.starts_with("${") && value.ends_with('}') {
+        true => value.to_string(),
+        false => "set (value not shown)".to_string(),
+    }
+}
+
 fn transport(server: &io_harness::McpServer) -> String {
     // Exhaustive, with no wildcard: `McpTransport` is NOT `#[non_exhaustive]`,
     // so a variant added by a later io-harness breaks this build rather than

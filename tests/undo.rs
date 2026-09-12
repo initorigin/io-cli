@@ -402,10 +402,14 @@ fn f10_the_groups_are_where_this_release_put_them() {
             names.len(),
         );
     }
+    // Thirty-seven from 0.41.0: `/policy` took the last free slot, in `Configure`.
+    // The bound above is what matters here — this count is the second half of it,
+    // and a group at eleven would fail the loop rather than this line.
     assert_eq!(
         COMMANDS.len(),
-        36,
-        "0.27.0 adds exactly three commands to the thirty-three 0.26.0 shipped",
+        37,
+        "0.41.0 adds exactly one command, `/policy`, to the thirty-six 0.27.0 \
+         through 0.40.0 shipped",
     );
 }
 

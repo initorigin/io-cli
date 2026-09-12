@@ -682,6 +682,29 @@ fn decided_scope(root: &Path, key: &str, asked: Option<Scope>) -> Scope {
         .unwrap_or(Scope::User)
 }
 
+/// The section `key` sits in, when unsetting `key` would leave it with nothing.
+///
+/// `None` when the section keeps other keys, when the key is at the document root
+/// (there is no header to take away), when the file cannot be read, or when the
+/// key is not in it — every one of which means "unset the key and change nothing
+/// else", which is what the caller does with a `None`.
+///
+/// Reads the target file because that is the only place the answer lives: whether
+/// a section is about to be emptied is a fact about the bytes on disk and not about
+/// the request. The same file `configure::write` is about to rewrite, so a race
+/// here costs an unremoved header and never a damaged file — `write`'s own round
+/// trip is what guarantees the result parses.
+fn emptied_by(root: &Path, scope: Scope, key: &str) -> Option<String> {
+    let (section, _) = key.rsplit_once('.')?;
+    let path = crate::configure::scope_path(root, scope)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let held = crate::edit::keys(&text, section);
+    match held.len() == 1 && held.first().map(String::as_str) == key.rsplit('.').next() {
+        true => Some(section.to_string()),
+        false => None,
+    }
+}
+
 /// Turn a request into the file and the edits that carry it out.
 ///
 /// `Ok(None)` is a **read** — `list`, `get` — which writes nothing and is
@@ -907,18 +930,49 @@ pub fn plan(
             disclosure: None,
             staged: None,
         },
-        Request::Config(ConfigVerb::Unset { key, scope }) => Plan {
-            scope: decided_scope(root, key, *scope),
+        Request::Config(ConfigVerb::Unset { key, scope }) => {
+            let scope = decided_scope(root, key, *scope);
             // `unset` and not `remove`, and the two are not interchangeable:
             // `remove` takes a whole `[section]` or `[[array]]` entry away and
             // cannot name a key at all, so asked for `run.max_steps` it would
             // look for a `[run.max_steps]` header, find none, and refuse — or,
             // for a key whose name happens to be a section's, delete the
             // operator's entire block. See `Edit::unset`.
-            edits: vec![Edit::unset(key.clone())],
-            disclosure: None,
-            staged: None,
-        },
+            let mut edits = Vec::new();
+            // **And the header, when that key was the last one in it (0.41.0).**
+            // Unsetting the only key left `[run]` or `[app.io-cli.gates]` standing
+            // empty, which is not neutral: `gates::Settings::criterion` REFUSES a
+            // section that names no kind rather than reading it as "no gate", so a
+            // leftover `[app.io-cli.gates]` turns a key the operator removed into a
+            // configuration that will not resolve — the opposite of what they asked
+            // for.
+            //
+            // **Planned as a second edit rather than folded into `Edit::unset`.**
+            // That primitive deliberately never removes a region, and
+            // `tests/edit.rs` pins the distinction: `unset` names a key and `remove`
+            // names a region, and collapsing them is the destructive ambiguity the
+            // two verbs are kept apart to prevent. Here the operator's intent is
+            // known — they asked for this key gone — so the verb may compose both,
+            // which is what a planner is for.
+            //
+            // **One edit or the other, never both.** The removal's span covers the
+            // key's own line, so planning an `unset` beside it makes two splices
+            // over the same bytes — which `apply` refuses, and the whole write then
+            // does nothing at all. That is exactly the shape this verb must not
+            // have: an operator asked for a key to go and the file came back
+            // unchanged, with the refusal being about the plan rather than about
+            // anything they did.
+            match emptied_by(root, scope, key) {
+                Some(section) => edits.push(Edit::remove(section)),
+                None => edits.push(Edit::unset(key.clone())),
+            }
+            Plan {
+                scope,
+                edits,
+                disclosure: None,
+                staged: None,
+            }
+        }
         // **A marketplace verb plans no write, and it is here beside the reads
         // rather than given a shape of its own.** `add` and `remove` are not
         // reads — they change the disk — but they change *the disk* and not a
@@ -1447,7 +1501,7 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.83.0/src/mcp.rs:439-447`: the
+    // silent no-op on an HTTP server (`io-harness-0.86.0/src/mcp.rs:441-449`: the
     // body writes only into the `Stdio` arm) — a constructor chain here would drop
     // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`
@@ -1637,6 +1691,38 @@ fn config_set(args: &Args) -> Result<Request, String> {
         }
         (None, _) => {}
     }
+
+    // **A quoted command line is one argv element, and storing it was worse than
+    // refusing it.** 0.40.0 taught this parser the `--` form, which is what makes
+    // a list key settable at all — but it left the shape an operator reaches for
+    // first working and wrong: `io config set app.io-cli.gates.command "python3
+    // --version"` is one positional word, so it stored the single element
+    // `["python3 --version"]` and exited 0. `execvp` is then handed a binary whose
+    // name is the whole command line, and the gate fails every step of every run
+    // with nothing anywhere saying why. A field pass met exactly that: fourteen
+    // failures in one run while the agent's own `exec python3` returned 0 beside
+    // them.
+    //
+    // **Only when `--` was not used, which is what makes this precise rather than
+    // a heuristic.** After `--` the operator has spelled the vector out, so a
+    // single element containing a space is a program path with a space in it and
+    // is taken at its word. Without `--` a lone space-bearing value is a command
+    // line that has not been split, and there is no reading of it that this key
+    // can use. So the refusal costs nothing expressible and the escape is the one
+    // the message names.
+    if listed && args.opaque.is_none() {
+        if let [only] = words.as_slice() {
+            if only.chars().any(char::is_whitespace) {
+                return Err(format!(
+                    "`{key}` is a command and its arguments, and `{only}` arrived as a single \
+                     word — quoted, it would be stored as one argv element and run as a program \
+                     whose name contains a space, which fails on every step. Write the words \
+                     after `--`, as in `config set {key} -- {only}`"
+                ));
+            }
+        }
+    }
+
     let value = config_value(&key, &words)?;
 
     // Reported here rather than discovered by the round trip, because the round

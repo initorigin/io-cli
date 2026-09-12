@@ -723,6 +723,23 @@ fn f12_every_wizard_step_fits_eighty_columns() {
              ({set}): {drawn:?}",
         );
 
+        // --- Fan-out: the longest rows in the wizard, and the ones that must not
+        //     lose their numbers. The row that acts spells out all four ceilings,
+        //     so eighty columns is exactly where it would be truncated into an
+        //     operator agreeing to figures they were shown half of.
+        wizard.key(key(KeyCode::Enter));
+        assert_eq!(wizard.step(), Step::Fanout);
+        let drawn = draw_step(&mut wizard, &mut screen);
+        assert!(
+            drawn.contains("Write one?"),
+            "the fan-out step lost its question ({set}): {drawn:?}",
+        );
+        assert!(
+            drawn.contains(io_cli::store::LEAVE_IT),
+            "the fan-out step lost the row that declines, which is the default \
+             answer ({set}): {drawn:?}",
+        );
+
         // --- Confirm: the screen that promises to name the exact path. ---
         wizard.key(key(KeyCode::Enter));
         assert_eq!(wizard.step(), Step::Confirm);

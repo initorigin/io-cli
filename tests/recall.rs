@@ -6,7 +6,7 @@
 //! subsystem is wrong while looking right:
 //!
 //! 1. **The bucket is a canonicalised path.** io-harness keys a workspace's
-//!    memory on `std::fs::canonicalize(root)` — `src/run/memory.rs:14-19`, and
+//!    memory on `std::fs::canonicalize(root)` — `src/run/memory.rs:16-21`, and
 //!    the function is `pub(crate)`, so io-cli cannot call it and has to
 //!    reproduce it. Key on the root as given and the panel is empty beside an
 //!    agent writing a note every turn, **and only when the checkout is reached
@@ -21,7 +21,7 @@
 //!    its own, so a run drawing on both may carry up to twice `max_entries`. One
 //!    number reported as *the* cap is half the real ceiling.
 //! 4. **Eviction, refusal and recall emit no `EventKind` at all.** io-harness
-//!    records them as `ContextEvent` rows on purpose (`src/state.rs:3275-3281`).
+//!    records them as `ContextEvent` rows on purpose (`src/state.rs:3290-3296`).
 //!    An implementation reaching for the observer stream reports that none has
 //!    ever happened, which is indistinguishable from a healthy store. The real
 //!    run below watches the stream and asserts the *absence*, so that sabotage
@@ -500,7 +500,7 @@ async fn f8_eviction_refusal_and_recall_are_read_from_the_trace() {
         assert!(
             !seen.iter().any(|k| k.contains(forbidden)),
             "SABOTAGE: io-harness emits no EventKind for {forbidden} \
-             (src/state.rs:3275-3281), so an implementation reading evictions off \
+             (src/state.rs:3290-3296), so an implementation reading evictions off \
              the observer stream reports that none has ever happened and looks \
              perfectly healthy. These must come from Store::context_events.",
         );
@@ -546,12 +546,31 @@ async fn f8_eviction_refusal_and_recall_are_read_from_the_trace() {
         .iter()
         .find(|e| e.key == "delta")
         .expect("written by the second turn");
+    // **`delta` draws NOTHING, and that changed under io-harness 0.85.0 rather
+    // than being wrong before.** This assertion read `1` and its prose said the
+    // note was "written during the second turn and carried into that same turn's
+    // next step". That is no longer how a run behaves: 0.85.0 made the prompt
+    // append-only between folds, because re-reading the memory block every turn
+    // rewrote the earliest user text and threw the vendor's prefix cache away
+    // from that byte on for the rest of the run. `run/memory.rs`'s `Frozen` now
+    // holds the notes at the value they had when the run last folded — or at run
+    // start — so a note a run writes about its own work does not enter that run's
+    // prompt at all, `record_recalls` never sees it, and no recall row is written.
+    //
+    // **This is a real change to what `/remember` does and not a test detail.** A
+    // note written now takes effect at the next fold or the next run, and the
+    // guides say so rather than leaving an operator to wonder why the thing they
+    // just told io did not change the answer they got next.
+    //
+    // The distinction the count exists for is unharmed and is now carried by
+    // `alpha` alone: it is drawn by two distinct runs and reads 2, where counting
+    // rows would read more.
     assert_eq!(
-        delta.draws, 1,
-        "written during the second turn and carried into that same turn's next \
-         step, so exactly one run has drawn on it — which is the distinction the \
-         count is for: it is in the store as often as `alpha` is, and half as \
-         proven",
+        delta.draws, 0,
+        "a note written during a run is frozen out of that run's own prompt from \
+         io-harness 0.85.0, so nothing has drawn on `delta` yet — a non-zero \
+         count here means either the pin went backwards or `draws` is counting \
+         something other than a carried key",
     );
 
     assert!(

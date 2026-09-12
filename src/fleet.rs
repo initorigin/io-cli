@@ -145,6 +145,27 @@ pub struct Child {
     /// of these plus the root's own draws is what the tree has spent, and the
     /// status line's figure is the same arithmetic done once at the top.
     pub drawn: u64,
+    /// What the child actually said, once it has finished (0.41.0).
+    ///
+    /// **The parent used to be told only that a child succeeded.** A field pass
+    /// watched a fan-out report `spawned child 188 success, steps 1; spawned child
+    /// 189 success, steps 1` and then watched the parent say, in its own words,
+    /// that the sub-agents "returned no message of their own" — before redoing
+    /// both children's work itself. A child can be paid for and produce nothing
+    /// anybody ever sees, which is the most expensive shape a silence takes.
+    ///
+    /// **Read from the store rather than from the event stream.** Nothing on the
+    /// stream carries a child's conclusion: `EventKind::Spawned` announces the
+    /// child, and the fold that reads its last word is `pub(super)` inside
+    /// io-harness. The same four lines are available here over public API —
+    /// `Store::agent_events`, last row of kind `said` — so this reproduces a known
+    /// reader rather than inventing a second opinion about one.
+    ///
+    /// `None` while the child is still working, and `None` for one that finished
+    /// without saying anything — drawn as *having said nothing* rather than left
+    /// blank, because those two are the same picture and only one of them is a
+    /// child worth spawning again.
+    pub said: Option<String>,
 }
 
 impl Child {
@@ -250,6 +271,36 @@ pub struct Fleet {
 impl Fleet {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Read each finished child's last word out of the store.
+    ///
+    /// **The event stream does not carry a conclusion, so this is the only way to
+    /// have one.** `EventKind::Spawned` announces a child and the ending events
+    /// say how it ended; what it *said* lives in `agent_events`, and io-harness's
+    /// own fold reads the last row of kind `said` — four lines, `pub(super)`, and
+    /// reproduced here over the public reader rather than asked for upstream.
+    ///
+    /// Called at a turn boundary rather than per event, for the reason
+    /// `resolved.rs` resolves once: this is a store read per child, and doing it
+    /// on every `Spawned` would re-read a tree that has not finished changing.
+    ///
+    /// **Only for children that have stopped.** A working child's `said` stays
+    /// `None`, so the view never shows a half-finished answer as a conclusion.
+    /// A read that fails leaves the field alone: an unreadable store is not a
+    /// child that said nothing, and those must not look the same.
+    pub fn conclusions(&mut self, store: &io_harness::Store) {
+        for child in &mut self.children {
+            if child.state == State::Working || child.said.is_some() {
+                continue;
+            }
+            if let Ok(events) = store.agent_events(child.run_id) {
+                child.said = events
+                    .into_iter()
+                    .rfind(|event| event.kind == "said")
+                    .and_then(|event| event.detail);
+            }
+        }
     }
 
     /// Whether anything has happened that this can draw.
@@ -414,6 +465,10 @@ impl Fleet {
                     goal: goal.clone(),
                     state: State::Working,
                     drawn: 0,
+                    // A child that has just been announced has said nothing yet.
+                    // Filled by `Fleet::conclusions` from the store once it ends —
+                    // the event stream never carries a conclusion.
+                    said: None,
                 });
                 if self.selected.is_none() {
                     self.selected = Some(0);
@@ -549,7 +604,7 @@ impl Fleet {
         let mut rows: Vec<String> = self
             .children
             .iter()
-            .map(|child| {
+            .flat_map(|child| {
                 let indent = "  ".repeat(child.depth.saturating_sub(1) as usize);
                 let drawn = crate::status::format_tokens(child.drawn);
                 // A word, not a symbol, and so it needs no entry in [`Glyphs`]:
@@ -572,11 +627,40 @@ impl Fleet {
                 // The goal is what gets cut, because everything in front of it
                 // identifies the row and it is the only part that can be long.
                 let room_for_goal = room.saturating_sub(head.chars().count());
-                clamp(
+                let row = clamp(
                     format!("{head}{}", fit(&child.goal, room_for_goal, glyphs)),
                     room,
                     glyphs,
-                )
+                );
+                // **What it said, under it, once it has stopped (0.41.0).** A
+                // finished child used to be a row saying `done` and a token count,
+                // which is the whole of what a parent was told — a field pass
+                // watched one redo both its children's work because it had been
+                // given nothing else. Indented under the row it belongs to, the
+                // same unit the tree uses.
+                //
+                // **A child that said nothing says so.** Drawing nothing for it
+                // would make "finished silently" and "still being read" the same
+                // picture, and only one of those is worth spawning again.
+                let said = match child.state {
+                    State::Working => None,
+                    _ => Some(match child.said.as_deref() {
+                        Some(said) if !said.trim().is_empty() => {
+                            let indent = "  ".repeat(child.depth as usize);
+                            let room_for_said = room.saturating_sub(indent.chars().count());
+                            clamp(
+                                format!("{indent}{}", fit(said.trim(), room_for_said, glyphs)),
+                                room,
+                                glyphs,
+                            )
+                        }
+                        _ => {
+                            let indent = "  ".repeat(child.depth as usize);
+                            clamp(format!("{indent}said nothing"), room, glyphs)
+                        }
+                    }),
+                };
+                std::iter::once(row).chain(said)
             })
             .collect();
         rows.extend(self.messages.iter().map(|message| {

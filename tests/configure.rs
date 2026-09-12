@@ -1284,15 +1284,44 @@ fn f10_a_profile_that_is_not_there_reports_the_harness_s_own_sentence() {
 /// leave someone to find which one.
 #[test]
 fn f1_every_catalogue_key_has_a_kind() {
+    // **A read-only key has no kind, and that is the claim rather than a gap.** A
+    // `Kind` is how a typed value is spelled into TOML; nothing on
+    // `configure::READ_ONLY` is ever spelled, because `source_for` refuses it
+    // before `kind_of` is reached. Exempted by naming the list rather than by
+    // relaxing the predicate, so a key that is neither typed nor declared
+    // read-only still fails here — which is the whole point of the gate.
     let missing: Vec<&str> = configure::CATALOGUE
         .iter()
         .copied()
+        .filter(|key| configure::why_read_only(key).is_none())
         .filter(|key| configure::kind_of(key).is_none())
         .collect();
     assert!(
         missing.is_empty(),
         "these catalogue keys have no value kind: {missing:?}"
     );
+
+    // And the other direction: a read-only key that quietly gained a kind would be
+    // a key this surface had started offering to write without anybody deciding to.
+    let typed: Vec<&str> = configure::READ_ONLY
+        .iter()
+        .map(|(key, _)| *key)
+        .filter(|key| configure::kind_of(key).is_some())
+        .collect();
+    assert!(
+        typed.is_empty(),
+        "these keys are declared read-only and yet carry a value kind, so this surface is \
+         spelling a value for something another surface owns: {typed:?}",
+    );
+
+    // Every read-only key is in the catalogue, or the list names something no
+    // reader will ever meet.
+    for (key, _) in configure::READ_ONLY {
+        assert!(
+            configure::CATALOGUE.contains(key),
+            "`{key}` is declared read-only but is not a catalogue key",
+        );
+    }
 }
 
 /// The keys that stay free text are exactly three, written out.

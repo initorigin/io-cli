@@ -130,6 +130,24 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
     }
 
     let root = match cli.dir {
+        // **A workspace is named, never created, and this is the only place that
+        // can hold that line.** `io -C /tmp/typo exec "…"` used to *make*
+        // `/tmp/typo` and work inside it: the agent reported `pwd` as the new
+        // directory, wrote files there, and the run reported success, so a
+        // mistyped path silently became a workspace and the work went somewhere
+        // nobody would look for it again. Nothing below can refuse it — the check
+        // has to precede `home::adopt` and the discovery under it, both of which
+        // derive their own paths from this one.
+        //
+        // **`is_dir` and not `exists`**, so a `-C` pointed at a *file* is refused
+        // too rather than failing later with something about a store.
+        Some(dir) if !dir.is_dir() => {
+            return Err(format!(
+                "`-C {}` is not a directory that exists, and io does not create a workspace from \
+                 a path that names nothing — make it first if that is what you meant",
+                dir.display()
+            ));
+        }
         Some(dir) => dir,
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
@@ -236,7 +254,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         for line in report.drain(..) {
             eprintln!("{line}");
         }
-        return io_cli::exec::main(args, config, root, cli.model).await;
+        return io_cli::exec::main(args, config, root, cli.model, cli.sandbox).await;
     }
 
     // **`io acp` leaves here too, and it is the strictest of the headless doors.**
@@ -390,6 +408,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         // run* would quietly stop meaning anything after the first prompt.
         cli.profile,
         plain,
+        cli.full_access,
         // Taken, not borrowed: from here the session owns the report and `main` has
         // nothing left to say on its behalf.
         std::mem::take(report),
@@ -422,6 +441,11 @@ async fn drive(
     // and a second read of the file at this depth would be a second answer to a
     // question already settled — one that silently drops the flag.
     plain: bool,
+    // `--full-access`, threaded down for the reason `plain` is: it is a flag, it
+    // outranks the file, and it must not be re-read from a configuration that has
+    // never heard of it. Nothing writes it back — the grant lasts this session and
+    // no longer, which is what stops it being left on or committed.
+    full_access: bool,
     // What `home::adopt` did, carried down from `run` rather than asked for again
     // here: `adopt` moves files, so a second call would be a second migration, and
     // by the time there is an `App` to say this in the environment already names
@@ -437,7 +461,20 @@ async fn drive(
         return Err("no provider is configured; run `io setup`".into());
     };
 
-    let policy = config.policy().unwrap_or_default();
+    let mut policy = config.policy().unwrap_or_default();
+    // **`--full-access` replaces the tier defaults and nothing else**, which is
+    // the same rule a posture follows and the reason it is safe to spell in one
+    // word: a layer that denies a secret is not a default, so the flag cannot
+    // unlock what a `[[policy.layers]]` rule refused. It is the widest grant in
+    // the product and it still does not defeat a rule the operator wrote down.
+    //
+    // The sandbox half rides the contract rather than the policy — see
+    // `contract::unconfined` — because the two are different axes: this is what
+    // the agent may attempt, and `ExecMode` is what the sandbox lets a command
+    // that ran actually do.
+    if full_access {
+        policy.defaults = io_cli::approval::UNCONFINED;
+    }
     // `[app.io-cli]` again, read through the harness rather than parsed here. It
     // is read in `drive` rather than in `run` because `run` may hand control to
     // the wizard, which writes the file this then reads back.
@@ -685,6 +722,7 @@ async fn drive(
             templates,
             theme,
             plain,
+            full_access,
             containment,
             capabilities,
             holdings,
@@ -933,6 +971,10 @@ struct Interactive<'a, 'b> {
     templates: Templates,
     theme: Theme,
     plain: bool,
+    /// Whether `--full-access` was given. Carried beside `plain` because it is the
+    /// same kind of fact: a flag, outranking the file, belonging to this run and
+    /// never written back.
+    full_access: bool,
     /// The caps a fan-out runs under, from `[app.io-cli.containment]`. `None`
     /// means the session cannot fan out at all, which is every session that
     /// configures nothing.
@@ -997,6 +1039,7 @@ impl provider::WithProvider for Interactive<'_, '_> {
             self.templates,
             self.theme,
             self.plain,
+            self.full_access,
             self.containment,
             self.capabilities,
             self.holdings,
@@ -1032,6 +1075,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     templates: Templates,
     theme: Theme,
     plain: bool,
+    full_access: bool,
     // Mutable since 0.39.0: `/contain on` with nothing configured offers to write
     // a section, and an operator who accepts meant the next turn rather than the
     // next session.
@@ -1148,6 +1192,23 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
     // file holds a policy that is none of the three, which io-harness's own
     // configuration can express and this session must not relabel.
     app.set_posture(Posture::of(&policy.defaults));
+    // **After the posture, because it replaces the word that one drew.** With
+    // `--full-access` in force every tier default is `allow`, so `Posture::of`
+    // above answers `None` and the field would otherwise read `policy:custom` —
+    // true of the struct and useless to a reader, who needs to know the session is
+    // unconfined rather than that io could not name its shape.
+    app.set_full_access(full_access);
+    // **`[app.io-cli] escalate`, and absent means on.** Read here beside the
+    // posture because the two answer the same question from opposite ends — the
+    // posture is what the tier defaults *are*, and this is whether the strictest
+    // of them refuses or asks. Every site that builds a turn's policy reads it
+    // back off `app`, so a session cannot hold two answers.
+    app.set_escalate(
+        settings::stored(&config)
+            .0
+            .and_then(|stored| stored.escalate)
+            .unwrap_or(true),
+    );
     // Said once, before the first prompt, and only where there is something to
     // say. A contained turn is a different turn — it is the only one that reaches
     // io-harness's spawn loop — and a session that silently switched into it
@@ -1592,6 +1653,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         &policy,
                                         app.posture(),
                                         app.remembered(),
+                                        app.escalates(),
                                     );
                                     if let Some(run_id) =
                                         last_run(&session, &store).map(|turn| turn.run_id)
@@ -4182,6 +4244,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     &policy,
                                     app.posture(),
                                     app.remembered(),
+                                    app.escalates(),
                                 );
                                 match completion(
                                     session.root(),
@@ -4342,16 +4405,59 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `Config::discover` and undoes the write if io-harness
                         // refuses it, so a section this crate composed wrongly
                         // cannot leave a session unable to start.
+                        // **Only io's own rules reach this list**, so the act is a
+                        // removal and never a judgement about whether it may be
+                        // removed — `policy::revocable` made that decision when the
+                        // picker was built, and re-deciding here would be a second
+                        // opinion about the same question.
+                        Pick::PolicyRevoke(rules) => {
+                            match rules.get(index) {
+                                None => {
+                                    app.record(Tone::Muted, "that row is not a rule".to_string())
+                                }
+                                Some(rule) => {
+                                    // Removed from the user scope, which is the only
+                                    // scope an `always` answer writes into — so a
+                                    // rule io wrote is a rule io can find.
+                                    let edit = io_cli::edit::Edit::remove(format!(
+                                        "policy.layers[{}]",
+                                        index
+                                    ));
+                                    match io_cli::configure::write(
+                                        session.root(),
+                                        io_harness::config::Scope::User,
+                                        &[edit],
+                                    ) {
+                                        Ok(()) => app.record(
+                                            Tone::Muted,
+                                            format!(
+                                                "forgotten: {} — the next act of that kind asks \
+                                                 again",
+                                                rule.line(),
+                                            ),
+                                        ),
+                                        Err(error) => app.record(
+                                            Tone::Error,
+                                            format!("the rule was not removed: {error}"),
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                        Pick::FullAccess => {
+                            if io_cli::store::acts(index) {
+                                app.set_full_access(true);
+                                app.record(
+                                    Tone::Warning,
+                                    "full access: every act allowed and the sandbox out of the \
+                                     way, until this session ends. Nothing was written to a file"
+                                        .to_string(),
+                                );
+                            }
+                        }
                         Pick::ContainDefault(caps) => {
                             if io_cli::store::acts(index) {
-                                let inline = format!(
-                                    "{{ max_total_agents = {}, max_concurrent_agents = {}, \
-                                     max_depth = {}, max_total_tokens = {} }}",
-                                    caps.max_total_agents,
-                                    caps.max_concurrent_agents,
-                                    caps.max_depth,
-                                    caps.max_total_tokens,
-                                );
+                                let inline = settings::containment_inline(caps);
                                 let edit =
                                     io_cli::edit::Edit::set("app.io-cli.containment", inline);
                                 match io_cli::configure::write(
@@ -4384,6 +4490,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     &policy,
                                     app.posture(),
                                     app.remembered(),
+                                    app.escalates(),
                                 );
                                 let workspace = io_harness::tools::Workspace::with_policy(
                                     session.root(),
@@ -4518,7 +4625,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // already answered `a` to. Built the same way the turn below builds it,
         // so what the picker offers and what the agent may read cannot differ.
         if complete::opens(key, &app.composer.text(), app.armed()) {
-            let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+            let effective =
+                approval::session_policy(&policy, app.posture(), app.remembered(), app.escalates());
             match completion(session.root(), &effective, "", &app.theme.glyphs) {
                 Ok(Some(open)) => picker = Some(open),
                 // An empty root, or one the policy reads as empty. Said rather
@@ -4648,7 +4756,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // So the answer decides. `Offer` is the one case the allowance is
                 // both effective and honest, and it is the only case it is applied
                 // in.
-                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+                let effective = approval::session_policy(
+                    &policy,
+                    app.posture(),
+                    app.remembered(),
+                    app.escalates(),
+                );
                 command = match io_cli::commit::asked(&effective) {
                     io_cli::commit::Asked::Offer(_) if allow => {
                         app.allow_git();
@@ -4690,11 +4803,28 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             Command::Exit => return Ok(()),
             // Nothing is running at an idle prompt, so there is nothing to stop.
             Command::Interrupt | Command::Abandon => {}
+            // **An approval answered `always`, at an idle prompt.** Unreachable in
+            // practice — an approval only opens while a turn is in flight, and that
+            // loop has its own arm — and handled rather than ignored because a
+            // variant silently doing nothing is how an operator's answer goes
+            // nowhere quietly. If it ever does arrive here, it writes.
+            Command::Remembered(rule) => {
+                remember_rule(&mut app, session.root(), &rule);
+            }
             Command::ClearViewport => {
                 // The viewport, and nothing above it.
                 paint(screen, &mut app)?;
             }
             Command::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
+            // **`Ctrl+E` at an idle prompt expands the last step**, which is the
+            // only step there is when nothing is running. The same lines
+            // `/expand` commits, through the same function, so the key and the
+            // command cannot show two different things.
+            Command::Expand => {
+                let last = last_run(&session, &store);
+                let lines = expand(last.as_ref(), &store, &app.theme, app.events.thought());
+                screen.commit(&lines).map_err(|e| e.to_string())?;
+            }
             Command::Attach(run_id) => {
                 watch_child(screen, &mut app, &store, inputs, run_id).await?;
             }
@@ -5039,6 +5169,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 &config.policy().unwrap_or_default(),
                                 app.posture(),
                                 app.remembered(),
+                                app.escalates(),
                             );
                             match io_cli::servers::probe(&config, &id, &policy).await {
                                 Err(refusal) => app.record(Tone::Refused, refusal),
@@ -5216,6 +5347,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             &config.policy().unwrap_or_default(),
                                             app.posture(),
                                             app.remembered(),
+                                            app.escalates(),
                                         );
                                         let report = io_cli::preflight::check(server, &policy);
                                         app.record(
@@ -6235,6 +6367,95 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // At an idle prompt. Mid-turn the key is the way in, since the
                 // driver refuses a slash command while a run is in flight.
                 Action::Fleet => app.toggle_fleet(),
+                // **The permission surface, and the other half of the `always`
+                // answer.** A grant that can be written from an approval and only
+                // un-written by editing a file is a trap, so the same release that
+                // added the writing added the taking back.
+                Action::Policy(verb) => {
+                    let rules = io_cli::policy::written(&config);
+                    match verb {
+                        // A bare `/policy` reports everything at once, because the
+                        // three facts are one question: what may be done without
+                        // asking. Listing is the same answer without the preamble.
+                        None | Some(io_cli::commands::PolicyVerb::List) => {
+                            if verb.is_none() {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "posture {} · a default's refusal {}",
+                                        app.status.policy.clone().unwrap_or_default(),
+                                        match app.escalates() {
+                                            true => "asks",
+                                            false => "refuses",
+                                        },
+                                    ),
+                                );
+                            }
+                            if rules.is_empty() {
+                                app.record(
+                                    Tone::Muted,
+                                    "no [[policy.layers]] rule is in force; the tier defaults \
+                                     decide everything"
+                                        .to_string(),
+                                );
+                            }
+                            for rule in &rules {
+                                // The layer is drawn on every row, not only on the
+                                // ones io wrote: `Policy::check` attributes a
+                                // verdict to a layer, so this is the column that
+                                // makes a later refusal traceable to a line.
+                                app.record(
+                                    Tone::Muted,
+                                    format!("{}  ({})", rule.line(), rule.layer),
+                                );
+                            }
+                        }
+                        Some(io_cli::commands::PolicyVerb::Revoke) => {
+                            let mine = io_cli::policy::revocable(&config);
+                            if mine.is_empty() {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "io has written no rule down. Answering an approval with \
+                                         `w` writes one into the `{}` layer, and this takes it \
+                                         back",
+                                        io_cli::approval::REMEMBERED_LAYER,
+                                    ),
+                                );
+                            } else {
+                                let rows = mine
+                                    .iter()
+                                    .map(|rule| Row::new(rule.line()))
+                                    .collect::<Vec<_>>();
+                                picker = Some((
+                                    Picker::new("Which rule should io forget?", rows),
+                                    Pick::PolicyRevoke(mine),
+                                ));
+                            }
+                        }
+                        // **Behind a confirmation, always.** It is the widest grant
+                        // in the product and the one thing that reaches a call the
+                        // sandbox refuses structurally; `--full-access` at least
+                        // required the operator to type it, and a slash command is
+                        // two keystrokes from a typo.
+                        Some(io_cli::commands::PolicyVerb::FullAccess) => {
+                            picker = Some((
+                                Picker::new(
+                                    "Run unconfined for the rest of this session?",
+                                    vec![
+                                        Row::new(io_cli::store::LEAVE_IT),
+                                        Row::with_detail(
+                                            "yes, allow everything",
+                                            "every act allowed and the sandbox out of the way, \
+                                             until this session ends. Nothing is written to a file",
+                                        ),
+                                    ],
+                                ),
+                                Pick::FullAccess,
+                            ));
+                        }
+                    }
+                }
                 // The policy the NEXT turn would run under, built exactly the way
                 // the completion above and the turn below build it — so what may
                 // be attached and what the agent may read are the same set by
@@ -6981,8 +7202,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         &bundle_skills(holdings.loaded()),
                     )
                     .0;
-                    let effective =
-                        approval::session_policy(&policy, app.posture(), app.remembered());
+                    let effective = approval::session_policy(
+                        &policy,
+                        app.posture(),
+                        app.remembered(),
+                        app.escalates(),
+                    );
                     let turned = turn(
                         screen,
                         inputs,
@@ -7201,7 +7426,8 @@ fn paste_picture<P: Provider>(
         app.composer.paste(path);
         return;
     }
-    let effective = approval::session_policy(policy, app.posture(), app.remembered());
+    let effective =
+        approval::session_policy(policy, app.posture(), app.remembered(), app.escalates());
     match io_cli::attach::prepare(session.root(), &effective, provider.accepts_images(), path) {
         Ok(staged) => {
             let number = app.attached(&staged.path);
@@ -7391,8 +7617,12 @@ fn mid_turn_picker(
                 Pick::Complete(entries) => match complete::pick(entries, index) {
                     Some(complete::Picked::Insert(path)) => app.composer.paste(&path),
                     Some(complete::Picked::Descend(dir)) => {
-                        let effective =
-                            approval::session_policy(policy, app.posture(), app.remembered());
+                        let effective = approval::session_policy(
+                            policy,
+                            app.posture(),
+                            app.remembered(),
+                            app.escalates(),
+                        );
                         match completion(root, &effective, &dir, &app.theme.glyphs) {
                             Ok(Some(open)) => descended = Some(open),
                             Ok(None) => {
@@ -7465,7 +7695,8 @@ fn commit_image<P: Provider>(
     let total = app.images();
     match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
         Some((number, path)) => {
-            let effective = approval::session_policy(policy, app.posture(), app.remembered());
+            let effective =
+                approval::session_policy(policy, app.posture(), app.remembered(), app.escalates());
             match io_cli::attach::prepare(root, &effective, provider.accepts_images(), &path) {
                 Ok(staged) => {
                     let (drawable, graphics) = forms(app);
@@ -7693,6 +7924,14 @@ async fn turn<P: Provider>(
         head: session.head(),
         last: last_run(session, store),
     };
+    // **The workspace root, taken before the turn borrows the session.** An
+    // approval answered `always` writes a rule into the user-scope file, and
+    // `configure::write` needs a root to discover the configuration from — but the
+    // turn below holds `&mut Session` for the whole of the select loop, so
+    // `session.root()` is not askable while a question is on screen. It is a path
+    // and it does not move, which is exactly why a snapshot is honest here, for the
+    // same reason `TurnFacts` above is.
+    let workspace_root = session.root().to_path_buf();
     app.contained = containment.is_some();
     // Built before the future borrows it, and for both arms alike.
     // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
@@ -7741,6 +7980,13 @@ async fn turn<P: Provider>(
     // carries, and io-harness appends one sentence naming what is withheld. So
     // this line makes the request marginally larger and can never make it smaller.
     let contract = io_cli::contract::masking(contract, mask);
+    // **And the sandbox half of full access, on the same door and for the same
+    // reason.** The policy half replaced the tier defaults at startup; this is
+    // what lets a command that ran actually do what the policy permitted. Only
+    // this reaches a `bind()`, which a sandbox refuses structurally rather than
+    // by policy — so without it an operator who asked for full access would still
+    // meet the one refusal they asked for it to lift.
+    let contract = io_cli::contract::unconfined(contract, app.full_access());
     // Set while a fold has been asked for and no `Compacted` event has arrived.
     // A one-shot: io-harness spends the request whether or not it folds, so what
     // this guards is the report and never a retry.
@@ -8004,6 +8250,7 @@ async fn turn<P: Provider>(
                                 policy,
                                 app.posture(),
                                 app.remembered(),
+                                app.escalates(),
                             );
                             match completion(&root, &effective, "", &app.theme.glyphs) {
                                 Ok(Some(open)) => picker = Some(open),
@@ -8422,6 +8669,34 @@ async fn turn<P: Provider>(
                             // here could not be sabotaged and would not be
                             // covered — `tests/queue.rs` asserts the queueing
                             // where a test can reach it.
+                            //
+                            // **`Command::Remembered` is named ABOVE the catch-all
+                            // and this is the arm that matters.** An approval only
+                            // opens while a turn is in flight, so this loop — not
+                            // the idle one — is where an `always` answer arrives.
+                            // Left to `_ => {}` the rule would have been swallowed
+                            // in silence: the operator would have seen "allowed,
+                            // and written to your own configuration" in the
+                            // transcript with nothing written anywhere, which is a
+                            // permission they believe is recorded and is not.
+                            Command::Remembered(ref rule) => {
+                                let rule = rule.clone();
+                                remember_rule(app, &workspace_root, &rule);
+                            }
+                            // **`Ctrl+E` mid-turn, which is the only reason it is a
+                            // key.** `/expand` runs mid-turn too, but reaching it
+                            // means opening the palette and typing while a step is
+                            // moving; the key is the point. The same `expand` the
+                            // command calls, so the two cannot draw differently.
+                            Command::Expand => {
+                                let lines = expand(
+                                    facts.last.as_ref(),
+                                    store,
+                                    &app.theme,
+                                    app.events.thought(),
+                                );
+                                screen.commit(&lines).map_err(|e| e.to_string())?;
+                            }
                             _ => {}
                         }
                     }
@@ -8768,6 +9043,13 @@ fn note_fleet(
     if let Ok(addresses) = store.tree_addresses(root) {
         app.fleet.name(&addresses, &contract.agents);
     }
+    // **What each finished child said, read before the view is asked for.** It
+    // happens above the `fleet_open` guard on purpose: the conclusion is not only
+    // for the panel — it is the thing the parent was never told — and a child that
+    // finished while the panel was closed must still have its last word when the
+    // panel is opened. `Fleet::conclusions` skips a child that is still working
+    // and one it has already read, so this is not a query per step per child.
+    app.fleet.conclusions(store);
     if !app.fleet_open() {
         return;
     }
@@ -9775,6 +10057,16 @@ enum Pick {
     /// confirmation below follows, and for the same reason: a value rebuilt on
     /// acceptance is a value nobody agreed to.
     ContainDefault(io_harness::Containment),
+    /// The rules `/policy revoke` offered, in the order they were drawn.
+    ///
+    /// Carried rather than re-read on the keystroke, for the reason the memory
+    /// pickers carry their notes: the list was built from a configuration that a
+    /// `/config` write or a reload could have moved underneath it, and a row index
+    /// read back against a freshly-read list would take away a rule the operator
+    /// was not looking at.
+    PolicyRevoke(Vec<io_cli::policy::Written>),
+    /// Confirmation for `/policy full-access`. Row 0 is the way out.
+    FullAccess,
     /// A confirmation over one export, carrying the bytes it will write.
     ///
     /// The content is built before the confirmation and carried rather than
@@ -10178,7 +10470,16 @@ async fn manage_main(
     // `plan` answering `None` means.
     match &request {
         io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::List) => {
-            for server in io_cli::servers::servers(config, &io_cli::servers::Observed::default()) {
+            let listed = io_cli::servers::servers(config, &io_cli::servers::Observed::default());
+            // **An empty listing says so, on stderr.** It printed nothing at all —
+            // indistinguishable, at a terminal, from a verb that hung, a
+            // configuration that failed to load, or a binary that did not run. The
+            // sentence goes to stderr rather than stdout so that a script reading
+            // the rows still reads zero rows, which is the answer it wanted.
+            if listed.is_empty() {
+                eprintln!("io: no servers configured");
+            }
+            for server in listed {
                 // **A fourth column, for the reason `plugin list` grew a third.**
                 // io-harness 0.70.0 honours `enabled` before anything is spawned,
                 // dialled or even checked against the policy, so a server switched
@@ -10207,17 +10508,57 @@ async fn manage_main(
                 .find(|server| &server.id == id);
             match found {
                 None => return Err(format!("no configuration file in force declares {id}")),
-                Some(server) => println!(
-                    "{}\t{}\t{}\t{}",
-                    server.id,
-                    server.transport,
-                    server.decided.word(),
-                    if server.enabled {
-                        "enabled"
-                    } else {
-                        io_cli::servers::DISABLED
-                    },
-                ),
+                Some(server) => {
+                    // The row `list` prints, first, so a reader who piped one verb
+                    // into the other still sees the shape they were reading.
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        server.id,
+                        server.transport,
+                        server.decided.word(),
+                        if server.enabled {
+                            "enabled"
+                        } else {
+                            io_cli::servers::DISABLED
+                        },
+                    );
+                    // **And then what makes this an inspection rather than a second
+                    // copy of `list`.** The declaration is re-read from the
+                    // configuration rather than carried on the view, because the
+                    // view is what a *panel* needs and this is the one verb whose
+                    // whole job is the detail under it. No value is echoed — see
+                    // `servers::detail`.
+                    if let Some(path) = server.decided.path() {
+                        println!("\tdeclared in\t{}", path.display());
+                    }
+                    for declared in config.mcp_servers() {
+                        if &declared.id != id {
+                            continue;
+                        }
+                        for (label, value) in io_cli::servers::detail(declared) {
+                            println!("\t{label}\t{value}");
+                        }
+                    }
+                    // **What the server's own process said, from the last run that
+                    // loaded it.** io-harness 0.86.0 stopped letting an MCP
+                    // server's stderr onto io's own error channel — a banner in
+                    // the middle of every CI log — and keeps it as a store row
+                    // instead. That fixed the pollution and left the text
+                    // unreadable, which matters because a server that will not
+                    // start writes its reason there. This is the surface for it,
+                    // and `get` is the verb whose whole job is the detail.
+                    if let Some(store) = io_cli::settings::store_path()
+                        .and_then(|path| io_harness::Store::open(&path).ok())
+                    {
+                        if let Ok(runs) = store.runs() {
+                            for run in runs.into_iter().rev().take(1) {
+                                for line in io_cli::servers::stderr_of(&store, run, id) {
+                                    println!("\tstderr\t{line}");
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {
@@ -10287,6 +10628,23 @@ async fn manage_main(
                 setting.value.as_deref().unwrap_or(""),
                 setting.decided.word()
             );
+            // **A key that does not exist is not a successful read, and until this
+            // release it exited `0`.** Any script probing for a key got a false
+            // pass: `io config get nope.nope` printed `no such key` in the origin
+            // column and reported success, so `if io config get k >/dev/null;
+            // then` took the branch for a key io has never heard of. The verb
+            // dispatcher already got this right — `io config bogusverb` exits 1 —
+            // so `get` was the one door in this surface that lied to a caller.
+            //
+            // **The line is still printed and no second message is added.** A
+            // caller reading stdout sees exactly what it saw before; what changes
+            // is only the code beside it, which is the half a script actually
+            // branches on. `1` and not `2`: `docs/CONTRACT.md` gives `1` as a
+            // command line that was not understood and `2` as a boundary refusal,
+            // and asking for a key that is not in the catalogue is the former.
+            if matches!(setting.decided, io_cli::configure::Decided::Unknown) {
+                return Ok(1);
+            }
         }
         io_cli::manage::Request::Config(io_cli::manage::ConfigVerb::List) => {
             // **The origin column, and it is not optional.** A headless listing
@@ -11267,6 +11625,10 @@ async fn resume_pending<P: Provider>(
     // own note. A posture that held on every turn except a resumed one would be
     // the 0.26.0 defect above in a second shape.
     let continuing = io_cli::contract::masking(continuing, mask);
+    // And full access on the resume door too, for the reason the two lines above
+    // are here: a grant that held on every turn except a resumed one is the 0.26.0
+    // defect in a third shape.
+    let continuing = io_cli::contract::unconfined(continuing, app.full_access());
     let (observer, mut events) = bridge::channel();
     let canceller = observer.canceller();
     let (approver, mut asks) = approval::channel();
@@ -11791,5 +12153,43 @@ impl Keyboard {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// Write an `always` answer's rule into the operator's own configuration.
+///
+/// **User scope or nowhere, and the refusal is the interesting half.** A
+/// `[[policy.layers]]` rule inside the workspace is a rule a `git clone` hands to
+/// everybody and a rule this run's own agent can write — which is precisely why
+/// io-harness refuses a widening from a workspace file. So an operator whose only
+/// writable scope is the workspace is told, and nothing is written; the allowance
+/// still holds for the session, because `App::answer_approval` remembered it
+/// before this was called.
+///
+/// The rule is spelled once, by `approval::written_rule`, and the same string is
+/// what a future preview would draw — a preview composed separately from the write
+/// is a preview that can disagree with it.
+fn remember_rule(app: &mut io_cli::app::App, root: &std::path::Path, rule: &io_harness::Rule) {
+    let edit = io_cli::edit::Edit::append(
+        "policy.layers",
+        io_cli::approval::written_rule(rule.act, &rule.pattern),
+    );
+    match io_cli::configure::write(root, io_harness::config::Scope::User, &[edit]) {
+        Ok(()) => app.record(
+            Tone::Muted,
+            format!(
+                "written to your own configuration, in the `{}` layer — `/policy revoke` takes it \
+                 back",
+                io_cli::approval::REMEMBERED_LAYER,
+            ),
+        ),
+        // Said and not swallowed. The act was still allowed and the session still
+        // remembers it; what failed is the part that was meant to outlive the
+        // session, and an operator who believes a permission is written down when
+        // it is not is the wrong direction for this to be wrong in.
+        Err(error) => app.record(
+            Tone::Error,
+            format!("allowed for this session, but not written down: {error}"),
+        ),
     }
 }

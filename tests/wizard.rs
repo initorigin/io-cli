@@ -161,7 +161,15 @@ fn f2_n5_the_wizard_writes_what_it_showed_and_never_shows_the_key() {
     draw!();
     wizard.key(key(KeyCode::Enter));
 
-    // 8. Confirm. Still nothing on disk.
+    // 8. Fan-out — declined, on the row every confirmation in this product
+    //    declines on. This walk asserts the exact file that comes out of it, so
+    //    it takes the answer that writes nothing; the accepting answer is walked
+    //    by `the_accepted_fanout_step_writes_the_section_it_offered` below.
+    assert_eq!(wizard.step(), Step::Fanout);
+    draw!();
+    wizard.key(key(KeyCode::Enter));
+
+    // 9. Confirm. Still nothing on disk.
     assert_eq!(wizard.step(), Step::Confirm);
     draw!();
     assert!(
@@ -431,6 +439,8 @@ fn f9_the_theme_step_previews_and_writes_the_row_the_query_left_visible() {
     wizard.key(key(KeyCode::Enter));
     assert_eq!(wizard.step(), Step::Posture);
     wizard.key(key(KeyCode::Enter)); // the first posture, unfiltered
+    assert_eq!(wizard.step(), Step::Fanout);
+    wizard.key(key(KeyCode::Enter)); // row 0 declines, and writes nothing
     assert_eq!(wizard.step(), Step::Confirm);
 
     let progress = wizard.key(key(KeyCode::Enter));
@@ -473,6 +483,7 @@ fn f9_a_query_that_matches_no_theme_leaves_the_preview_alone() {
     wizard.key(key(KeyCode::Backspace));
     wizard.key(key(KeyCode::Enter)); // theme -> posture
     wizard.key(key(KeyCode::Enter)); // the first posture, unfiltered
+    wizard.key(key(KeyCode::Enter)); // the fan-out, declined at row 0
     let progress = wizard.key(key(KeyCode::Enter));
     let Progress::Write(_, contents) = progress else {
         panic!("the confirmation screen should produce a write, got {progress:?}");
@@ -481,6 +492,54 @@ fn f9_a_query_that_matches_no_theme_leaves_the_preview_alone() {
         contents.contains("light"),
         "a typo and a backspace wrote a theme the operator never chose: {contents}",
     );
+}
+
+/// **The accepting answer on the fan-out step reaches the file.**
+///
+/// The other walks in this file decline, because they assert the exact text that
+/// comes out and the declining answer is the one that writes nothing. This one
+/// takes the row that acts and follows it all the way to `Progress::Write`, so
+/// the step is not merely a screen that can be walked past: the caps it offered
+/// are in the bytes the driver is asked to write.
+///
+/// Sabotage: have `Wizard::fanout` drop the answer instead of storing it — the
+/// walk still reaches `Confirm` and still writes a file, and only this fails.
+#[test]
+fn the_accepted_fanout_step_writes_the_section_it_offered() {
+    let _guard = env_lock();
+    config_home();
+    let mut wizard = at_the_theme_step();
+    wizard.key(key(KeyCode::Enter)); // theme -> posture
+    wizard.key(key(KeyCode::Enter)); // posture -> fan-out
+    assert_eq!(wizard.step(), Step::Fanout);
+
+    // Row 1 is the one that acts, by index — `store::acts` is the predicate, and
+    // asserting the index rather than the words is what stops a reworded row from
+    // turning a decline into a write.
+    wizard.key(key(KeyCode::Down));
+    wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Confirm);
+
+    let progress = wizard.key(key(KeyCode::Enter));
+    let Progress::Write(_, contents) = progress else {
+        panic!("the confirmation screen should produce a write, got {progress:?}");
+    };
+    let caps = settings::offered_containment();
+    assert!(
+        contents.contains("[app.io-cli.containment]"),
+        "the operator accepted a fan-out and the file does not configure one: {contents}",
+    );
+    for number in [
+        caps.max_total_agents.to_string(),
+        caps.max_concurrent_agents.to_string(),
+        caps.max_depth.to_string(),
+        caps.max_total_tokens.to_string(),
+    ] {
+        assert!(
+            contents.contains(&number),
+            "the file is missing `{number}`, which the row that was chosen showed: {contents}",
+        );
+    }
 }
 
 #[test]
@@ -555,6 +614,8 @@ fn f9_the_posture_step_resolves_the_row_the_query_left_visible() {
         wizard.key(key(KeyCode::Char(character)));
     }
     wizard.key(key(KeyCode::Enter));
+    assert_eq!(wizard.step(), Step::Fanout);
+    wizard.key(key(KeyCode::Enter)); // the fan-out, declined at row 0
     assert_eq!(wizard.step(), Step::Confirm);
 
     let summary: String = wizard
@@ -778,7 +839,7 @@ fn the_rendered_file_is_the_harness_schema_and_nothing_of_our_own() {
         model: "claude-sonnet-4".into(),
         api_key: None,
     };
-    let text = settings::render(&spec, Posture::Workspace, "dark").expect("render");
+    let text = settings::render(&spec, Posture::Workspace, "dark", None).expect("render");
 
     // Read the way it will actually be read, and NOT with `Config::from_toml`.
     //
@@ -822,7 +883,7 @@ fn the_rendered_file_is_the_harness_schema_and_nothing_of_our_own() {
     // project scope whatever the posture — but for the `[[provider]]` it carries,
     // never for the policy. Asserted on WHICH key the refusal names, because "it
     // is refused" is now true of both postures and would prove nothing.
-    let narrow = settings::render(&spec, Posture::ReadOnly, "dark").expect("render");
+    let narrow = settings::render(&spec, Posture::ReadOnly, "dark", None).expect("render");
     let refusal = Config::from_toml(&narrow)
         .expect_err("0.74.0 refuses `[[provider]]` from a project-scoped file")
         .to_string();

@@ -157,6 +157,15 @@ fn f12_every_key_offers_options_or_states_a_shape() {
     let config = s.config();
     let mut bare: Vec<&str> = Vec::new();
     for key in configure::CATALOGUE {
+        // **A read-only key opens no composer at all**, so it cannot open a bare
+        // one. `configure::READ_ONLY` names the keys this surface reads and never
+        // writes — `source_for` refuses each by name — and a `Kind` on one would be
+        // a spelling for a value nothing here ever spells. Exempted by naming the
+        // list, so a key that is neither typed, nor shaped, nor declared read-only
+        // still fails, which is what the gate is for.
+        if configure::why_read_only(key).is_some() {
+            continue;
+        }
         let offers = matches!(
             configure::kind_of(key),
             Some(Kind::Flag)

@@ -2224,15 +2224,59 @@ fn a_gate_that_ran_and_did_not_pass_says_so_on_the_channel_a_session_is_watching
     assert!(phase.contains("ran and"), "{phase:?}");
     assert!(phase.contains("did not pass"), "{phase:?}");
 
-    let output = rendered(
+    // **The sandbox `gate_output` *kind* draws nothing from io-harness 0.86.0,
+    // and that is the release's fix rather than a line lost.** It used to commit
+    // "the gate command printed output" — a sentence announcing a diagnosis
+    // exists without being one, which is exactly what an operator met when a
+    // gate failed fourteen times in one run and the stream carried
+    // `{"event":"sandbox","kind":"gate_output","backend":null}` and nothing
+    // else. The variant of the same name below now says it with the text in it,
+    // so keeping both would print two rows for one fact, the first contentless.
+    let announced = rendered(
         &mut events,
         EventKind::Sandbox {
             kind: "gate_output".into(),
             backend: None,
         },
     );
-    assert!(!output.trim().is_empty(), "gate_output drew nothing");
-    assert!(output.contains("printed output"), "{output:?}");
+    assert!(
+        announced.trim().is_empty(),
+        "the contentless sandbox gate_output line is still drawn beside the one carrying the \
+         output, so one failed gate commits two rows: {announced:?}",
+    );
+
+    // And the kind that replaced it draws what the command actually printed,
+    // which is the whole of the diagnosis for a mis-set gate.
+    let output = rendered(
+        &mut events,
+        EventKind::GateOutput {
+            output: "python3: command not found".into(),
+            exit_code: Some(127),
+        },
+    );
+    assert!(
+        output.contains("python3: command not found"),
+        "the gate line does not carry what the command printed: {output:?}",
+    );
+    assert!(
+        output.contains("127"),
+        "the gate line does not carry the exit code: {output:?}",
+    );
+
+    // **A gate killed by a signal or a sandbox cap has no exit status**, and the
+    // line says so rather than inventing a number — the difference matters to an
+    // operator whose gate is being cut off by a limit they set.
+    let killed = rendered(
+        &mut events,
+        EventKind::GateOutput {
+            output: String::new(),
+            exit_code: None,
+        },
+    );
+    assert!(killed.contains("killed"), "{killed:?}");
+    // An empty output is a real answer and says so; a blank row would read as
+    // this interface failing to fetch something.
+    assert!(killed.contains("printed nothing"), "{killed:?}");
 
     // Neither event carries a backend and neither line may name one — the same
     // rule `cap_hit` and `destroy` are already held to.
@@ -2397,9 +2441,9 @@ fn the_gate_and_review_lines_survive_the_ascii_set_and_plain_mode() {
                 kind: "gate_phase_failed".into(),
                 backend: None,
             },
-            EventKind::Sandbox {
-                kind: "gate_output".into(),
-                backend: None,
+            EventKind::GateOutput {
+                output: "error: the diff does not compile".into(),
+                exit_code: Some(101),
             },
             EventKind::Reviewed {
                 passed: false,
@@ -2421,7 +2465,14 @@ fn the_gate_and_review_lines_survive_the_ascii_set_and_plain_mode() {
             said.contains("ran and did not pass"),
             "plain={plain}: {said:?}"
         );
-        assert!(said.contains("printed output"), "plain={plain}: {said:?}");
+        // The gate's own output is drawn through the same glyph set, so a
+        // compiler's message survives `--plain` and the ASCII set intact — it is
+        // the one line on this surface whose text comes from another program.
+        assert!(
+            said.contains("error: the diff does not compile"),
+            "plain={plain}: {said:?}",
+        );
+        assert!(said.contains("101"), "plain={plain}: {said:?}");
         assert!(
             said.contains("the diff does not build"),
             "plain={plain}: {said:?}",
@@ -3485,4 +3536,64 @@ fn f8_a_spawned_childs_outcome_is_drawn_as_words() {
             );
         }
     }
+}
+
+/// **The one refusal that names its cure.**
+///
+/// A path inside io's own configuration home is refused by the tool layer's
+/// workspace-root check — before any policy is consulted, with no layer to
+/// attribute it to — so it is the single refusal in the product that no posture,
+/// no `[[policy.layers]]` rule and no sandbox mode can lift, `--full-access`
+/// included. It is also the one an operator meets while trying to configure io
+/// from inside io, which is when a bare refusal is most useless: the thing they
+/// wanted is a keystroke away and the sentence did not say so.
+///
+/// **The negative is the half that keeps it useful.** Naming `/config` on an
+/// ordinary denied write would send an operator to a surface that cannot help
+/// them, which is worse than saying nothing at all.
+///
+/// Sabotage: drop the `starts_with` guard and the second assertion fails, because
+/// every refusal then advertises a surface that will not help.
+#[test]
+fn the_configuration_home_refusal_names_the_surface_that_can_change_it() {
+    let Some(home) = io_cli::home::authored() else {
+        // No home on this machine means no such refusal to render. Skipping is
+        // honest here; asserting on a path that cannot occur would be a test of
+        // the fixture rather than of the product.
+        return;
+    };
+
+    let mut events = Events::new(DARK);
+    let inside = home.join("io.toml");
+    let drawn = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "write".into(),
+            target: inside.display().to_string(),
+            rule: None,
+            layer: None,
+        },
+    );
+    assert!(
+        drawn.contains("/config"),
+        "the one refusal nothing can lift does not name the surface that can \
+         change it: {drawn:?}",
+    );
+
+    // An ordinary refusal inside the workspace says nothing of the sort.
+    let mut events = Events::new(DARK);
+    let ordinary = rendered(
+        &mut events,
+        EventKind::Refused {
+            act: "write".into(),
+            target: "src/main.rs".into(),
+            rule: Some("src/*".into()),
+            layer: Some("app".into()),
+        },
+    );
+    assert!(
+        !ordinary.contains("/config"),
+        "an ordinary refusal advertises `/config`, which cannot help with a rule \
+         in a policy layer: {ordinary:?}",
+    );
 }

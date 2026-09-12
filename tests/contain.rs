@@ -340,3 +340,104 @@ fn f2_the_contained_flag_is_cleared_with_the_turn() {
         "an idle session describes no turn, contained or otherwise"
     );
 }
+
+/// **F10 — the two doors onto `[app.io-cli.containment]` write the same section.**
+///
+/// There are two, and they could not share an implementation. The `io setup`
+/// wizard's fan-out step renders a whole file — `settings::render`, serializing
+/// `CliSettings` — because at that point there is no file to splice into. `/contain
+/// on` meets an operator who already has one, so it goes through
+/// `edit::Edit::set`, which takes a value as text. A whole-file serializer and a
+/// one-value splice is two spellings of the same four ceilings, and two spellings
+/// drift: the day somebody adds a fifth cap to `offered_containment`, the door
+/// that serializes picks it up for free and the door that formats a string does
+/// not, and an operator who used the wrong door gets a fan-out with a cap they
+/// were shown and never got.
+///
+/// So both are rendered here and parsed back, and the *parsed* sections are
+/// compared rather than the text — the two forms are legitimately different text
+/// (a whole file against an inline table) and identical data, which is exactly the
+/// claim worth asserting.
+#[test]
+fn f10_both_doors_onto_the_containment_section_write_the_same_keys() {
+    let caps = io_cli::settings::offered_containment();
+
+    // The wizard's door: a whole file, with the step's answer carried through.
+    let spec = io_harness::ProviderSpec::Anthropic {
+        model: "claude-sonnet-4".into(),
+        api_key: None,
+    };
+    let file = io_cli::settings::render(
+        &spec,
+        io_cli::settings::Posture::Workspace,
+        "dark",
+        Some(caps.clone()),
+    )
+    .expect("the wizard's file renders");
+    let file: toml::Value = toml::from_str(&file).expect("and parses back");
+    let wizard = file
+        .get("app")
+        .and_then(|app| app.get("io-cli"))
+        .and_then(|ours| ours.get("containment"))
+        .unwrap_or_else(|| panic!("the wizard accepted the caps and wrote no section: {file:#?}"));
+
+    // `/contain on`'s door: one inline table, spliced into a file it did not write.
+    let inline = io_cli::settings::containment_inline(&caps);
+    let spliced: toml::Value =
+        toml::from_str(&format!("containment = {inline}")).expect("the inline table parses");
+    let command = spliced.get("containment").expect("it is the value written");
+
+    assert_eq!(
+        wizard, command,
+        "the two doors onto [app.io-cli.containment] write different sections, so \
+         which one an operator used decides what caps they got",
+    );
+
+    // And the section is the offer, not a subset of it: a door that wrote three of
+    // the four would still agree with the other door that wrote three.
+    let table = wizard.as_table().expect("a table");
+    assert_eq!(
+        table.len(),
+        4,
+        "the section is the four ceilings `offered_containment` sets and the two \
+         io-harness leaves unset: {table:#?}",
+    );
+    for (key, value) in [
+        ("max_total_agents", i64::from(caps.max_total_agents)),
+        (
+            "max_concurrent_agents",
+            i64::from(caps.max_concurrent_agents),
+        ),
+        ("max_depth", i64::from(caps.max_depth)),
+        ("max_total_tokens", caps.max_total_tokens as i64),
+    ] {
+        assert_eq!(
+            table.get(key).and_then(toml::Value::as_integer),
+            Some(value),
+            "`{key}` is not what the offer showed: {table:#?}",
+        );
+    }
+}
+
+/// **F10 — declining the wizard's fan-out step writes no section at all.**
+///
+/// The default answer is the one that writes nothing, and that has to mean
+/// *nothing*: a declined install must produce the file 0.40.0 produced, not one
+/// carrying an empty `[app.io-cli.containment]` that reads as a fan-out configured
+/// with no ceilings. An empty table is the worst of the three outcomes — it is the
+/// only one that could turn the mode on without a bound anybody chose.
+#[test]
+fn f10_declining_the_fanout_step_writes_no_containment_at_all() {
+    let spec = io_harness::ProviderSpec::Anthropic {
+        model: "claude-sonnet-4".into(),
+        api_key: None,
+    };
+    let file = io_cli::settings::render(&spec, io_cli::settings::Posture::Workspace, "dark", None)
+        .expect("the declined file renders");
+
+    assert!(
+        !file.contains("containment"),
+        "declining wrote a containment section, and an empty one is a fan-out with \
+         no ceiling: {file}",
+    );
+}

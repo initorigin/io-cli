@@ -537,7 +537,7 @@ pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> Tas
 /// sits ahead of a cache breakpoint and removing a definition would save its
 /// tokens once and pay a cache *write* on every later turn (`src/tools/mod.rs:40`).
 /// A mask in fact **adds** a sentence to the user prompt naming the withheld tools
-/// (`io-harness-0.83.0/src/run/prompts.rs:1418`, `withheld_sentence`), placed after the observations
+/// (`io-harness-0.86.0/src/run/prompts.rs:1418`, `withheld_sentence`), placed after the observations
 /// precisely so it costs no cache entry. A turn that withholds three tools is
 /// marginally more expensive than the same turn without the mask, not less.
 #[must_use]
@@ -546,6 +546,35 @@ pub fn masking(contract: TaskContract, mask: &io_harness::ToolMask) -> TaskContr
         return contract;
     }
     contract.with_tool_mask(mask.clone())
+}
+
+/// The sandbox half of `--full-access`: `ExecMode::FullAccess` on the contract.
+///
+/// **A sibling of [`buying`] and [`masking`] rather than a parameter of
+/// [`session`], for the reason those two are.** `session` is held to reproducing
+/// io-harness's `default_contract` field for field when nothing is configured,
+/// asserted by Debug equality — a sixth parameter would put a branch inside the
+/// one function that gate exists to keep branch-free. Applied at the turn doors
+/// and the resume door, which is where the other two are applied and for the same
+/// reason: three `session` callers build contracts nothing ever runs, and nothing
+/// under `tests/` links `src/main.rs`.
+///
+/// **The policy half is not here, and the two are genuinely different axes.**
+/// `approval::UNCONFINED` decides what the agent may *attempt*; this decides what
+/// the sandbox lets a command that ran actually *do*. Only the second reaches a
+/// `bind()` — a sandbox denies that structurally rather than by policy, at every
+/// posture, which is why the field report's `socket().bind()` failed with
+/// `Operation not permitted` under a policy that allowed everything. Setting one
+/// without the other would give an operator who asked for full access a session
+/// that still refused the one call they asked for it to make.
+///
+/// `false` returns the contract untouched, so a session that did not ask for this
+/// is byte-for-byte the contract it was before the release.
+pub fn unconfined(contract: TaskContract, full_access: bool) -> TaskContract {
+    if !full_access {
+        return contract;
+    }
+    contract.with_full_access()
 }
 
 /// The criterion this configuration resolves to, with its reviewer already built.
@@ -566,6 +595,18 @@ pub fn masking(contract: TaskContract, mask: &io_harness::ToolMask) -> TaskContr
 /// This is what lets `io exec` fold the gate rows the same way a session does —
 /// without it the headless arm reads io-harness's `phase = "none"` bookkeeping as
 /// a failed gate, and a bare `file` criterion is never evaluated at all.
+/// The budget a headless run's gate is allowed, when one is configured.
+///
+/// **One reader of `retries` for both headless doors**, so `io exec` and
+/// `io resume` cannot disagree about how many attempts an operator asked for —
+/// the divergence that let `io resume` miss both of 0.38.1's fixes. `None` when
+/// no criterion resolves, which is what makes the observer cost nothing on a run
+/// with no gate.
+pub fn gate_budget(config: &Config) -> Option<crate::gates::Budget> {
+    let gates = crate::settings::stored(config).0?.gates?;
+    criterion_of(config).map(|_| crate::gates::Budget::new(gates.retries()))
+}
+
 pub fn criterion_of(config: &Config) -> Option<crate::gates::Criterion> {
     let gates = crate::settings::stored(config).0?.gates?;
     let working = config
@@ -789,7 +830,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
 /// is not there — it returns `Error::Config("skills directory … does not exist")`
-/// (`io-harness-0.83.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// (`io-harness-0.86.0/src/skills.rs`), and `TaskContract::discover_skills`
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
@@ -814,7 +855,7 @@ fn default_skills() -> Option<PathBuf> {
 ///
 /// **One expansion for two keys, applied after both have had their say.**
 /// io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}` and nothing else
-/// (`substitute`, `io-harness-0.83.0/src/config.rs:3159` — there is no tilde
+/// (`substitute`, `io-harness-0.86.0/src/config.rs:3159` — there is no tilde
 /// branch anywhere in it, and 0.71.0 narrowed the forms rather than widening
 /// them: a plugin manifest now refuses all three), so a `~` an operator wrote in
 /// `[run] skills` or `[app.io-cli] skills`

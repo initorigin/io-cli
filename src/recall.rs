@@ -35,7 +35,7 @@
 //!
 //! **1. The bucket is a canonicalised path, and io-cli has to canonicalise it
 //! itself.** io-harness computes the key in `memory_key()` at
-//! `src/run/memory.rs:14-19` — `std::fs::canonicalize(root)`, falling back to the
+//! `src/run/memory.rs:16-21` — `std::fs::canonicalize(root)`, falling back to the
 //! path as given when that fails — and the function is `pub(crate)`, so it cannot
 //! be called from here. [`workspace_key`] reproduces it exactly, fallback
 //! included. This matters more than it looks: a checkout reached through a
@@ -61,7 +61,7 @@
 //!
 //! **4. Eviction, pin-refusal and recall emit no `EventKind` at all.** io-harness
 //! records all three as [`io_harness::ContextEvent`] rows deliberately —
-//! `src/state.rs:3275-3281` spells out why: the question they answer
+//! `src/state.rs:3290-3296` spells out why: the question they answer
 //! (*did my pin hold?*) is asked
 //! afterwards by somebody reading the store, not during the run by an observer.
 //! A *write* does emit `EventKind::MemoryWrote`, which is exactly what makes the
@@ -141,7 +141,7 @@ impl Scope {
 
 /// The key a workspace's durable memory is stored under.
 ///
-/// **A reproduction of io-harness's own `memory_key`** (`src/run/memory.rs:14-19`),
+/// **A reproduction of io-harness's own `memory_key`** (`src/run/memory.rs:16-21`),
 /// which is `pub(crate)` and so unreachable from here. Both halves are
 /// load-bearing and both are copied on purpose:
 ///
@@ -263,7 +263,7 @@ impl Happened {
         }
     }
 
-    /// The kind string io-harness stores, `src/state.rs:3261-3290`.
+    /// The kind string io-harness stores, `src/state.rs:3276-3305`.
     fn of(kind: &str) -> Option<Self> {
         match kind {
             "memory_evict" => Some(Happened::Evicted),

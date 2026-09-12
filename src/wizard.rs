@@ -1,6 +1,6 @@
 //! The first-run wizard.
 //!
-//! Eight screens, driven by the product's own [`Picker`]
+//! Nine screens, driven by the product's own [`Picker`]
 //! rather than by a prompt library — which would have been a second owner of raw
 //! mode and a second aesthetic in the one flow where a first impression is formed.
 //!
@@ -138,6 +138,21 @@ pub enum Step {
     ModelText,
     Theme,
     Posture,
+    /// Whether this install may fan a turn out, and under what ceilings.
+    ///
+    /// **A fresh install cannot fan out at all and nothing said so.** The caps in
+    /// `[app.io-cli.containment]` are the switch — with no table a turn never
+    /// reaches io-harness's spawn loop — and the only way to find that out was to
+    /// type `/contain on` and be told. An operator who has just been asked about a
+    /// provider, a model and a permission posture is exactly the operator who
+    /// should be asked this once.
+    ///
+    /// Offered, never assumed: the default answer is the one that writes nothing,
+    /// because a token ceiling for a mode somebody has not tried is not a number
+    /// anyone can pick for them. The four values are
+    /// [`settings::offered_containment`], which is the same set `/contain on`
+    /// offers — one writer behind both doors, so the two cannot drift.
+    Fanout,
     Confirm,
     Done,
     Cancelled,
@@ -176,6 +191,10 @@ pub struct Wizard {
     /// not have the variable set.
     theme_name: String,
     posture: Posture,
+    /// The fan-out ceilings the operator accepted, or `None` for an install that
+    /// declined and therefore cannot fan out — which is what every install was
+    /// before this step existed.
+    containment: Option<io_harness::Containment>,
     picker: Option<Picker>,
     /// The masked field the credential and the base URL are typed into.
     ///
@@ -248,6 +267,7 @@ impl Wizard {
                 .name
                 .to_string(),
             posture: Posture::Workspace,
+            containment: None,
             picker: None,
             input: Editor::masked(theme.glyphs.mask),
             rejection: None,
@@ -342,6 +362,7 @@ impl Wizard {
             Step::ModelText => self.model_text(key),
             Step::Theme => self.theme_step(key),
             Step::Posture => self.posture(key),
+            Step::Fanout => self.fanout(key),
             Step::Confirm => self.confirm(key),
             Step::Done | Step::Cancelled => Progress::Idle,
         }
@@ -652,8 +673,10 @@ impl Wizard {
         match picker.key(key) {
             Outcome::Chosen(index) => {
                 self.posture = Posture::ALL[index];
-                self.picker = None;
-                self.step = Step::Confirm;
+                let caps = settings::offered_containment();
+                let (title, rows) = settings::containment_offer(&caps);
+                self.picker = Some(Picker::new(title, rows));
+                self.step = Step::Fanout;
                 Progress::Idle
             }
             Outcome::Cancelled => {
@@ -669,6 +692,36 @@ impl Wizard {
         }
     }
 
+    /// The fan-out offer: take the four ceilings, or leave the install unable to
+    /// fan out at all.
+    ///
+    /// **Row 0 is the way out**, which is the rule every confirmation in this
+    /// product follows — `store::acts` is the one predicate that says whether a
+    /// chosen row acts, and it is asserted by index rather than by label so a
+    /// reworded row cannot turn a decline into a write.
+    ///
+    /// Declining is not a refusal and writes nothing: an install with no
+    /// `[app.io-cli.containment]` behaves exactly as every install did before this
+    /// step existed, and `/contain on` still offers the same four later.
+    fn fanout(&mut self, key: KeyEvent) -> Progress {
+        let Some(picker) = self.picker.as_mut() else {
+            return Progress::Idle;
+        };
+        match picker.key(key) {
+            Outcome::Chosen(index) => {
+                self.containment = crate::store::acts(index).then(settings::offered_containment);
+                self.picker = None;
+                self.step = Step::Confirm;
+                Progress::Idle
+            }
+            Outcome::Cancelled => {
+                self.step = Step::Cancelled;
+                Progress::Cancelled
+            }
+            Outcome::Idle | Outcome::Typed => Progress::Idle,
+        }
+    }
+
     fn confirm(&mut self, key: KeyEvent) -> Progress {
         if key.code != KeyCode::Enter {
             return Progress::Idle;
@@ -677,7 +730,12 @@ impl Wizard {
             self.step = Step::Cancelled;
             return Progress::Cancelled;
         };
-        let Ok(contents) = settings::render(&spec, self.posture, &self.theme_name) else {
+        let Ok(contents) = settings::render(
+            &spec,
+            self.posture,
+            &self.theme_name,
+            self.containment.clone(),
+        ) else {
             self.step = Step::Cancelled;
             return Progress::Cancelled;
         };
@@ -835,7 +893,9 @@ impl Wizard {
                     )),
                 ],
             ),
-            Step::Provider | Step::Model | Step::Posture => {
+            // The fan-out offer draws through the same `Picker` the other three
+            // do, which is the whole reason it needed no screen of its own.
+            Step::Provider | Step::Model | Step::Posture | Step::Fanout => {
                 if let Some(picker) = self.picker.as_mut() {
                     picker.render(frame, area, &theme);
                 }

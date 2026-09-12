@@ -295,13 +295,14 @@ fn name(step: Step) -> &'static str {
         Step::ModelText => "the wizard's typed-model step",
         Step::Theme => "the wizard's theme step",
         Step::Posture => "the wizard's posture step",
+        Step::Fanout => "the wizard's fan-out step",
         Step::Confirm => "the wizard's confirmation step",
         Step::Done => "the wizard's done step",
         Step::Cancelled => "the wizard's cancelled step",
     }
 }
 
-const EVERY_STEP: [Step; 12] = [
+const EVERY_STEP: [Step; 13] = [
     Step::Welcome,
     Step::Provider,
     Step::BaseUrl,
@@ -311,6 +312,7 @@ const EVERY_STEP: [Step; 12] = [
     Step::ModelText,
     Step::Theme,
     Step::Posture,
+    Step::Fanout,
     Step::Confirm,
     Step::Done,
     Step::Cancelled,
@@ -356,6 +358,8 @@ fn f2_every_wizard_step_sets_a_cursor() {
     seen.push(step_sets_a_cursor(&mut wizard)); // Theme
     wizard.key(key(KeyCode::Enter));
     seen.push(step_sets_a_cursor(&mut wizard)); // Posture
+    wizard.key(key(KeyCode::Enter));
+    seen.push(step_sets_a_cursor(&mut wizard)); // Fanout
     wizard.key(key(KeyCode::Enter));
     seen.push(step_sets_a_cursor(&mut wizard)); // Confirm
     wizard.key(key(KeyCode::Enter));

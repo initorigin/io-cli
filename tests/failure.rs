@@ -4,6 +4,8 @@
 //! and nothing else — so every arm is a branch a test can flip without a
 //! provider, a session or a network.
 
+mod support;
+
 use io_cli::failure::{advice, said};
 use io_harness::{Error, ProviderErrorKind};
 
@@ -17,6 +19,7 @@ fn no_image_endpoint() -> Error {
             r#"{"error":{"message":"No endpoints found that support image input","code":404}}"#
                 .to_string(),
         retry_after: None,
+        rate_limit: None,
     }
 }
 
@@ -64,6 +67,7 @@ fn an_unrecognised_failure_is_the_harness_line_and_nothing_added() {
         status: Some(418),
         message: "the model is a teapot".to_string(),
         retry_after: None,
+        rate_limit: None,
     };
     assert_eq!(advice(&error), None);
     assert_eq!(said(&error), error.to_string());
@@ -96,6 +100,7 @@ fn the_recognised_failures_are_matched_on_what_they_say() {
             status: None,
             message: message.to_string(),
             retry_after: None,
+            rate_limit: None,
         };
         let advice = advice(&error).unwrap_or_else(|| panic!("{message:?} was not recognised"));
         assert!(
@@ -269,5 +274,73 @@ fn n6_a_refusal_on_any_other_host_is_not_dressed_up_as_a_catalogue_refusal() {
         io_cli::failure::advice_with(&off, None).is_none(),
         "there is no catalogue host in force, so nothing can have been refused \
          over one",
+    );
+}
+
+/// **A provider's identifiers are redacted, and io-cli redacts nothing.**
+///
+/// A bad `-m` surfaced the provider's raw response body, `"user_id":"user_3DDh…"`
+/// included, into the operator's terminal. 0.41.0's contract originally had io-cli
+/// strip those at the renderer; io-harness 0.86.0 does it at the source instead —
+/// `redact_identifiers` runs over the capped body on the way into
+/// `Error::Provider`, before io-cli sees anything — so a renderer-side pass would
+/// be a second opinion about a string that has already been cleaned.
+///
+/// **Both halves are asserted, and the second is the one that keeps this honest.**
+/// That the id is gone, and that no file under `src/` performs a redaction of its
+/// own — because a crate that quietly grew one would be maintaining a second
+/// cleaner whose rules can drift from the real one.
+///
+/// What the source-side pass cannot reach is stated in `docs/guide/limits.md`: a
+/// value split across two fields, a body that is not field-shaped, and an
+/// identifier sitting in ordinary prose.
+///
+/// Sabotage: revert the pin to 0.83 and the first assertion fails, because nothing
+/// anywhere would be cleaning the body.
+#[test]
+fn f11_an_identifier_is_gone_before_io_cli_sees_it() {
+    let harness = support::harness_source_at(&["provider", "mod.rs"]);
+    assert!(
+        harness.contains("redact_identifiers"),
+        "the pinned io-harness does not redact identifiers at the source, so a \
+         provider's `user_id` reaches the transcript and nothing in this crate is \
+         removing it",
+    );
+
+    // And this crate adds no second cleaner. The needle is the act rather than a
+    // name: any file that says it redacts is a file holding rules that can drift
+    // from io-harness's.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![manifest.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // `redact` alone is not the needle: `src/configure.rs` has a `redact`
+            // for a configuration VALUE, which is this crate's own business and
+            // nothing to do with a provider's error body.
+            if text.contains("fn redact_identifiers") || text.contains("user_id\"") {
+                offenders.push(path.display().to_string());
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these files redact a provider's identifiers, which io-harness already \
+         does at the source — a second cleaner is a second set of rules to go \
+         stale: {offenders:?}",
     );
 }

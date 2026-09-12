@@ -177,11 +177,23 @@ pub const CATALOGUE: &[&str] = &[
     "memory.max_entries",
     "memory.max_chars",
     "memory.max_entry_chars",
+    // **The head of the provider chain, readable and not writable (0.41.0).**
+    // `io config get provider.model` answered `no such key`, so an operator with no
+    // terminal had no way to ask which model was configured other than opening
+    // `io.toml` and reading it — on a surface whose whole argument is that a value
+    // and its deciding file belong together. Writing stays `/provider`'s and
+    // `-m`'s; `source_for` refuses a `set` on all three by name.
+    "provider.kind",
+    "provider.model",
+    "provider.base_url",
     // io-cli's own.
     "app.io-cli.theme",
     "app.io-cli.diff",
     "app.io-cli.glyphs",
     "app.io-cli.plain",
+    // Whether a default's refusal asks instead of refusing (0.41.0). Absent means
+    // on — the one key in this section whose absence is not "behave as before".
+    "app.io-cli.escalate",
     // Whether io asks a provider for its model catalogue at all. 0.39.0 shipped
     // this as the way to turn that network call off and left it unsettable: the
     // fall-through quoted it, `CliSettings` could not read `"false"` back, and the
@@ -195,7 +207,7 @@ pub const CATALOGUE: &[&str] = &[
     // is a key an operator meets only by reading this crate's source.
     //
     // `max_total_cost` is here and io-harness documents it as reserved and **not
-    // enforced** (`io-harness-0.83.0/src/containment.rs:97-107`). It is listed
+    // enforced** (`io-harness-0.86.0/src/containment.rs:97-107`). It is listed
     // because it deserializes, so an operator who writes it has a file that
     // parses and a ceiling that does nothing — and the row is where that can be
     // said. `docs/config.example.toml` says it beside the example.
@@ -286,6 +298,47 @@ pub const CATALOGUE: &[&str] = &[
 /// Being excluded is a decision with a sentence, never a gap. Each entry here is
 /// still readable through [`settings`] and still editable as text in the file; what
 /// it is not is a row offered at a value picker.
+/// Catalogue keys that are **read here and written somewhere else**, with the
+/// sentence saying where.
+///
+/// **A third list beside [`EXCLUDED`] and [`USER_SCOPE_ONLY`], and a genuinely
+/// different claim from either.** An excluded key is one this surface does not
+/// offer at all; a user-scope-only key is one it offers in one scope. These are
+/// offered for *reading* everywhere and accepted for writing nowhere, because
+/// another surface already owns the write and a second writer over one value is
+/// the shape this product has corrected three times.
+///
+/// **They have no [`Kind`] and that is correct rather than an omission.** A `Kind`
+/// is how a typed value is spelled into TOML, and nothing here is ever spelled —
+/// `source_for` refuses before `kind_of` is consulted. `tests/configure.rs`'s
+/// every-key-has-a-kind gate reads this list for exactly that reason, so a key
+/// added here is exempted by naming it read-only and never by weakening the gate.
+///
+/// Read by production code and not only by a test, which is the correction 0.40.0
+/// made to `EXCLUDED` after its reason strings turned out to have no reader at all.
+pub const READ_ONLY: &[(&str, &str)] = &[
+    (
+        "provider.kind",
+        "`/provider` edits the entry; the vendor is chosen when it is added",
+    ),
+    (
+        "provider.model",
+        "`/provider` edits the entry and `-m` overrides the model for one run",
+    ),
+    (
+        "provider.base_url",
+        "`/provider` edits the entry, and only a `compatible` provider has one",
+    ),
+];
+
+/// Why `key` may not be written here, or `None` when it may.
+pub fn why_read_only(key: &str) -> Option<&'static str> {
+    READ_ONLY
+        .iter()
+        .find(|(named, _)| *named == key)
+        .map(|(_, why)| *why)
+}
+
 pub const EXCLUDED: &[(&str, &str)] = &[
     (
         "app.io-cli.keys",
@@ -394,7 +447,7 @@ pub enum Kind {
 ///
 /// **Both halves are the dependency's since io-harness 0.71.0, and neither is
 /// written here any more**: the list is `Effect::ALL`
-/// (`io-harness-0.83.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
+/// (`io-harness-0.86.0/src/policy.rs:129`) and each spelling is `Effect::as_str`
 /// (`:145`), which is the word io-harness's own deserializer reads.
 ///
 /// Until this release io-cli held a copy of both — an array naming three variants
@@ -421,7 +474,7 @@ pub fn effects() -> Vec<String> {
 
 /// The `ExecMode` variants, spelled by io-harness itself.
 ///
-/// **The list is `ExecMode::ALL` (`io-harness-0.83.0/src/sandbox.rs:453`) and the
+/// **The list is `ExecMode::ALL` (`io-harness-0.86.0/src/sandbox.rs:453`) and the
 /// spellings are `ExecMode::as_str` (`:460`).** io-cli wrote the variant list out
 /// by hand until this release for a reason that was the dependency's and not a
 /// choice made here: `ExecMode` is `#[non_exhaustive]` (`sandbox.rs:407`), and
@@ -511,6 +564,9 @@ pub fn source_for(key: &str, words: &[String]) -> Result<String, String> {
     // now they are what an operator is told.
     if let Some((_, why)) = EXCLUDED.iter().find(|(named, _)| *named == key) {
         return Err(format!("`{key}` is not set from here: {why}"));
+    }
+    if let Some(why) = why_read_only(key) {
+        return Err(format!("`{key}` is read here and changed elsewhere: {why}"));
     }
     let kind = kind_of(key);
     if matches!(kind, Some(Kind::Machine)) {
@@ -771,6 +827,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
         "sandbox.allow_network"
         | "sandbox.force_floor"
         | "app.io-cli.plain"
+        | "app.io-cli.escalate"
         | "app.io-cli.detached_spawns"
         | "app.io-cli.gates.allow_self_review"
         | "app.io-cli.conversational"
@@ -836,7 +893,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
 /// preference — but half of the old reason is now false and the correction is
 /// worth writing down.** io-harness 0.71.0 names its own defaults:
 /// `DEFAULT_MAX_STEPS` = 8, `DEFAULT_WORKSPACE_MAX_STEPS` = 12 and
-/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.83.0/src/contract.rs:780,798,814`),
+/// `DEFAULT_MAX_RETRIES` = 2 (`io-harness-0.86.0/src/contract.rs:780,798,814`),
 /// re-exported at the crate root. "There is nothing to read" was true when this
 /// was written and is not true now. What is still true is that none of it anchors
 /// *this* ladder:
@@ -1004,7 +1061,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 /// The models `[prices.models]` names, across every scope, sorted and deduplicated.
 ///
 /// **Read from the dependency's own table since io-harness 0.71.0, not scraped
-/// out of the files.** `PriceTable::models` (`io-harness-0.83.0/src/pricing.rs:268`)
+/// out of the files.** `PriceTable::models` (`io-harness-0.86.0/src/pricing.rs:268`)
 /// lists every model the table can actually price, and [`Config::prices`] has
 /// always built that table out of the three scopes — so the merged question this
 /// used to hand-roll is precisely the one the accessor answers, and the gap filed
@@ -1030,7 +1087,7 @@ pub fn shape_of(key: &str, config: &Config) -> Option<String> {
 ///
 /// **This takes the `Config` the caller already holds, and must never re-discover
 /// one.** `Config::discover` resolves every `${env:}`, `${file:}` and `${cmd:}` as
-/// it reads (`io-harness-0.83.0/src/config.rs:627`), so a second discovery re-runs
+/// it reads (`io-harness-0.86.0/src/config.rs:627`), so a second discovery re-runs
 /// an operator's credential commands — which for a `${cmd:}` fetching a key out of
 /// a keychain means a Touch-ID prompt raised in order to draw a menu, every time
 /// the picker opens. Taking a `&Config` is not an optimisation; it is the
@@ -1111,7 +1168,7 @@ pub fn destination(config: &Config, key: &str) -> (Scope, bool) {
 #[must_use]
 pub fn widens_workspace(key: &str, value: &str) -> bool {
     /// The clause io-harness's widening refusal always carries
-    /// (`io-harness-0.83.0/src/config.rs:2949`). Matched rather than the whole
+    /// (`io-harness-0.86.0/src/config.rs:2949`). Matched rather than the whole
     /// sentence, which interpolates the path, the key and the destination scope.
     const WIDENS: &str = "widens the boundary";
 
@@ -1174,7 +1231,7 @@ pub fn writable_scopes(
 /// section is theirs — but the browser's argument vector is where a
 /// `--proxy-server=https://user:pass@host` or a `--load-extension` goes, which
 /// io-harness redacts from its own `Debug` for exactly that reason
-/// (`io-harness-0.83.0/src/browser.rs:163`). Committing one is the same act as
+/// (`io-harness-0.86.0/src/browser.rs:163`). Committing one is the same act as
 /// committing the binary, one word further along.
 ///
 /// A pair rather than a bare list, so the refusal says why. Found by the
@@ -1325,7 +1382,7 @@ fn is_credential(path: &str) -> bool {
 ///
 /// **There are three substitution forms and not two.** io-harness resolves
 /// `${env:...}`, `${file:...}` **and** `${cmd:...}`
-/// (`substitute`, `io-harness-0.83.0/src/config.rs:3159`, the `cmd` arm at
+/// (`substitute`, `io-harness-0.86.0/src/config.rs:3159`, the `cmd` arm at
 /// `:3279`); this comment claimed two until
 /// 0.21.0, and the sentence it claimed it in was the argument for which forms
 /// pass through here. The third is deliberately not one of them: a `${env:}` or
@@ -1453,6 +1510,21 @@ pub fn setting(config: &Config, key: &str) -> Setting {
                 inner
             }
         }
+        // **The provider keys are attributed to `provider`, which is the only
+        // thing io-harness records an origin for.** `[[provider]]` is an array of
+        // tables, so its origins stop at the array itself and asking for
+        // `provider.model` answers nothing — which fell through to `Decided::Default`
+        // and printed `default` beside a model the operator had plainly written in a
+        // file. Naming a crate default as the source of a value a file decided is
+        // the exact failure this module opens by refusing, and `home::origin`
+        // shipped it once in 0.15.0.
+        _ if matches!(
+            key,
+            "provider.kind" | "provider.model" | "provider.base_url"
+        ) =>
+        {
+            config.origin("provider")
+        }
         _ => config.origin(key),
     };
     let decided = match origins.last() {
@@ -1472,6 +1544,21 @@ pub fn setting(config: &Config, key: &str) -> Setting {
         None => Decided::Unknown,
     };
 
+    // **The three provider keys are read from the resolved spec, not from the
+    // file's bytes.** io-harness records an origin for `provider` as a whole and
+    // not for its leaves — `[[provider]]` is an array of tables — so
+    // `edit::value_at` has no path to walk to and the value column would be empty
+    // for a key the operator plainly set. The spec is what the run actually uses,
+    // which is the honest answer to "which model is configured", and it already
+    // carries the chain's head. Nothing here is writable; see `source_for`.
+    if let Some(value) = provider_value(config, key) {
+        return Setting {
+            path: key.to_string(),
+            value: Some(value),
+            decided,
+        };
+    }
+
     let value = decided.path().and_then(|path| {
         let text = std::fs::read_to_string(path).ok()?;
         crate::edit::value_at(&text, key)
@@ -1481,6 +1568,24 @@ pub fn setting(config: &Config, key: &str) -> Setting {
         path: key.to_string(),
         value: value.map(|v| redact(key, &v)),
         decided,
+    }
+}
+
+/// The head of the provider chain, for the three readable `provider.*` keys.
+///
+/// `None` for every other key and for an install that has configured no provider —
+/// which reads as unset, and is, rather than as a key that does not exist.
+fn provider_value(config: &Config, key: &str) -> Option<String> {
+    let spec = config.provider_spec()?;
+    match key {
+        "provider.kind" => Some(crate::provider::kind_of(spec))
+            .filter(|word| !word.is_empty())
+            .map(str::to_string),
+        "provider.model" => Some(crate::provider::model_of(spec))
+            .filter(|model| !model.is_empty())
+            .map(str::to_string),
+        "provider.base_url" => crate::provider::base_url_of(spec).map(str::to_string),
+        _ => None,
     }
 }
 

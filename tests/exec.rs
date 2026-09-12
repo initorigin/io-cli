@@ -934,12 +934,14 @@ async fn f8_no_provider_and_no_flag_fails_with_a_sentence_rather_than_a_prompt()
         io_cli::cli::Exec {
             goal: "do the thing".into(),
             json: false,
-            sandbox: None,
             policy: None,
             provider: None,
         },
         Config::from_toml("").expect("an empty configuration"),
         dir.path().to_path_buf(),
+        None,
+        // `--sandbox` is a `global` flag from 0.41.0, so it arrives beside the
+        // subcommand's own arguments rather than inside them.
         None,
     )
     .await
@@ -1543,8 +1545,6 @@ fn the_resume_subcommand_parses_in_every_form_it_offers() {
     // And the shapes clap itself refuses, which are the ones no code below would
     // otherwise have to think about.
     for argv in [
-        // Neither an id nor a listing.
-        vec!["io", "resume"],
         // A listing of one run is not a thing.
         vec!["io", "resume", "--list", "41"],
         // A correction with no plan to correct, and an account with no call.
@@ -1555,6 +1555,27 @@ fn the_resume_subcommand_parses_in_every_form_it_offers() {
             io_cli::cli::Cli::try_parse_from(&argv).is_err(),
             "{argv:?} should not parse",
         );
+    }
+
+    // **Bare `io resume` parses as of 0.41.0, and it lists.** It was in the block
+    // above as a shape clap refuses — which is what the binary did, and what the
+    // top-level help contradicted: that help has said since 0.23.0 that resume will
+    // "list the runs parked in the store, **or** carry one of them on", while the
+    // listing was reachable only through a `--list` the same page never mentioned.
+    // Asserted here rather than deleted from the refusal list silently, because the
+    // change is to a shipped argv surface.
+    let bare = io_cli::cli::Cli::try_parse_from(["io", "resume"]).expect("bare resume parses");
+    match bare.command {
+        Some(io_cli::cli::Command::Resume(resume)) => {
+            assert!(resume.run.is_none(), "bare resume named a run");
+            assert!(
+                !resume.list,
+                "bare resume must not set `--list` — the door decides to list from \
+                 the absent id, so a flag set here would hide a parser that had \
+                 started requiring one again",
+            );
+        }
+        other => panic!("`io resume` is not a resume: {other:?}"),
     }
 }
 
@@ -3129,4 +3150,45 @@ fn f7_every_headless_turn_still_refuses_every_approval() {
              and the ACP door answers them; they do not share a decision.",
         );
     }
+}
+
+/// **Bare `io resume` with an empty store says so rather than printing nothing.**
+///
+/// Found by running the real binary against a fresh `IO_CONFIG_HOME` during this
+/// release's own verification, after the same defect had already been corrected
+/// for `io mcp list` two items earlier in the same contract. Silence at a terminal
+/// is indistinguishable from a verb that hung, a store that failed to open, or a
+/// binary that did not run — and this is the door an operator reaches for when
+/// they do not know whether there is anything to carry on.
+///
+/// Driven through the built binary rather than `resume_main`, because the store
+/// path comes from `settings::store_path` reading the environment, and because the
+/// claim is about what the command prints on which stream. Sabotage: drop the
+/// `rows == 0` arm in `src/exec.rs` and only this fails.
+#[test]
+fn f8_a_bare_resume_with_nothing_parked_says_so_on_stderr() {
+    let home = tempfile::tempdir().expect("a temporary configuration home");
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .arg("resume")
+        .env(io_harness::config::CONFIG_HOME_VAR, home.path())
+        .env_remove(io_harness::config::CONFIG_VAR);
+
+    let run = command.output().expect("the built binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+
+    assert!(
+        stderr.contains("nothing to carry on"),
+        "an empty listing printed no sentence, so it is indistinguishable from a \
+         command that did not run; stdout was {stdout:?} and stderr {stderr:?}",
+    );
+    // And the machine surface is untouched: a script reading rows reads zero rows,
+    // which is the answer it asked for.
+    assert!(
+        stdout.trim().is_empty(),
+        "the sentence reached stdout, where a reader counting rows would parse it \
+         as a run: {stdout:?}",
+    );
 }

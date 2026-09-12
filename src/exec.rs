@@ -856,6 +856,7 @@ pub async fn main(
     config: Config,
     root: std::path::PathBuf,
     model_override: Option<String>,
+    sandbox: Option<crate::cli::Sandbox>,
 ) -> Result<u8, String> {
     // Before a store is opened, a session is created or a provider is built, so
     // a refused posture costs nothing and leaves no run behind.
@@ -907,6 +908,7 @@ pub async fn main(
             config,
             policy,
             args,
+            sandbox,
         },
     )
     .await?
@@ -919,6 +921,13 @@ struct Headless {
     config: Config,
     policy: Policy,
     args: crate::cli::Exec,
+    /// `--sandbox`, which became a `global` flag in 0.41.0 and therefore lives on
+    /// the top-level `Cli` rather than on `Exec`.
+    ///
+    /// Carried here rather than read back from anywhere, for the reason `plain` is
+    /// threaded into the session: it is a flag, it outranks the file, and a second
+    /// read at this depth would be a second answer to a settled question.
+    sandbox: Option<crate::cli::Sandbox>,
 }
 
 impl WithProvider for Headless {
@@ -934,7 +943,7 @@ impl WithProvider for Headless {
         // The two observers are the whole difference between the modes. Built
         // here rather than inside `turn` so that a test can hand in a writer it
         // can read back.
-        if let Some(line) = widening(self.args.sandbox.map(crate::cli::Sandbox::mode)) {
+        if let Some(line) = widening(self.sandbox.map(crate::cli::Sandbox::mode)) {
             eprintln!("io: {line}");
         }
         if let Some(line) = asks_nobody_can_answer(&self.policy) {
@@ -973,7 +982,21 @@ impl WithProvider for Headless {
         if let Some(said) = said {
             eprintln!("io: {said}");
         }
+        // **The gate's own budget, and only when a gate is configured.** With no
+        // criterion there is nothing to count and this observer never fires; with
+        // one, it is what stops a mis-set gate spending the whole step cap on the
+        // same failure. See `gates::Budget` for why it is an observer rather than
+        // a contract field, and why cancelling through it still exits `6`.
+        //
+        // **On both headless doors.** A resume is what an operator reaches for
+        // after the first door ended badly, and a fix that landed on one of these
+        // and not the other is the shape 0.38.1 paid for.
+        let budget = crate::contract::gate_budget(&self.config);
+
         let mut observers: Vec<&dyn Observer> = vec![observer];
+        if let Some(budget) = &budget {
+            observers.push(budget);
+        }
         if let Some(hooks) = &hooks {
             observers.push(hooks);
         }
@@ -996,7 +1019,7 @@ impl WithProvider for Headless {
             &self.config,
             &self.policy,
             self.args.goal.clone(),
-            self.args.sandbox.map(crate::cli::Sandbox::mode),
+            self.sandbox.map(crate::cli::Sandbox::mode),
             watcher,
         )
         .await;
@@ -1014,6 +1037,31 @@ impl WithProvider for Headless {
             }
         };
 
+        // **What the run cost, as the last line of the stream (0.41.0).** The TUI
+        // status bar has carried a figure since 0.22.0 and `/cost` reports per
+        // run, per session and per install — and `io exec --json` carried none of
+        // it, on the one surface where a budget signal matters most. A sweep of a
+        // whole run's stream for `cost`, `usd` or `price` returned nothing.
+        //
+        // Read from the store after the run rather than accumulated from the
+        // event stream, which is what makes it equal `/cost`'s own figure by
+        // construction rather than by a second implementation that agrees on the
+        // day it is written. It cannot be done from the observer: `Store` is
+        // `!Sync`, and `EventKind::StepUsage` carries no `server_tool_requests`,
+        // so a per-line figure derived from the events would under-report any step
+        // that used a provider's own server tool. See `cost::spent`.
+        if self.args.json {
+            if let Some(spent) = crate::cost::spent(
+                &self.store,
+                result.run_id,
+                &crate::cost::table(&self.config),
+            ) {
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{spent}");
+                let _ = out.flush();
+            }
+        }
+
         // stdout is the data and stderr is everything else, so that
         // `io exec --json … | jq` needs no filtering and a plain run can be
         // captured with `$(…)` without catching a status line.
@@ -1023,6 +1071,24 @@ impl WithProvider for Headless {
             let _ = out.flush();
         }
         eprintln!("io: {}", describe(&result.outcome));
+        // **A run this crate stopped says so in its own words, before the outcome
+        // is read as something the operator did.** `describe` renders a
+        // `Cancelled` run as "was cancelled", which is true of the mechanism and
+        // wrong about the cause: nobody pressed anything. The budget is the only
+        // thing in `io exec` that cancels, so if it is spent it is what happened,
+        // and saying which number ran out is what turns the stop into an
+        // instruction — the gate is wrong, or `retries` is too low.
+        if let Some(budget) = &budget {
+            if budget.spent() {
+                let allowed = budget.allowed();
+                eprintln!(
+                    "io: the gate failed {allowed} time{} and `[app.io-cli.gates] retries` allows \
+                     no more, so the run was stopped rather than sent back to the same failure; \
+                     raise `retries`, or fix the criterion",
+                    if allowed == 1 { "" } else { "s" }
+                );
+            }
+        }
         if let Some(parked) = parked(&result.outcome, result.run_id) {
             eprintln!("io: {parked}");
         }
@@ -1035,6 +1101,35 @@ impl WithProvider for Headless {
         // prevent, arriving through the release itself.
         if let Some(notice) = crate::contract::gate_notice(&self.config) {
             eprintln!("io: {notice}");
+        }
+        // **A gated run that was answered conversationally says the gate did not
+        // run.** A field pass set a gate of `["false"]`, ran `io exec "reply FA"`,
+        // and got a clean finish — and read that as "gates only fire when files
+        // changed". It is neither: io-harness classifies a prompt that is only a
+        // question and answers it in one completion with no steps, no tools and no
+        // verification, and `contract::configured` turns that classification ON
+        // for a gated contract on purpose, because otherwise attaching any
+        // criterion makes "hello" open a full agent run that executes the
+        // operator's test suite after each of its steps.
+        //
+        // So the behaviour is right and only the silence was wrong. An operator
+        // who configured a gate and watched a run finish without it has no way to
+        // tell a passing gate from one that never ran, which is the one distinction
+        // a verification surface must never blur. The sentence names the key that
+        // changes it rather than describing the classifier.
+        // `TurnKind::Reply` and never a step count: io-harness publishes the
+        // classification it made, and counting steps would be this crate guessing
+        // at it — a run that legitimately finished in zero steps is a different
+        // thing from one that was never opened. `tests/contract.rs` holds the
+        // driver to reading the kind for exactly this reason.
+        if matches!(result.kind, io_harness::TurnKind::Reply)
+            && crate::contract::criterion_of(&self.config).is_some()
+        {
+            eprintln!(
+                "io: this prompt was answered in one completion, so no step ran and the gate was \
+                 not evaluated — set `[app.io-cli] conversational = false` to open a full run for \
+                 every prompt"
+            );
         }
         // **The criterion has the last word on the exit status, and it is read
         // from the store rather than from the outcome.** io-harness has no
@@ -1590,31 +1685,54 @@ pub async fn resume_main(
     let path = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&path).map_err(|error| error.to_string())?;
 
-    if args.list {
+    // **`--list` or nothing at all.** Bare `io resume` used to be a clap refusal
+    // naming a required `<RUN_ID>`, while the top-level help said resume would
+    // "list the runs parked in the store, **or** carry one of them on" — the help
+    // page contradicting the binary, with the listing reachable only through a flag
+    // that same page never mentioned. Listing is what an operator who typed
+    // `resume` with nothing in mind wants, and it costs nothing and takes no lease.
+    if args.list || args.run.is_none() {
         // One classification per run, each a handful of store reads and no
         // provider call. That is linear in the store's whole history rather than
         // in the parked runs, which is the right cost while a store holds
         // hundreds; the way past it is a store-side query for the pending rows,
         // which io-harness does not publish.
         let mut out = std::io::stdout().lock();
+        let mut rows = 0usize;
         for run_id in store.runs().map_err(|error| error.to_string())? {
             let pending =
                 crate::resume::pending_for(&store, run_id).map_err(|error| error.to_string())?;
             let parked = Parked::of(&store, run_id);
             if let Some(row) = listed(run_id, &pending, &parked, args.json) {
+                rows += 1;
                 let _ = writeln!(out, "{row}");
             }
         }
         let _ = out.flush();
+        // **An empty listing says so, on stderr** — the same correction `io mcp
+        // list` gets in this release, and reached by the command an operator runs
+        // when they have no idea what is in the store. Printing nothing at all is
+        // indistinguishable at a terminal from a verb that hung, a store that
+        // failed to open, or a binary that did not run, and this is the door whose
+        // whole purpose is to answer "is there anything to carry on?".
+        //
+        // stderr rather than stdout, and unconditional rather than suppressed under
+        // `--json`, for one reason: a script reading rows still reads zero rows,
+        // which is the answer it asked for.
+        if rows == 0 {
+            eprintln!("io: no runs are parked, so there is nothing to carry on");
+        }
         return Ok(OK);
     }
 
-    // clap guarantees this through `required_unless_present`, and the sentence is
-    // here rather than an `expect` because a parser's guarantee is not a reason to
-    // panic in front of an operator if it ever stops holding.
+    // **Unreachable as of 0.41.0 and kept anyway.** `run` is no longer
+    // `required_unless_present`, so clap guarantees nothing here — the branch above
+    // takes every `None`. A sentence costs one line and an `expect` in front of an
+    // operator costs their run, which is the same reason this was never an `expect`
+    // while clap *did* guarantee it.
     let run_id = args
         .run
-        .ok_or("`io resume` needs a run id, or `--list` to see which runs have one")?;
+        .ok_or("`io resume` needs a run id, or no argument at all to see which runs have one")?;
 
     // Everything that can refuse, before anything is built: the classification is
     // a few store reads, and an operator who names the one run that cannot be
@@ -1710,7 +1828,21 @@ impl WithProvider for Resuming {
         if let Some(said) = said {
             eprintln!("io: {said}");
         }
+        // **The gate's own budget, and only when a gate is configured.** With no
+        // criterion there is nothing to count and this observer never fires; with
+        // one, it is what stops a mis-set gate spending the whole step cap on the
+        // same failure. See `gates::Budget` for why it is an observer rather than
+        // a contract field, and why cancelling through it still exits `6`.
+        //
+        // **On both headless doors.** A resume is what an operator reaches for
+        // after the first door ended badly, and a fix that landed on one of these
+        // and not the other is the shape 0.38.1 paid for.
+        let budget = crate::contract::gate_budget(&self.config);
+
         let mut observers: Vec<&dyn Observer> = vec![observer];
+        if let Some(budget) = &budget {
+            observers.push(budget);
+        }
         if let Some(hooks) = &hooks {
             observers.push(hooks);
         }
@@ -1763,7 +1895,7 @@ impl WithProvider for Resuming {
         // other pause kind has both forms — `resume_tree_with_answer` beside
         // `resume_with_answer`, `resume_tree_with_plan_decision` beside its flat
         // one, `resume_tree_with_decision` beside `resume_with_decision`
-        // (`io-harness-0.83.0/src/run.rs:1824`, `:2158`, `:3234`). Recovery has
+        // (`io-harness-0.86.0/src/run.rs:1824`, `:2158`, `:3234`). Recovery has
         // `resume_with_recovery_observed` (`:2639`) and nothing tree-aware, so it
         // is the one pause a contained run cannot be resumed from. Not an oversight
         // this crate can route around: a fleet's shared ceiling lives in the tree

@@ -726,3 +726,78 @@ fn o14_a_view_that_cannot_show_everything_says_how_much_it_held_back() {
         "the view did not ask the viewport for the rows it needed",
     );
 }
+
+/// **F5 — a finished child's last word reaches the parent's view.**
+///
+/// A fan-out reported `spawned child 188 success, steps 1; spawned child 189
+/// success, steps 1` and the parent then said, in its own words, that the
+/// sub-agents "returned no message of their own" — before redoing both children's
+/// work itself. A child can be paid for and produce nothing anybody ever sees.
+///
+/// Nothing on the event stream carries a conclusion: `Spawned` announces the
+/// child, the ending events say how it ended, and what it *said* lives in
+/// `agent_events`. io-harness's own fold reads the last row of kind `said`, and
+/// that reader is `pub(super)` — so this reproduces it over the public store
+/// rather than going without.
+///
+/// **The silent child is the other half.** Drawing nothing for one that finished
+/// without speaking makes "said nothing" and "still being read" the same picture,
+/// and only one of those is worth spawning again.
+///
+/// Sabotage: drop the `State::Working` guard in `Fleet::conclusions` and a working
+/// child gains a conclusion it has not reached; return early from it and the
+/// spoken child's text disappears from the rows.
+#[test]
+fn f5_a_finished_child_says_what_it_concluded() {
+    let dir = tempfile::tempdir().expect("a workspace");
+    let store = io_harness::Store::open(dir.path().join("runs.db")).expect("a store");
+
+    // Two children of one parent: one that speaks and one that does not.
+    let talked = store.start_run("look at the parser", "").expect("a run");
+    let silent = store.start_run("look at the lexer", "").expect("a run");
+    store
+        .record_agent_event(&io_harness::AgentEvent::said(
+            talked,
+            1,
+            "the parser drops the last token",
+        ))
+        .expect("the conclusion records");
+
+    let mut fleet = Fleet::new();
+    fleet.event(&spawned(1, 0, talked, "look at the parser"));
+    fleet.event(&spawned(1, 0, silent, "look at the lexer"));
+
+    // Still working: nothing is read, because a half-finished answer drawn as a
+    // conclusion is worse than no conclusion.
+    fleet.conclusions(&store);
+    assert!(
+        fleet.children().iter().all(|child| child.said.is_none()),
+        "a working child was given a conclusion it has not reached",
+    );
+
+    for child in [talked, silent] {
+        fleet.event(&RunEvent::at_depth(
+            child,
+            1,
+            1,
+            EventKind::Finished {
+                outcome: "success".into(),
+                steps: 1,
+                tokens: 100,
+            },
+        ));
+    }
+    fleet.conclusions(&store);
+
+    let rows = fleet.rows(120, &UNICODE).join("\n");
+    assert!(
+        rows.contains("the parser drops the last token"),
+        "the child's conclusion is not in the view, so the parent is told only \
+         that it succeeded:\n{rows}",
+    );
+    assert!(
+        rows.contains("said nothing"),
+        "a child that finished silently is drawn the same as one still being \
+         read, and only one of those is worth spawning again:\n{rows}",
+    );
+}

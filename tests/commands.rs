@@ -62,6 +62,12 @@ fn the_commands_are_the_commands() {
             // rather than widening it.
             "/commit",
             "/config",
+            // 0.41.0 — the product's last free slot, in `Configure`. A command
+            // rather than a verb inside `/config` because it writes and un-writes
+            // `[[policy.layers]]` rules: the `always` answer to an approval puts
+            // one in the operator's own file, and a grant that can be written from
+            // one surface and only un-written by editing a file is a trap.
+            "/policy",
             // 0.18.0 — the other two surfaces that write a file the operator
             // keeps, and they ask the same scope question `/config` does: three
             // files, and which one is half of every decision made here.
@@ -322,12 +328,18 @@ fn f12_resume_says_it_answers_a_parked_run_rather_than_merely_reopening_a_sessio
     // 31 plus 0.25.0's one addition, and the two halves are named separately on
     // purpose: a total that merely went up by one would be satisfied by this
     // release growing a command and losing another.
+    // **Thirty-seven as of 0.41.0, and it is the last one.** `/policy` took the
+    // product's only free slot, in `Configure`. Every release from 0.28.0 to
+    // 0.40.0 added verbs inside commands that already existed rather than
+    // commands, which is why this number stood at thirty-six for thirteen of
+    // them; `/policy` is a command because it writes and un-writes a file, which
+    // is not a verb inside anything that exists.
     assert_eq!(
         COMMANDS.len(),
-        36,
-        "0.28.0 adds NO command — every verb it adds is a verb inside a command \
-         that already exists, and `io mcp|plugin|config` are binary subcommands in \
-         `src/cli.rs` rather than slash commands. A thirty-seventh here means one \
+        37,
+        "0.41.0 adds exactly ONE command, `/policy`, into the last free slot. A \
+         thirty-eighth means one arrived unrecorded, and it has nowhere to go — \
+         every group is full, so the next command re-files something. A \
          arrived unrecorded, on top of the thirty-six 0.27.0 shipped",
     );
 }
@@ -516,9 +528,12 @@ fn o2_the_palette_did_not_grow_and_no_group_was_refiled() {
     sizes.sort_unstable();
     assert_eq!(
         sizes,
-        vec![7, 9, 10, 10],
-        "0.28.0 re-files no group; the occupancy is Session 7, Configure 9, Turn 10, Inspect 10, \
-         and there is exactly one free slot in the product"
+        vec![7, 10, 10, 10],
+        "0.41.0 re-files no group and fills the last free slot: the occupancy is \
+         Session 7, Configure 10, Turn 10, Inspect 10, and there is now NO free \
+         slot in the product. The next command to want one re-files something that \
+         is in the wrong group, which is the rule 0.25.0 wrote and four releases \
+         have followed since — it does not widen the bound"
     );
 }
 
@@ -748,7 +763,10 @@ fn the_key_table_covers_every_key_this_release_binds() {
         // 0.8.0. It has a key as well as `/fleet` because the moment it is worth
         // opening is mid-turn, and a slash command cannot be typed then.
         "Ctrl+F",
-        "y / a / n",
+        // 0.41.0 — the eighth rebindable action, and a key because the moment a
+        // step's detail is worth reading is while it is running.
+        "Ctrl+E",
+        "y / a / w / n",
         // 0.32.0. Not a chord and not rebindable: it is `Picker::key`'s, so it
         // applies to every list in the product rather than to one surface, and it
         // is the completion key an operator arrives already expecting. Until this
@@ -765,9 +783,11 @@ fn the_key_table_covers_every_key_this_release_binds() {
     ] {
         assert!(documented.contains(&key), "{key} is bound but undocumented");
     }
+    // Seventeen from 0.41.0: `Ctrl+E` is the eighth rebindable action, and the
+    // approval row gained `w` — the same row, one more letter in it.
     assert_eq!(
         documented.len(),
-        16,
+        17,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );

@@ -139,6 +139,21 @@ pub enum Command {
     /// verdict. See [`Command::Answered`] — this is the same arrangement for
     /// [`crate::resume::decide_plan`].
     Decided(io_harness::PlanVerdict),
+    /// An approval was answered `always`, and the rule has to reach a file.
+    ///
+    /// The same arrangement as [`Command::Answered`] and for the same reason:
+    /// this type has no configuration, no root and no writer, so an answer whose
+    /// meaning is "write this down" cannot be finished inside it. Coming back as a
+    /// `Command` makes the driver's obligation structural — a variant nobody
+    /// handles is a match arm the compiler asks about.
+    Remembered(io_harness::Rule),
+    /// `Ctrl+E`: commit the running step's full detail into the scrollback.
+    ///
+    /// The keystroke spelling of `/expand`, and it exists because the moment that
+    /// detail is worth reading is while the step is running. Out as a command for
+    /// the reason [`Command::Transcript`] is: the lines are read from the store
+    /// and written to the terminal, and [`App`] holds neither.
+    Expand,
 }
 
 /// What a paste turned out to be.
@@ -340,6 +355,21 @@ pub struct App {
     /// says `custom` rather than naming one it is not, and the first press of the
     /// key moves to a posture the operator did choose.
     posture: Option<Posture>,
+    /// Whether a refusal that came from a default asks instead of refusing.
+    ///
+    /// Held here rather than read from the configuration at each of the ten sites
+    /// that build a turn's policy, for the reason the posture is: one answer per
+    /// session, so two turns cannot disagree about it, and one place for
+    /// `/policy` to change it from. Set from `[app.io-cli] escalate` at startup
+    /// and `true` when no file names it — see [`crate::settings::CliSettings`]
+    /// for why that default is the one key here whose absence is not "as before".
+    escalate: bool,
+    /// Whether this session is running unconfined.
+    ///
+    /// Set by `--full-access` at startup and by `/policy full-access` behind a
+    /// confirmation. Never read from and never written to a configuration file:
+    /// the grant lasts the session and no longer.
+    full_access: bool,
     /// Whether this turn has already been told why its git tools did nothing.
     ///
     /// **One paragraph per turn, not one per refused call.** A model that reaches
@@ -368,6 +398,12 @@ impl App {
             quits: 0,
             armed: None,
             contained: false,
+            // On unless a file says otherwise, which the driver applies at
+            // startup. `true` here rather than `false` so that every construction
+            // — the driver's, and every test that builds an `App` directly —
+            // meets the shipped behaviour rather than the disabled one.
+            escalate: true,
+            full_access: false,
             queued: Vec::new(),
             prompts: Vec::new(),
             queue_open: false,
@@ -689,13 +725,50 @@ impl App {
         self.posture
     }
 
+    /// Whether a default's refusal asks instead of refusing.
+    pub fn escalates(&self) -> bool {
+        self.escalate
+    }
+
+    /// Say whether it does. Read from the configuration at startup and changed by
+    /// `/policy`; a turn in flight keeps the answer it started with.
+    pub fn set_escalate(&mut self, escalate: bool) {
+        self.escalate = escalate;
+    }
+
     /// Say which posture the session started under. The status line follows it.
     pub fn set_posture(&mut self, posture: Option<Posture>) {
         self.posture = posture;
+        // **Full access outranks the posture word on this field, because it
+        // outranks the posture.** The three postures describe tier defaults that
+        // `Shift+Tab` moves between; full access has replaced all four of them
+        // with `allow`, so drawing `policy:workspace` beside an unconfined session
+        // would put a true-looking word next to a boundary that is not there. The
+        // one thing worse than an unconfined session is one that looks ordinary.
+        if self.full_access {
+            self.status.policy = Some(Posture::FULL_ACCESS.to_string());
+            return;
+        }
         self.status.policy = Some(match posture {
             Some(posture) => posture.short().to_string(),
             None => "custom".to_string(),
         });
+    }
+
+    /// Put the session on full access, or take it back off.
+    ///
+    /// Never written to a file — it lasts the session, which is what stops it
+    /// being left on by accident or committed into a repository. Re-running
+    /// [`App::set_posture`] is what redraws the field, so the marker and the
+    /// posture word cannot disagree.
+    pub fn set_full_access(&mut self, full_access: bool) {
+        self.full_access = full_access;
+        self.set_posture(self.posture);
+    }
+
+    /// Whether this session is unconfined.
+    pub fn full_access(&self) -> bool {
+        self.full_access
     }
 
     /// Move to the next posture. One key, no menu, always visible — and it takes
@@ -786,15 +859,35 @@ impl App {
     /// Answer the open question. The overlay closes, the run goes on, and the
     /// decision commits one line — so it is in the transcript as well as in the
     /// harness's own trace.
-    pub fn answer_approval(&mut self, answer: Answer) {
-        let Some(approval) = self.approval.take() else {
-            return;
-        };
+    /// Returns the rule to **write down**, for an `always` answer and no other.
+    ///
+    /// **`#[must_use]`, and that is the whole of the wiring.** This type has no
+    /// configuration, no root and no writer — it draws and it remembers — so an
+    /// answer that has to reach a file cannot be finished here. Handing the rule
+    /// back makes the driver's obligation structural rather than something a
+    /// later reader has to notice, which is the shape `answer_intent` and
+    /// `decide_plan` took in 0.23.0 for the same reason.
+    #[must_use]
+    pub fn answer_approval(&mut self, answer: Answer) -> Option<io_harness::Rule> {
+        let approval = self.approval.take()?;
         let act = crate::approval::act_word(approval.ask().act());
         let target = approval.ask().target().to_string();
-        if answer == Answer::Session {
-            self.remembered.push(approval.remembered());
-        }
+        // **`Always` remembers for the session too.** The written rule reaches a
+        // turn only after a reload re-reads the file, and the operator meant the
+        // next call and not the next session — so it is held in memory exactly as
+        // `Session` is, and the file is the part that outlives both.
+        let written = match answer {
+            Answer::Session => {
+                self.remembered.push(approval.remembered());
+                None
+            }
+            Answer::Always => {
+                let rule = approval.remembered();
+                self.remembered.push(rule.clone());
+                Some(rule)
+            }
+            Answer::Once | Answer::Deny => None,
+        };
         approval.answer(answer);
         self.record(
             if answer == Answer::Deny {
@@ -808,6 +901,7 @@ impl App {
                 answer.spoken()
             ),
         );
+        written
     }
 
     /// Everything the operator has allowed for the rest of this session, as
@@ -1742,8 +1836,15 @@ impl App {
             | io_harness::EventKind::HandleOrphaned { .. } => {
                 self.status.jobs = self.status.jobs.saturating_sub(1);
             }
+            // **The event's own depth decides, not its arrival order.** During a
+            // fan-out the parent and every child emit one of these, and taking
+            // whichever landed last let a parent's word describe a child's act: a
+            // field pass read `read-only/macos-sandbox-exec` off this line while a
+            // shell `echo >> a.txt` in the child succeeded and changed the file.
+            // The deepest run wins, because the acts an operator is watching
+            // during a fan-out are the children's.
             io_harness::EventKind::Contained { mode, backend, .. } => {
-                self.status.containment = Some(crate::status::format_containment(mode, backend));
+                self.status.note_contained(event.depth, mode, backend);
             }
             // **The three connection fields, filled from what happened and never
             // from what was configured.** A server named in the file and a server
@@ -1876,7 +1977,12 @@ impl App {
         let interrupting = self.keys.hit(chord, None) == Some(Hit::Fire(Action::Interrupt));
         if let Some(open) = self.approval.as_mut().filter(|_| !interrupting) {
             if let Some(answer) = open.key(key) {
-                self.answer_approval(answer);
+                // The rule an `always` answer means, out to the driver, which is
+                // the only thing here that can write a file. `None` for every other
+                // answer, which is every answer that changes nothing on disk.
+                if let Some(rule) = self.answer_approval(answer) {
+                    return Command::Remembered(rule);
+                }
             }
             return Command::None;
         }
@@ -2187,6 +2293,11 @@ impl App {
                 self.toggle_fleet();
                 Command::None
             }
+            // **The same point, and the reason this one is a `Command` rather
+            // than a method call.** Expanding a step reads the store, which this
+            // type does not hold — so it goes out the way `Transcript` does and
+            // the driver, which has the store and the screen, commits the lines.
+            Some(Hit::Fire(Action::Expand)) => Command::Expand,
             // The rewind chord with something typed, and every key this session
             // does not bind: the composer's, which is where they belong.
             _ => self.compose(key),
