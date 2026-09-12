@@ -9050,6 +9050,13 @@ fn note_fleet(
     if let Ok(addresses) = store.tree_addresses(root) {
         app.fleet.name(&addresses, &contract.agents);
     }
+    // **What each finished child said, read before the view is asked for.** It
+    // happens above the `fleet_open` guard on purpose: the conclusion is not only
+    // for the panel — it is the thing the parent was never told — and a child that
+    // finished while the panel was closed must still have its last word when the
+    // panel is opened. `Fleet::conclusions` skips a child that is still working
+    // and one it has already read, so this is not a query per step per child.
+    app.fleet.conclusions(store);
     if !app.fleet_open() {
         return;
     }
