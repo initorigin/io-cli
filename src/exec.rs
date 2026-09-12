@@ -1093,6 +1093,35 @@ impl WithProvider for Headless {
         if let Some(notice) = crate::contract::gate_notice(&self.config) {
             eprintln!("io: {notice}");
         }
+        // **A gated run that was answered conversationally says the gate did not
+        // run.** A field pass set a gate of `["false"]`, ran `io exec "reply FA"`,
+        // and got a clean finish — and read that as "gates only fire when files
+        // changed". It is neither: io-harness classifies a prompt that is only a
+        // question and answers it in one completion with no steps, no tools and no
+        // verification, and `contract::configured` turns that classification ON
+        // for a gated contract on purpose, because otherwise attaching any
+        // criterion makes "hello" open a full agent run that executes the
+        // operator's test suite after each of its steps.
+        //
+        // So the behaviour is right and only the silence was wrong. An operator
+        // who configured a gate and watched a run finish without it has no way to
+        // tell a passing gate from one that never ran, which is the one distinction
+        // a verification surface must never blur. The sentence names the key that
+        // changes it rather than describing the classifier.
+        // `TurnKind::Reply` and never a step count: io-harness publishes the
+        // classification it made, and counting steps would be this crate guessing
+        // at it — a run that legitimately finished in zero steps is a different
+        // thing from one that was never opened. `tests/contract.rs` holds the
+        // driver to reading the kind for exactly this reason.
+        if matches!(result.kind, io_harness::TurnKind::Reply)
+            && crate::contract::criterion_of(&self.config).is_some()
+        {
+            eprintln!(
+                "io: this prompt was answered in one completion, so no step ran and the gate was \
+                 not evaluated — set `[app.io-cli] conversational = false` to open a full run for \
+                 every prompt"
+            );
+        }
         // **The criterion has the last word on the exit status, and it is read
         // from the store rather than from the outcome.** io-harness has no
         // `RunOutcome` variant for a run whose gate answered no, so a run that
