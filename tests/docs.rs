@@ -2748,9 +2748,9 @@ fn n5_no_shipped_page_claims_a_span_was_delivered() {
 /// the risk is a sentence rather than a branch.** io-harness offers a masked turn a
 /// byte-identical catalogue on purpose: the tool array sits ahead of the provider's
 /// cache breakpoint, so dropping a definition would save its tokens once and pay a
-/// cache *write* on every later turn (`io-harness-0.83.0/src/tools/mod.rs:33-42`).
+/// cache *write* on every later turn (`io-harness-0.86.0/src/tools/mod.rs:33-42`).
 /// Withholding in fact makes the request marginally **larger**, by one sentence
-/// naming what is withheld (`io-harness-0.83.0/src/run/prompts.rs:1418`).
+/// naming what is withheld (`io-harness-0.86.0/src/run/prompts.rs:1418`).
 ///
 /// The roadmap entry 0.37.0 was planned from assumed the opposite and said so in
 /// its headline. That framing is what a writer reaches for, because "withhold" means

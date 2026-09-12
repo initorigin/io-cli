@@ -537,7 +537,7 @@ pub fn buying(contract: TaskContract, effort: Option<io_harness::Effort>) -> Tas
 /// sits ahead of a cache breakpoint and removing a definition would save its
 /// tokens once and pay a cache *write* on every later turn (`src/tools/mod.rs:40`).
 /// A mask in fact **adds** a sentence to the user prompt naming the withheld tools
-/// (`io-harness-0.83.0/src/run/prompts.rs:1418`, `withheld_sentence`), placed after the observations
+/// (`io-harness-0.86.0/src/run/prompts.rs:1418`, `withheld_sentence`), placed after the observations
 /// precisely so it costs no cache entry. A turn that withholds three tools is
 /// marginally more expensive than the same turn without the mask, not less.
 #[must_use]
@@ -789,7 +789,7 @@ pub fn skills_dir(config: &Config, capabilities: &Capabilities, root: PathBuf) -
 /// **The existence test is not caution, it is the whole of what makes this
 /// default safe.** `Skills::discover` does not return early on a directory that
 /// is not there — it returns `Error::Config("skills directory … does not exist")`
-/// (`io-harness-0.83.0/src/skills.rs`), and `TaskContract::discover_skills`
+/// (`io-harness-0.86.0/src/skills.rs`), and `TaskContract::discover_skills`
 /// propagates it from `run.rs` at run start, before the first completion. A
 /// contract that named this directory unconditionally would therefore fail every
 /// turn of every operator who has never made one, which is almost all of them.
@@ -814,7 +814,7 @@ fn default_skills() -> Option<PathBuf> {
 ///
 /// **One expansion for two keys, applied after both have had their say.**
 /// io-harness substitutes `${env:…}`, `${file:…}` and `${cmd:…}` and nothing else
-/// (`substitute`, `io-harness-0.83.0/src/config.rs:3159` — there is no tilde
+/// (`substitute`, `io-harness-0.86.0/src/config.rs:3159` — there is no tilde
 /// branch anywhere in it, and 0.71.0 narrowed the forms rather than widening
 /// them: a plugin manifest now refuses all three), so a `~` an operator wrote in
 /// `[run] skills` or `[app.io-cli] skills`

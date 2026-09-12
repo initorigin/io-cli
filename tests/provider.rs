@@ -317,6 +317,7 @@ impl Provider for Fake {
                 kind,
                 status: None,
                 retry_after: None,
+                rate_limit: None,
                 message: format!("{} was asked and refused", self.label),
             }),
             None => Ok(CompletionResponse {

@@ -17,6 +17,7 @@ fn no_image_endpoint() -> Error {
             r#"{"error":{"message":"No endpoints found that support image input","code":404}}"#
                 .to_string(),
         retry_after: None,
+        rate_limit: None,
     }
 }
 
@@ -64,6 +65,7 @@ fn an_unrecognised_failure_is_the_harness_line_and_nothing_added() {
         status: Some(418),
         message: "the model is a teapot".to_string(),
         retry_after: None,
+        rate_limit: None,
     };
     assert_eq!(advice(&error), None);
     assert_eq!(said(&error), error.to_string());
@@ -96,6 +98,7 @@ fn the_recognised_failures_are_matched_on_what_they_say() {
             status: None,
             message: message.to_string(),
             retry_after: None,
+            rate_limit: None,
         };
         let advice = advice(&error).unwrap_or_else(|| panic!("{message:?} was not recognised"));
         assert!(

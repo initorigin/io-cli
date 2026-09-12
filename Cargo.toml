@@ -80,7 +80,7 @@ path = "src/lib.rs"
 # reads the `[features]` table of the io-harness version `Cargo.lock` pins and
 # holds those three to naming no `dep:`. The ten-name allowlist is a separate gate
 # in the same file, asserted in both directions.
-io-harness = { version = "0.83", features = [
+io-harness = { version = "0.86", features = [
     "media",
     "browser",
     "documents",

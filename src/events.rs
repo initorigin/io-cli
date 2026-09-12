@@ -47,6 +47,21 @@ use crate::theme::{Theme, Tone};
 /// not a list an operator reads, it is the transcript buried under one.
 const ROW: usize = 80;
 
+/// How many lines of a failed gate's own output the transcript draws before it
+/// says how many are left.
+///
+/// **A transcript bound and never a data bound.** io-harness has already cut the
+/// string to 4,000 characters from both ends by the time it arrives, so nothing
+/// here decides what is kept — only how much of it sits in the scrollback at
+/// once. The rest is counted aloud rather than dropped silently, and
+/// `io exec --json` forwards the whole bounded string either way.
+///
+/// Five, because the failure is almost always in the first line or two — a
+/// compiler names the file and the error, a test runner names the assertion —
+/// and a gate that fails every step would otherwise push the work that caused it
+/// off the top of the terminal.
+const GATE_OUTPUT_LINES: usize = 5;
+
 /// io-harness's tool names, and the verb an operator reads instead.
 ///
 /// **A table, and nothing behind it.** A name that is not here is printed
@@ -1755,7 +1770,20 @@ impl Events {
                     // separates a criterion that judged the work from one that
                     // never got to.
                     "gate_phase_failed" => ("the gate ran and did not pass", Tone::Warning),
-                    "gate_output" => ("the gate command printed output", Tone::Muted),
+                    // **`gate_output` as a sandbox *kind* draws nothing from
+                    // io-harness 0.86.0, because the variant of the same name
+                    // now says the same thing with the text in it.** This row
+                    // used to read "the gate command printed output" — a
+                    // sentence announcing that a diagnosis exists without
+                    // being it, which is precisely what the field report met
+                    // when a gate failed fourteen times in one run and the
+                    // stream carried `{"event":"sandbox","kind":"gate_output",
+                    // "backend":null}` and nothing else. `EventKind::GateOutput`
+                    // carries `output` and `exit_code`; keeping this line beside
+                    // it would print two rows for one fact, the first of them
+                    // contentless. Folded for the same reason `create`, `exec`
+                    // and `destroy` are.
+                    "gate_output" => return Vec::new(),
                     _ => return Vec::new(),
                 };
                 let mut text = said.to_string();
@@ -1775,6 +1803,79 @@ impl Events {
                         Span::styled(text, theme.style(Tone::Normal)),
                     ])
                 });
+                lines
+            }
+            // **What the gate actually printed, which until io-harness 0.86.0
+            // this interface could not say.** A criterion that ran and did not
+            // hold produced two events carrying no payload at all, so a session
+            // learned that verification failed and never why; the operator's
+            // first gate could fail permanently with the cause sitting in a
+            // `sandbox_events` row they had no reason to open.
+            //
+            // **The string is io-harness's and is not re-bounded here.** It
+            // arrives merged over both streams and already cut to 4,000
+            // characters kept from the head *and* the tail — a test runner puts
+            // the invocation at one end and the failure at the other, which is
+            // its reasoning and a better one than this module would have reached
+            // alone. What happens below is a transcript being narrow: the first
+            // few lines are drawn and the count of the rest is stated, so nothing
+            // is silently dropped. `io exec --json` forwards the whole of it.
+            //
+            // **An empty output is a real answer and says so.** A gate can fail
+            // having printed nothing, and a blank row would read as this module
+            // failing to fetch something rather than as the command having been
+            // silent.
+            //
+            // **`exit_code` is `None` when the command was killed by a signal or
+            // by a sandbox cap**, which is the case where there is no status to
+            // report rather than one that happens to be zero. It is named as a
+            // kill rather than given an invented number — the difference matters
+            // to an operator whose gate is being cut off by a limit they set.
+            //
+            // **`Tone::Warning` and never `Tone::Refused`**, for the reason the
+            // sandbox arm above sets out at length: a refusal in this transcript
+            // means the permission boundary stopped an act, and a criterion that
+            // ran and answered is the opposite of one whose program the policy
+            // would not run. The two need opposite responses from whoever reads
+            // them — fix the policy, or fix the work.
+            EventKind::GateOutput { output, exit_code } => {
+                let mut lines = self.flush_text();
+                lines.push(theme.notice(
+                    Tone::Warning,
+                    match exit_code {
+                        Some(code) => format!("the gate exited {code}"),
+                        None => "the gate was killed before it could exit".to_string(),
+                    },
+                ));
+
+                let printed: Vec<&str> = output.lines().collect();
+                if printed.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled(leader(separator), theme.style(Tone::Muted)),
+                        Span::styled("it printed nothing", theme.style(Tone::Muted)),
+                    ]));
+                    return lines;
+                }
+
+                for line in printed.iter().take(GATE_OUTPUT_LINES) {
+                    lines.push(Line::from(vec![
+                        Span::styled(leader(separator), theme.style(Tone::Muted)),
+                        Span::styled((*line).to_string(), theme.style(Tone::Normal)),
+                    ]));
+                }
+                let rest = printed.len().saturating_sub(GATE_OUTPUT_LINES);
+                if rest > 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(leader(separator), theme.style(Tone::Muted)),
+                        Span::styled(
+                            format!(
+                                "{rest} more line{} · `io exec --json` carries the whole of it",
+                                if rest == 1 { "" } else { "s" }
+                            ),
+                            theme.style(Tone::Muted),
+                        ),
+                    ]));
+                }
                 lines
             }
             // **The one place in this product where a contained command's egress

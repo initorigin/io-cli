@@ -599,9 +599,23 @@ fn every_event_this_release_renders_draws_in_ascii() {
             kind: "cap_hit".into(),
             backend: None,
         },
-        EventKind::Sandbox {
-            kind: "gate_output".into(),
-            backend: None,
+        // io-harness 0.86.0 — what the gate actually printed. Two renderings of
+        // one kind and both are swept, because they take different paths: a
+        // command that printed something takes the toned notice plus one muted
+        // leader per output line plus the elision row, and one that printed
+        // nothing takes the notice plus a single muted leader. The output text
+        // is another program's and is drawn verbatim, so the separators and the
+        // leader around it are the whole of what this arm can spell wrongly.
+        //
+        // The `Sandbox { kind: "gate_output" }` that used to sit here draws
+        // nothing as of this release and is no longer a line to sweep.
+        EventKind::GateOutput {
+            output: "error[E0308]: mismatched types\n  --> src/main.rs:4:5".into(),
+            exit_code: Some(101),
+        },
+        EventKind::GateOutput {
+            output: String::new(),
+            exit_code: None,
         },
         EventKind::Stalled,
         // 0.27.0 — the one silence that gained a line, and it carries the muted

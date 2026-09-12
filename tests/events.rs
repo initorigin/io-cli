@@ -2224,15 +2224,59 @@ fn a_gate_that_ran_and_did_not_pass_says_so_on_the_channel_a_session_is_watching
     assert!(phase.contains("ran and"), "{phase:?}");
     assert!(phase.contains("did not pass"), "{phase:?}");
 
-    let output = rendered(
+    // **The sandbox `gate_output` *kind* draws nothing from io-harness 0.86.0,
+    // and that is the release's fix rather than a line lost.** It used to commit
+    // "the gate command printed output" — a sentence announcing a diagnosis
+    // exists without being one, which is exactly what an operator met when a
+    // gate failed fourteen times in one run and the stream carried
+    // `{"event":"sandbox","kind":"gate_output","backend":null}` and nothing
+    // else. The variant of the same name below now says it with the text in it,
+    // so keeping both would print two rows for one fact, the first contentless.
+    let announced = rendered(
         &mut events,
         EventKind::Sandbox {
             kind: "gate_output".into(),
             backend: None,
         },
     );
-    assert!(!output.trim().is_empty(), "gate_output drew nothing");
-    assert!(output.contains("printed output"), "{output:?}");
+    assert!(
+        announced.trim().is_empty(),
+        "the contentless sandbox gate_output line is still drawn beside the one carrying the \
+         output, so one failed gate commits two rows: {announced:?}",
+    );
+
+    // And the kind that replaced it draws what the command actually printed,
+    // which is the whole of the diagnosis for a mis-set gate.
+    let output = rendered(
+        &mut events,
+        EventKind::GateOutput {
+            output: "python3: command not found".into(),
+            exit_code: Some(127),
+        },
+    );
+    assert!(
+        output.contains("python3: command not found"),
+        "the gate line does not carry what the command printed: {output:?}",
+    );
+    assert!(
+        output.contains("127"),
+        "the gate line does not carry the exit code: {output:?}",
+    );
+
+    // **A gate killed by a signal or a sandbox cap has no exit status**, and the
+    // line says so rather than inventing a number — the difference matters to an
+    // operator whose gate is being cut off by a limit they set.
+    let killed = rendered(
+        &mut events,
+        EventKind::GateOutput {
+            output: String::new(),
+            exit_code: None,
+        },
+    );
+    assert!(killed.contains("killed"), "{killed:?}");
+    // An empty output is a real answer and says so; a blank row would read as
+    // this interface failing to fetch something.
+    assert!(killed.contains("printed nothing"), "{killed:?}");
 
     // Neither event carries a backend and neither line may name one — the same
     // rule `cap_hit` and `destroy` are already held to.
@@ -2397,9 +2441,9 @@ fn the_gate_and_review_lines_survive_the_ascii_set_and_plain_mode() {
                 kind: "gate_phase_failed".into(),
                 backend: None,
             },
-            EventKind::Sandbox {
-                kind: "gate_output".into(),
-                backend: None,
+            EventKind::GateOutput {
+                output: "error: the diff does not compile".into(),
+                exit_code: Some(101),
             },
             EventKind::Reviewed {
                 passed: false,
@@ -2421,7 +2465,14 @@ fn the_gate_and_review_lines_survive_the_ascii_set_and_plain_mode() {
             said.contains("ran and did not pass"),
             "plain={plain}: {said:?}"
         );
-        assert!(said.contains("printed output"), "plain={plain}: {said:?}");
+        // The gate's own output is drawn through the same glyph set, so a
+        // compiler's message survives `--plain` and the ASCII set intact — it is
+        // the one line on this surface whose text comes from another program.
+        assert!(
+            said.contains("error: the diff does not compile"),
+            "plain={plain}: {said:?}",
+        );
+        assert!(said.contains("101"), "plain={plain}: {said:?}");
         assert!(
             said.contains("the diff does not build"),
             "plain={plain}: {said:?}",
