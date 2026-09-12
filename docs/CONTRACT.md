@@ -61,6 +61,21 @@ Two more things a script may depend on, both new in 0.41.0 and both exit codes r
   `io config set app.io-cli.gates.command -- python3 --version`. After `--` a single element
   containing a space is taken at its word, so a program path with a space stays expressible.
 
+**`io exec --json` ends with a `cost` line** (0.41.0). It is a JSON object like every other line
+in the stream, keyed by `"event": "cost"`, and it carries `total_cost_usd`, `unpriced_calls`,
+`calls_without_usage`, `calls` and `run_id`. `total_cost_usd` is **the same figure `/cost` reports
+for that run**, computed by the same two calls over the same rows rather than by a second
+implementation.
+
+**Read `unpriced_calls` beside the money or do not read the money.** A run with unpriced calls in
+it is reporting a **floor**, not a total — no model was recorded, or no price is entered for the
+one that was. `calls_without_usage` counts calls that reported no token usage at all.
+
+**There is deliberately no per-step `cost_usd`.** `EventKind::StepUsage` carries no
+`server_tool_requests`, which pricing charges for, so a figure derived from that event would
+under-report any step that used a provider's own server tool — and a knowingly-low money figure
+is worse than none. The accurate total is what ships.
+
 `io exec` additionally takes `--json`, `--sandbox <read-only|workspace-write|full-access>`,
 `--policy <workspace|read-only>` and `--provider <openrouter|anthropic|openai>`.
 **`--policy ask-writes` is refused**, because nothing headless can answer an approval.

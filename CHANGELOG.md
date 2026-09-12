@@ -16,7 +16,10 @@ surface stops being the thing that blocks you.
 - **A refusal that came from a *default* now asks instead of refusing.** This is on
   out of the box. When the agent is stopped by `policy.defaults` — the tier that
   applies when no rule matched — you get the approval overlay rather than a dead
-  end, and your answer holds for that call, for the session, or for good.
+  end. You answer it the way you answer any approval: `y` allows that one call,
+  `a` allows it for the rest of the session, `n` denies it. **There is no
+  write-it-down-for-good answer yet** — a remembered allowance lives in the
+  session and is gone when you leave it.
 
   **A refusal that came from a rule you wrote still refuses, silently and always.**
   A `[[policy.layers]]` deny is never escalated, never drawn and never asked, and
@@ -68,6 +71,17 @@ surface stops being the thing that blocks you.
 
 - **`[app.io-cli] escalate`**, the switch for the escalation above. Absent means
   on; it is the one key in this section whose absence is not "behave as before".
+
+- **`io exec --json` ends with a `cost` line.** The status bar has shown money
+  since 0.22.0 and `/cost` reports per run, session and install — and the headless
+  stream carried none of it, on the one surface where a budget signal matters most.
+  It carries `total_cost_usd`, `unpriced_calls`, `calls_without_usage` and `calls`,
+  and the total is `/cost`'s own figure for that run rather than a second
+  implementation of it. **Read `unpriced_calls` beside the money**: a run with
+  unpriced calls is reporting a floor, not a total. There is deliberately no
+  per-step figure — `step_usage` carries no `server_tool_requests`, which pricing
+  charges for, so one derived from it would under-report and a knowingly-low money
+  figure is worse than none.
 
 - **A failed gate says why.** io-harness 0.86.0 emits `gate_output` carrying the
   command's output and its exit code, and the transcript now quotes the first lines

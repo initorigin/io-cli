@@ -1028,6 +1028,31 @@ impl WithProvider for Headless {
             }
         };
 
+        // **What the run cost, as the last line of the stream (0.41.0).** The TUI
+        // status bar has carried a figure since 0.22.0 and `/cost` reports per
+        // run, per session and per install — and `io exec --json` carried none of
+        // it, on the one surface where a budget signal matters most. A sweep of a
+        // whole run's stream for `cost`, `usd` or `price` returned nothing.
+        //
+        // Read from the store after the run rather than accumulated from the
+        // event stream, which is what makes it equal `/cost`'s own figure by
+        // construction rather than by a second implementation that agrees on the
+        // day it is written. It cannot be done from the observer: `Store` is
+        // `!Sync`, and `EventKind::StepUsage` carries no `server_tool_requests`,
+        // so a per-line figure derived from the events would under-report any step
+        // that used a provider's own server tool. See `cost::spent`.
+        if self.args.json {
+            if let Some(spent) = crate::cost::spent(
+                &self.store,
+                result.run_id,
+                &crate::cost::table(&self.config),
+            ) {
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{spent}");
+                let _ = out.flush();
+            }
+        }
+
         // stdout is the data and stderr is everything else, so that
         // `io exec --json … | jq` needs no filtering and a plain run can be
         // captured with `$(…)` without catching a status line.

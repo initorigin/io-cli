@@ -61,6 +61,51 @@ fn shipped_prose() -> Vec<(String, String)> {
         .collect()
 }
 
+/// **No shipped page promises an answer that outlives the session.**
+///
+/// The escalation added in 0.41.0 offers exactly what every other approval offers:
+/// `y` for the call and `a` for the rest of the session, both held in memory. A
+/// third answer that writes a `[[policy.layers]]` rule into the user's own file was
+/// designed and is **not built**, and three pages said it was — this gate exists
+/// because the first draft of those pages shipped that claim and nothing caught it.
+///
+/// A permission the operator believes is written down and is not is the worst
+/// direction for this particular claim to be wrong in: they would expect to find it
+/// in a file, look, and not find it — or worse, assume a grant persists when the
+/// next session asks again.
+///
+/// The sweep pairs the escalation's own vocabulary with a persistence word, so an
+/// unrelated sentence about writing a configuration key is not a false positive.
+/// `CHANGELOG.md` is exempt as a diary, through [`shipped_prose`].
+///
+/// Sabotage: put "your answer holds for the call, the session, or for good" back
+/// into `docs/guide/limits.md` and this goes red.
+#[test]
+fn n7_no_shipped_page_promises_a_remembered_answer_that_is_written_down() {
+    const FOREVER: &[&str] = &["for good", "permanently", "for every future session"];
+
+    for (path, text) in shipped_prose() {
+        let lower = text.to_lowercase();
+        for paragraph in lower.split("\n\n") {
+            let about_asking = paragraph.contains("escalat")
+                || (paragraph.contains("approval") || paragraph.contains(" asks"))
+                    && paragraph.contains("answer");
+            if !about_asking {
+                continue;
+            }
+            for claim in FOREVER {
+                assert!(
+                    !paragraph.contains(claim),
+                    "{path} says a remembered answer lasts {claim:?}. It does not: `a` is held \
+                     in memory for the session and nothing io writes records it. A permission \
+                     an operator believes is written down and is not is the wrong direction for \
+                     this claim to be wrong in.\n\n{paragraph}",
+                );
+            }
+        }
+    }
+}
+
 /// One guide page, by slug.
 ///
 /// 0.30.2 moved the manual off the README and onto `docs/guide/`, and a needle

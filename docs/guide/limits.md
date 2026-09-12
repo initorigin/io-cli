@@ -192,7 +192,7 @@ io-harness's; io-cli holds no policy engine and evaluates nothing.
 
 | Where the refusal came from | What happens | Can you lift it? |
 |---|---|---|
-| `policy.defaults` — the tier that applies when **no rule matched** | **It asks.** The approval overlay opens, and your answer holds for the call, for the session, or for good | Yes, by answering |
+| `policy.defaults` — the tier that applies when **no rule matched** | **It asks.** The approval overlay opens: `y` allows that call, `a` allows it for the rest of the session, `n` denies it | Yes, by answering |
 | A `[[policy.layers]]` rule you wrote | **It refuses.** Silently, always. Nothing is drawn and nothing is asked | Only by editing the rule |
 | A path outside the workspace root | **It refuses**, and no setting anywhere lifts it | No |
 
