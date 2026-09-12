@@ -174,6 +174,22 @@ pub enum Answer {
     Once,
     /// This action and every later one like it, for the rest of the session.
     Session,
+    /// This action and every later one like it, **written down** (0.41.0).
+    ///
+    /// The same rule [`Answer::Session`] holds in memory, appended to a named
+    /// layer in the **user-scope** file through `configure::write` — so it is
+    /// there in the next session and in every one after it.
+    ///
+    /// **User scope or nowhere.** A `[[policy.layers]]` rule inside the workspace
+    /// is a rule a `git clone` hands to everybody and a rule the run's own agent
+    /// can write, which is the whole reason io-harness refuses a widening from a
+    /// workspace file. An operator whose only writable scope is the workspace is
+    /// refused with a sentence naming the user scope rather than written to.
+    ///
+    /// **Shown before it lands.** The exact rule is drawn and the text drawn is
+    /// the text written — a grant that outlives the moment it was reasonable is
+    /// only safe if the operator saw its shape, and `/policy` can take it back.
+    Always,
     /// No, with a reason the model can adapt to.
     Deny,
 }
@@ -182,13 +198,19 @@ impl Answer {
     /// In the order they are offered, least committal first. A reader moving
     /// rightwards is giving away more, which is the direction a permission
     /// surface should read in.
-    pub const ALL: [Answer; 3] = [Answer::Once, Answer::Session, Answer::Deny];
+    pub const ALL: [Answer; 4] = [Answer::Once, Answer::Session, Answer::Always, Answer::Deny];
 
     /// The key that chooses it directly.
+    ///
+    /// **`w` for the written one, and `n` stays last.** The letters are the words
+    /// rather than shortcuts for them, and `w` is what "write it down" starts
+    /// with; the alternative of moving `n` to make room would have changed the key
+    /// that denies, which is the one key an operator presses without reading.
     pub fn key(self) -> char {
         match self {
             Self::Once => 'y',
             Self::Session => 'a',
+            Self::Always => 'w',
             Self::Deny => 'n',
         }
     }
@@ -197,6 +219,7 @@ impl Answer {
         match self {
             Self::Once => "allow once",
             Self::Session => "allow this session",
+            Self::Always => "allow and write it down",
             Self::Deny => "deny",
         }
     }
@@ -206,6 +229,7 @@ impl Answer {
         match self {
             Self::Once => "allowed once",
             Self::Session => "allowed for this session",
+            Self::Always => "allowed, and written to your own configuration",
             Self::Deny => "denied",
         }
     }
@@ -227,7 +251,7 @@ const PAGE: usize = 8;
 ///
 /// A constant because two things need it to be the same string: the row that
 /// draws it, and the test that proves an ignored key is not ignored silently.
-pub const ONLY_THREE_KEYS: &str = "y, a or n chooses — enter answers";
+pub const ONLY_THREE_KEYS: &str = "y, a, w or n chooses — enter answers";
 
 /// An open question, and the answer being chosen.
 ///
@@ -855,7 +879,13 @@ fn fit_line(line: Line<'static>, width: usize, theme: &Theme) -> Line<'static> {
 pub fn decision(answer: Answer, act: Act, target: &str) -> Decision {
     match answer {
         Answer::Once => Decision::approve(),
-        Answer::Session => Decision::Approve {
+        // **`Always` decides the same thing `Session` does, here.** The written
+        // rule is a separate act with its own failure mode — a file that will not
+        // take it — and folding it into this function would make a *decision*
+        // depend on a write. The turn is allowed either way, and the driver is
+        // what writes; see `approval::written_rule` for what it writes and
+        // `configure::write` for the refusal that can come back.
+        Answer::Session | Answer::Always => Decision::Approve {
             modified: None,
             remember: vec![Rule {
                 act,
@@ -864,6 +894,53 @@ pub fn decision(answer: Answer, act: Act, target: &str) -> Decision {
             }],
         },
         Answer::Deny => Decision::deny(REFUSED_BY_OPERATOR),
+    }
+}
+
+/// The layer io writes a remembered answer into, and reads one back from.
+///
+/// **One name, so `/policy revoke` can tell io's rules from the operator's.** A
+/// rule in any other layer was written by a person, and io will not take it away —
+/// see `crate::policy::revocable`. Named for what it is rather than for what it
+/// permits, because the layer is an audit trail: `Policy::check` reports the layer
+/// on every verdict, so a refusal or an allowance six weeks later says where it
+/// came from.
+pub const REMEMBERED_LAYER: &str = "io-remembered";
+
+/// The TOML an `always` answer appends, as the operator is shown it.
+///
+/// **The text drawn and the text written are this one string.** A grant that
+/// outlives the moment it was reasonable is only safe if its shape was seen, and a
+/// preview composed separately from the write is a preview that can disagree with
+/// it — which is the shape this product has corrected on three other surfaces.
+///
+/// A full `[[policy.layers]]` table every time rather than an append into an
+/// existing one: `edit::append` puts an entry at the end of an array of tables,
+/// and io-harness merges layers of the same name, so N answers give N small tables
+/// that resolve to one layer. That is more lines in the file and no ambiguity about
+/// which bytes belong to which answer — which is what matters when the operator
+/// comes back to take one away.
+#[must_use]
+pub fn written_rule(act: Act, target: &str) -> String {
+    format!(
+        "name = \"{REMEMBERED_LAYER}\"\nrules = [{{ act = \"{}\", effect = \"allow\", pattern = \"{}\" }}]\n",
+        act_key(act),
+        target.replace('\\', "\\\\").replace('"', "\\\""),
+    )
+}
+
+/// The word io-harness spells an [`Act`] with in a configuration file.
+///
+/// Deliberately not [`act_word`], which is the English an operator reads in a
+/// sentence: `Act::Exec` is "run" there and `exec` here, and writing the prose word
+/// into a file would produce a rule io-harness cannot deserialize.
+#[must_use]
+pub fn act_key(act: Act) -> &'static str {
+    match act {
+        Act::Read => "read",
+        Act::Write => "write",
+        Act::Exec => "exec",
+        Act::Net => "net",
     }
 }
 

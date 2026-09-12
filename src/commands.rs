@@ -193,6 +193,19 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/config",
         "every setting, the value in force and the file that decided it",
     ),
+    // **`/policy` takes the product's last free slot (0.41.0).** `Configure` stood
+    // at nine of ten and this is what the slot was being kept for: it writes and
+    // un-writes `[[policy.layers]]` rules, which is a configuration file and
+    // nothing else. It is not `Session` — a rule it writes outlives the session by
+    // design — and it is not `Inspect`, which means asking the store a question.
+    //
+    // The group is full now. The next command to want a home re-files something
+    // that is in the wrong group, which is the rule this product wrote for itself
+    // in 0.25.0 and has followed four times since.
+    (
+        "/policy",
+        "what may be done without asking, what you have written down, and full access",
+    ),
     // Beside `/config` because they are the other two surfaces that write a file
     // the operator keeps, and because the scope question is the same one: three
     // files, and *which* one is half of every decision made here.
@@ -383,6 +396,22 @@ impl Group {
     }
 }
 
+/// The words `/policy` takes.
+///
+/// Spelled out rather than a `bool` and an `Option`, because the four are not
+/// degrees of one thing: two read, one removes, and one is the widest grant the
+/// product has. A reader of the driver's match should be able to see which is
+/// which without following a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyVerb {
+    /// Every `[[policy.layers]]` rule in force, with the layer that carries it.
+    List,
+    /// Take away a rule io wrote. Refuses anybody else's, by layer.
+    Revoke,
+    /// Run unconfined for the rest of the session, behind a confirmation.
+    FullAccess,
+}
+
 /// Which group each command belongs to.
 ///
 /// A second table rather than a third column on [`COMMANDS`], and the reason is
@@ -515,6 +544,9 @@ pub const GROUPS: &[(Group, &[&str])] = &[
         Group::Configure,
         &[
             "/config",
+            // The last free slot in the product, and what it was kept for: a
+            // surface that writes and un-writes `[[policy.layers]]` rules.
+            "/policy",
             "/theme",
             "/remember",
             "/memory",
@@ -1187,6 +1219,20 @@ pub enum Action {
     /// a turn can fan out — steering is on both since 0.17.0 — and a switch that
     /// guessed which one the operator meant would be wrong half the time.
     Contain(Option<bool>),
+    /// What may be done without asking, what is written down, and full access.
+    ///
+    /// **One command over three things that are one thing.** `/policy` with no
+    /// word reports: the posture in force, whether a default's refusal asks, and
+    /// every `[[policy.layers]]` rule the merged configuration declares with the
+    /// layer that carries it. `list` is the same listing on its own. `revoke`
+    /// takes away a rule **io wrote** — see [`crate::policy::revocable`] for why
+    /// it will not touch anybody else's. `full-access` is the widest grant in the
+    /// product and goes through a confirmation.
+    ///
+    /// `None` reports rather than doing anything, for the reason `/contain` and
+    /// `/plan` report: three of the four words change what the agent may do, and a
+    /// bare word that guessed which would be wrong most of the time.
+    Policy(Option<PolicyVerb>),
     /// Make later turns propose a plan before they work, stop doing so, or say
     /// which it is now.
     ///
@@ -2440,6 +2486,16 @@ pub fn parse(input: &str, keys: &Keys, theme: &Theme) -> Action {
         // `on` / `off` / nothing. Nothing REPORTS rather than toggles, because
         // this switch changes what a turn is — a blind toggle would be a coin
         // flip between a turn that can fan out and one that does the work itself.
+        // **Four words, and an unrecognised one REPORTS rather than guesses.** A
+        // near miss on `revoke` must not become `full-access`, which is the widest
+        // grant in the product — so anything that is not one of the four resolves
+        // to the report, exactly as a bare `/policy` does.
+        "policy" | "permissions" => match input.split_whitespace().nth(1) {
+            Some("list") | Some("rules") => Action::Policy(Some(PolicyVerb::List)),
+            Some("revoke") | Some("forget") => Action::Policy(Some(PolicyVerb::Revoke)),
+            Some("full-access") | Some("full") => Action::Policy(Some(PolicyVerb::FullAccess)),
+            _ => Action::Policy(None),
+        },
         "contain" | "containment" => match input.split_whitespace().nth(1) {
             Some("on") | Some("yes") => Action::Contain(Some(true)),
             Some("off") | Some("no") => Action::Contain(Some(false)),
@@ -2841,6 +2897,10 @@ mod mid_turn_tests {
                 "/steer",
                 "/compact",
                 "/commit",
+                // 0.41.0. Refused mid-turn for the reason `/config` is: it
+                // writes a configuration file, and a turn in flight holds the
+                // `&mut Session` the write would be read back into.
+                "/policy",
                 "/remember",
                 "/memory",
                 "/skills",

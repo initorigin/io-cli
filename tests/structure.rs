@@ -357,9 +357,13 @@ fn f14_no_arrow_key_writes_a_configuration_file() {
          already existed one descent below",
     );
 
+    // **Twenty-one from 0.41.0.** `/policy revoke` is the new door and it is
+    // confirmed the way every other one is: the rule is drawn on a picker row and
+    // the write happens on the row being chosen, never on a keystroke that merely
+    // moved a marker.
     assert_eq!(
         text.matches("io_cli::configure::write(").count(),
-        20,
+        21,
         "the driver's configuration writes moved. Each one is a confirmed door — see \
          this test's own documentation for the nineteen and what confirms them — so a \
          new one is either a door that needs naming there or a write on a keystroke",

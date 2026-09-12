@@ -187,9 +187,9 @@ product had and withheld.
 than how harmless it looks.** A command that reassigns the session or the
 provider, writes the store or a configuration file, or submits a turn of its own
 is refused: `/exit`, `/setup`, `/model`, `/resume`, `/fork`, `/commit`,
-`/remember`, `/memory`, `/skills`, `/mcp`, `/provider`, `/plugin`, `/import`,
-`/profile`, `/effort`, `/contain`, `/undo`, `/plan`, `/clear`, `/store`,
-`/export`, `/gates`, and a `!` line.
+`/policy`, `/remember`, `/memory`, `/skills`, `/mcp`, `/provider`, `/plugin`,
+`/import`, `/profile`, `/effort`, `/contain`, `/undo`, `/plan`, `/clear`,
+`/store`, `/export`, `/gates`, and a `!` line.
 
 **`/config` joined the first list in 0.33.0, and only in its bare form.** Through
 0.32.0 it was refused in every form, because the bare list carried a row that

@@ -4405,6 +4405,56 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         // `Config::discover` and undoes the write if io-harness
                         // refuses it, so a section this crate composed wrongly
                         // cannot leave a session unable to start.
+                        // **Only io's own rules reach this list**, so the act is a
+                        // removal and never a judgement about whether it may be
+                        // removed — `policy::revocable` made that decision when the
+                        // picker was built, and re-deciding here would be a second
+                        // opinion about the same question.
+                        Pick::PolicyRevoke(rules) => {
+                            match rules.get(index) {
+                                None => {
+                                    app.record(Tone::Muted, "that row is not a rule".to_string())
+                                }
+                                Some(rule) => {
+                                    // Removed from the user scope, which is the only
+                                    // scope an `always` answer writes into — so a
+                                    // rule io wrote is a rule io can find.
+                                    let edit = io_cli::edit::Edit::remove(format!(
+                                        "policy.layers[{}]",
+                                        index
+                                    ));
+                                    match io_cli::configure::write(
+                                        session.root(),
+                                        io_harness::config::Scope::User,
+                                        &[edit],
+                                    ) {
+                                        Ok(()) => app.record(
+                                            Tone::Muted,
+                                            format!(
+                                                "forgotten: {} — the next act of that kind asks \
+                                                 again",
+                                                rule.line(),
+                                            ),
+                                        ),
+                                        Err(error) => app.record(
+                                            Tone::Error,
+                                            format!("the rule was not removed: {error}"),
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                        Pick::FullAccess => {
+                            if io_cli::store::acts(index) {
+                                app.set_full_access(true);
+                                app.record(
+                                    Tone::Warning,
+                                    "full access: every act allowed and the sandbox out of the \
+                                     way, until this session ends. Nothing was written to a file"
+                                        .to_string(),
+                                );
+                            }
+                        }
                         Pick::ContainDefault(caps) => {
                             if io_cli::store::acts(index) {
                                 let inline = format!(
@@ -6307,6 +6357,95 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // At an idle prompt. Mid-turn the key is the way in, since the
                 // driver refuses a slash command while a run is in flight.
                 Action::Fleet => app.toggle_fleet(),
+                // **The permission surface, and the other half of the `always`
+                // answer.** A grant that can be written from an approval and only
+                // un-written by editing a file is a trap, so the same release that
+                // added the writing added the taking back.
+                Action::Policy(verb) => {
+                    let rules = io_cli::policy::written(&config);
+                    match verb {
+                        // A bare `/policy` reports everything at once, because the
+                        // three facts are one question: what may be done without
+                        // asking. Listing is the same answer without the preamble.
+                        None | Some(io_cli::commands::PolicyVerb::List) => {
+                            if verb.is_none() {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "posture {} · a default's refusal {}",
+                                        app.status.policy.clone().unwrap_or_default(),
+                                        match app.escalates() {
+                                            true => "asks",
+                                            false => "refuses",
+                                        },
+                                    ),
+                                );
+                            }
+                            if rules.is_empty() {
+                                app.record(
+                                    Tone::Muted,
+                                    "no [[policy.layers]] rule is in force; the tier defaults \
+                                     decide everything"
+                                        .to_string(),
+                                );
+                            }
+                            for rule in &rules {
+                                // The layer is drawn on every row, not only on the
+                                // ones io wrote: `Policy::check` attributes a
+                                // verdict to a layer, so this is the column that
+                                // makes a later refusal traceable to a line.
+                                app.record(
+                                    Tone::Muted,
+                                    format!("{}  ({})", rule.line(), rule.layer),
+                                );
+                            }
+                        }
+                        Some(io_cli::commands::PolicyVerb::Revoke) => {
+                            let mine = io_cli::policy::revocable(&config);
+                            if mine.is_empty() {
+                                app.record(
+                                    Tone::Muted,
+                                    format!(
+                                        "io has written no rule down. Answering an approval with \
+                                         `w` writes one into the `{}` layer, and this takes it \
+                                         back",
+                                        io_cli::approval::REMEMBERED_LAYER,
+                                    ),
+                                );
+                            } else {
+                                let rows = mine
+                                    .iter()
+                                    .map(|rule| Row::new(rule.line()))
+                                    .collect::<Vec<_>>();
+                                picker = Some((
+                                    Picker::new("Which rule should io forget?", rows),
+                                    Pick::PolicyRevoke(mine),
+                                ));
+                            }
+                        }
+                        // **Behind a confirmation, always.** It is the widest grant
+                        // in the product and the one thing that reaches a call the
+                        // sandbox refuses structurally; `--full-access` at least
+                        // required the operator to type it, and a slash command is
+                        // two keystrokes from a typo.
+                        Some(io_cli::commands::PolicyVerb::FullAccess) => {
+                            picker = Some((
+                                Picker::new(
+                                    "Run unconfined for the rest of this session?",
+                                    vec![
+                                        Row::new(io_cli::store::LEAVE_IT),
+                                        Row::with_detail(
+                                            "yes, allow everything",
+                                            "every act allowed and the sandbox out of the way, \
+                                             until this session ends. Nothing is written to a file",
+                                        ),
+                                    ],
+                                ),
+                                Pick::FullAccess,
+                            ));
+                        }
+                    }
+                }
                 // The policy the NEXT turn would run under, built exactly the way
                 // the completion above and the turn below build it — so what may
                 // be attached and what the agent may read are the same set by
@@ -9865,6 +10004,16 @@ enum Pick {
     /// confirmation below follows, and for the same reason: a value rebuilt on
     /// acceptance is a value nobody agreed to.
     ContainDefault(io_harness::Containment),
+    /// The rules `/policy revoke` offered, in the order they were drawn.
+    ///
+    /// Carried rather than re-read on the keystroke, for the reason the memory
+    /// pickers carry their notes: the list was built from a configuration that a
+    /// `/config` write or a reload could have moved underneath it, and a row index
+    /// read back against a freshly-read list would take away a rule the operator
+    /// was not looking at.
+    PolicyRevoke(Vec<io_cli::policy::Written>),
+    /// Confirmation for `/policy full-access`. Row 0 is the way out.
+    FullAccess,
     /// A confirmation over one export, carrying the bytes it will write.
     ///
     /// The content is built before the confirmation and carried rather than
