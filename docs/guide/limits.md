@@ -192,7 +192,7 @@ io-harness's; io-cli holds no policy engine and evaluates nothing.
 
 | Where the refusal came from | What happens | Can you lift it? |
 |---|---|---|
-| `policy.defaults` — the tier that applies when **no rule matched** | **It asks.** The approval overlay opens: `y` allows that call, `a` allows it for the rest of the session, `n` denies it | Yes, by answering |
+| `policy.defaults` — the tier that applies when **no rule matched** | **It asks.** The overlay opens: `y` allows that call, `a` allows it for the rest of the session, `w` allows it and writes a rule into your own configuration, `n` denies it | Yes, by answering |
 | A `[[policy.layers]]` rule you wrote | **It refuses.** Silently, always. Nothing is drawn and nothing is asked | Only by editing the rule |
 | A path outside the workspace root | **It refuses**, and no setting anywhere lifts it | No |
 
@@ -210,6 +210,19 @@ change it**, which is the surface that exists for exactly this.
 
 Turn the asking off with `[app.io-cli] escalate = false`, which restores 0.40.0's
 behaviour exactly.
+
+**A `w` answer writes to your user scope and never a workspace file.** A
+`[[policy.layers]]` rule inside the workspace is one a `git clone` hands to
+everybody and one this run's own agent can write — which is why io-harness refuses
+a widening from a workspace file in the first place. If the user scope is not
+writable you are told, and the allowance still holds for the session.
+
+**`/policy revoke` un-writes what io wrote, and nothing else.** Every rule it
+offers sits in the `io-remembered` layer, which only a `w` answer puts a rule into.
+A rule in any other layer is yours — written deliberately, in an editor, very
+possibly to *deny* something — and io names the layer instead of offering to delete
+it. A permission surface that can remove a permission boundary is not one worth
+having.
 
 ## What the pin brings, and what it still does not
 

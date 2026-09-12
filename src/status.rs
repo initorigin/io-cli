@@ -2522,15 +2522,36 @@ pub fn committed(
     // multiply out — `39% of a 24,000 window` on a run assembling inside 103,424.
     // The page and the line were made one expression for exactly this reason and
     // this is the third surface asking the same question.
+    // **And where the number came from, when it did not come from a run (0.41.0).**
+    // Before the first request nothing has announced a ceiling, so this falls back
+    // to the contract's — which is io-harness's `FALLBACK_WINDOW` for a provider
+    // that has never been asked. A field pass read `the window is 24.0k` here while
+    // every run of the same session emitted `context_ceiling` with `max_tokens
+    // 1171456`: two numbers forty-eight times apart, both true of different
+    // moments, with nothing on either surface saying which was which.
+    //
+    // io-cli cannot supply the model's real window before a request — it holds no
+    // catalogue, and `Provider::context_window` answers only from one a provider
+    // has already fetched on that instance. What it can do is stop presenting a
+    // fallback as the answer. The word is io-harness's own: `source: "fallback"` is
+    // what the event carries for the same number.
+    let announced = status.ceiling.is_some();
     let window = match status.ceiling.or(Budgets::in_force(contract).window) {
         Some(tokens) => format_tokens(tokens),
         None => "unknown".to_string(),
     };
     facts.push((
         "context".into(),
-        match status.context {
-            Some(fill) => format!("{fill}% of a {window} window"),
-            None => format!("nothing assembled yet {dash} the window is {window}"),
+        match (status.context, announced) {
+            (Some(fill), _) => format!("{fill}% of a {window} window"),
+            (None, true) => format!("nothing assembled yet {dash} the window is {window}"),
+            // The fallback case, marked. An operator comparing this against a
+            // run's own `context_ceiling` now has the word that explains the gap
+            // rather than two contradicting numbers.
+            (None, false) => format!(
+                "nothing assembled yet {dash} the window is {window} (fallback, until the first \
+                 request)"
+            ),
         },
     ));
 

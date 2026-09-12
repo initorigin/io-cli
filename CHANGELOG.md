@@ -16,10 +16,9 @@ surface stops being the thing that blocks you.
 - **A refusal that came from a *default* now asks instead of refusing.** This is on
   out of the box. When the agent is stopped by `policy.defaults` — the tier that
   applies when no rule matched — you get the approval overlay rather than a dead
-  end. You answer it the way you answer any approval: `y` allows that one call,
-  `a` allows it for the rest of the session, `n` denies it. **There is no
-  write-it-down-for-good answer yet** — a remembered allowance lives in the
-  session and is gone when you leave it.
+  end. You answer it the way you answer any approval, with one more answer than
+  before: `y` allows that one call, `a` allows it for the rest of the session, `w`
+  allows it **and writes a rule into your own configuration**, `n` denies it.
 
   **A refusal that came from a rule you wrote still refuses, silently and always.**
   A `[[policy.layers]]` deny is never escalated, never drawn and never asked, and
@@ -72,6 +71,32 @@ surface stops being the thing that blocks you.
 - **`[app.io-cli] escalate`**, the switch for the escalation above. Absent means
   on; it is the one key in this section whose absence is not "behave as before".
 
+- **`/policy` — what may be done without asking, and what you have written down.**
+  Bare, it reports the posture, whether a default's refusal asks, and every
+  `[[policy.layers]]` rule in force with the layer carrying it. `list` is that
+  listing alone, `revoke` takes back a rule **io wrote**, and `full-access` is the
+  session-wide grant behind a confirmation. It takes the product's last free
+  command slot.
+
+- **An approval can be answered `w` — allow and write it down.** It appends one
+  `{ act, effect = "allow", pattern }` rule to a layer in your **user-scope** file,
+  so the permission survives the session. A workspace file is never written: that
+  is the file a `git clone` hands to everybody and the one this run's own agent can
+  write. `/policy revoke` takes it back, and **io will only un-write what io
+  wrote** — a rule in any other layer is yours, very possibly a deny, and is
+  refused with the layer named.
+
+- **`Ctrl+E` puts the running step's full text into the scrollback.** The moment
+  that detail is worth reading is while the step is running, which is exactly when
+  typing `/expand` means opening the palette over a moving screen. Rebindable like
+  every other action, and refused if you point it at `Ctrl+C`.
+
+- **A finished child says what it concluded.** A fan-out told the parent only that
+  a child had succeeded — one observed parent said the sub-agents "returned no
+  message of their own" and redid both children's work. `/fleet` now shows each
+  finished child's last word under it, and a child that finished silently says so
+  rather than looking like one still being read.
+
 - **`io mcp get` inspects.** It printed the single line `list` prints; it now shows
   the command, its arguments, and which environment variable each `env` entry
   reads. **No value is ever echoed** — a `${env:NAME}` is shown as the reference it
@@ -110,6 +135,23 @@ surface stops being the thing that blocks you.
   fifteen minutes, every one a paid completion. `retries = 1` now means two
   attempts, and the run says which number ran out. The exit code is unchanged: a
   run whose gate failed still exits `6`.
+
+- **`/status` says when its window figure is a fallback.** Before the first
+  request io has no announced ceiling and falls back to io-harness's, which read as
+  `the window is 24.0k` while every run of the same session reported 1,171,456 —
+  two numbers forty-eight times apart with nothing saying which was which. The
+  fallback is now labelled, and the label goes the moment a run announces a real
+  one.
+
+- **A server's own stderr is readable instead of polluting io's.** io-harness
+  0.86.0 stopped letting an MCP server's banner onto io's error channel — it was
+  landing in the middle of CI logs — and keeps it as a store row. `io mcp get`
+  shows it, under the server that wrote it.
+
+- **The one refusal nothing can lift now names its cure.** A path inside io's own
+  configuration home is refused before any policy is consulted, so no posture, no
+  rule and no sandbox mode lifts it — `--full-access` included. It says `use
+  /config to change it`, which is the surface that exists for exactly that.
 
 - **A slash command typed in full runs on the first `Enter`.** Typing `/cost` and
   pressing `Enter` accepted the completion — replacing `/cost` with `/cost` — and

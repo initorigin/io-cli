@@ -3332,3 +3332,49 @@ fn the_splash_card_dates_its_facts_rather_than_contradicting_the_status_line() {
         "a caption over an empty table is a heading for nothing: {bare:?}",
     );
 }
+
+/// **A window nobody has announced says it is a fallback.**
+///
+/// A field pass read `context: nothing assembled yet — the window is 24.0k` off
+/// this page while every run of the same session emitted `context_ceiling` with
+/// `max_tokens 1171456`. Both numbers were true of different moments — before the
+/// first request io-cli has no ceiling and falls back to io-harness's — and
+/// nothing on either surface said which was which, so the two read as a
+/// forty-eight-fold contradiction.
+///
+/// io-cli cannot supply the model's real window before a request: it holds no
+/// catalogue, and `Provider::context_window` answers only from one a provider has
+/// already fetched on that instance. What it can do is stop presenting a fallback
+/// as the answer, in io-harness's own word for it.
+///
+/// **And stop saying it the moment a run announces one**, which is the half that
+/// keeps the note from becoming furniture.
+///
+/// Sabotage: draw the marker unconditionally and the second assertion fails,
+/// because a real announced ceiling would then be labelled a guess.
+#[test]
+fn f6_a_window_no_run_has_announced_is_marked_as_a_fallback() {
+    let fixture = fixture();
+    let mut app = App::new(DARK, "opus-5");
+
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+    assert!(
+        page.contains("fallback"),
+        "the window shown before the first request is io-harness's fallback and \
+         does not say so, which is what made it read as a contradiction of the \
+         run's own `context_ceiling`:\n{page}",
+    );
+
+    // A run announces one: the marker goes, because the number is now the model's.
+    app.status.ceiling = Some(1_171_456);
+    let page = committed(&app, &fixture, None, &DARK, ROOMY).join("\n");
+    assert!(
+        !page.contains("fallback"),
+        "an announced ceiling is still called a fallback, which makes the note \
+         noise rather than an explanation:\n{page}",
+    );
+    assert!(
+        page.contains("1171.5k"),
+        "the announced ceiling is not the number drawn:\n{page}",
+    );
+}
