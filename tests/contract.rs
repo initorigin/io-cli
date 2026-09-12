@@ -2170,12 +2170,16 @@ fn f5_a_max_steps_a_file_named_beats_the_gated_cap() {
 fn n3_the_key_catalogue_grows_only_when_a_release_says_so() {
     let through_0_39_0 = 37;
     let added_by_0_40_0 = 13;
-    // **0.41.0 adds exactly one: `app.io-cli.escalate`.** It is the switch for the
-    // permission escalation, and it is the one key in this section whose absence
-    // means *on* rather than "behave as the release before". A release that grew
-    // this list by more than it said would be changing what an operator has to
-    // know without telling them, which is what this number is for.
-    let added_by_0_41_0 = 1;
+    // **0.41.0 adds four.** `app.io-cli.escalate` is the switch for the permission
+    // escalation, and it is the one key in this section whose absence means *on*
+    // rather than "behave as the release before". The other three are
+    // `provider.kind`, `provider.model` and `provider.base_url`, which are
+    // **readable and not writable** — `configure::READ_ONLY` names them and
+    // `source_for` refuses a write on each, so they add a row an operator can ask
+    // about without adding one they have to decide. A release that grew this list
+    // by more than it said would be changing what an operator has to know without
+    // telling them, which is what this number is for.
+    let added_by_0_41_0 = 4;
     assert_eq!(
         io_cli::configure::CATALOGUE.len(),
         through_0_39_0 + added_by_0_40_0 + added_by_0_41_0,

@@ -254,7 +254,7 @@ async fn run(report: &mut Vec<String>) -> Result<u8, String> {
         for line in report.drain(..) {
             eprintln!("{line}");
         }
-        return io_cli::exec::main(args, config, root, cli.model).await;
+        return io_cli::exec::main(args, config, root, cli.model, cli.sandbox).await;
     }
 
     // **`io acp` leaves here too, and it is the strictest of the headless doors.**
@@ -10268,7 +10268,16 @@ async fn manage_main(
     // `plan` answering `None` means.
     match &request {
         io_cli::manage::Request::Mcp(io_cli::manage::McpVerb::List) => {
-            for server in io_cli::servers::servers(config, &io_cli::servers::Observed::default()) {
+            let listed = io_cli::servers::servers(config, &io_cli::servers::Observed::default());
+            // **An empty listing says so, on stderr.** It printed nothing at all —
+            // indistinguishable, at a terminal, from a verb that hung, a
+            // configuration that failed to load, or a binary that did not run. The
+            // sentence goes to stderr rather than stdout so that a script reading
+            // the rows still reads zero rows, which is the answer it wanted.
+            if listed.is_empty() {
+                eprintln!("io: no servers configured");
+            }
+            for server in listed {
                 // **A fourth column, for the reason `plugin list` grew a third.**
                 // io-harness 0.70.0 honours `enabled` before anything is spawned,
                 // dialled or even checked against the policy, so a server switched
@@ -10297,17 +10306,38 @@ async fn manage_main(
                 .find(|server| &server.id == id);
             match found {
                 None => return Err(format!("no configuration file in force declares {id}")),
-                Some(server) => println!(
-                    "{}\t{}\t{}\t{}",
-                    server.id,
-                    server.transport,
-                    server.decided.word(),
-                    if server.enabled {
-                        "enabled"
-                    } else {
-                        io_cli::servers::DISABLED
-                    },
-                ),
+                Some(server) => {
+                    // The row `list` prints, first, so a reader who piped one verb
+                    // into the other still sees the shape they were reading.
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        server.id,
+                        server.transport,
+                        server.decided.word(),
+                        if server.enabled {
+                            "enabled"
+                        } else {
+                            io_cli::servers::DISABLED
+                        },
+                    );
+                    // **And then what makes this an inspection rather than a second
+                    // copy of `list`.** The declaration is re-read from the
+                    // configuration rather than carried on the view, because the
+                    // view is what a *panel* needs and this is the one verb whose
+                    // whole job is the detail under it. No value is echoed — see
+                    // `servers::detail`.
+                    if let Some(path) = server.decided.path() {
+                        println!("\tdeclared in\t{}", path.display());
+                    }
+                    for declared in config.mcp_servers() {
+                        if &declared.id != id {
+                            continue;
+                        }
+                        for (label, value) in io_cli::servers::detail(declared) {
+                            println!("\t{label}\t{value}");
+                        }
+                    }
+                }
             }
         }
         io_cli::manage::Request::Plugin(io_cli::manage::PluginVerb::List) => {

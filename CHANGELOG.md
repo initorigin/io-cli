@@ -72,6 +72,18 @@ surface stops being the thing that blocks you.
 - **`[app.io-cli] escalate`**, the switch for the escalation above. Absent means
   on; it is the one key in this section whose absence is not "behave as before".
 
+- **`io mcp get` inspects.** It printed the single line `list` prints; it now shows
+  the command, its arguments, and which environment variable each `env` entry
+  reads. **No value is ever echoed** — a `${env:NAME}` is shown as the reference it
+  is, and a literal somebody pasted into their configuration reads
+  `set (value not shown)` rather than landing in a scrollback or a CI log.
+
+- **`provider.kind`, `provider.model` and `provider.base_url` are readable keys.**
+  `io config get provider.model` answered `no such key`, so a script had no way to
+  ask which model was configured. They are **read-only**: `/provider` edits the
+  entry and `-m` overrides the model for one run, and a `config set` on any of the
+  three is refused with a message naming `/provider`.
+
 - **`io exec --json` ends with a `cost` line.** The status bar has shown money
   since 0.22.0 and `/cost` reports per run, session and install — and the headless
   stream carried none of it, on the one surface where a budget signal matters most.
@@ -98,6 +110,24 @@ surface stops being the thing that blocks you.
   fifteen minutes, every one a paid completion. `retries = 1` now means two
   attempts, and the run says which number ran out. The exit code is unchanged: a
   run whose gate failed still exits `6`.
+
+- **`--sandbox` is accepted on either side of the subcommand.** `-C`, `-m`,
+  `--profile` and `--plain` all were; this one was not, so
+  `io --sandbox full-access exec "…"` failed while every neighbouring flag worked.
+
+- **Every subcommand's `--help` names its verbs.** `io mcp --help` documented the
+  global options at length and never named `add`, `list`, `get`, `probe` or the
+  rest, so the only way to find one was to type a wrong word and read the error.
+  The same for `io plugin` and `io skill`.
+
+- **`io mcp list` with nothing configured says so** instead of printing nothing at
+  all, which at a terminal was indistinguishable from a verb that hung. The
+  sentence goes to stderr, so a script still reads zero rows.
+
+- **`io config unset` takes the section header with the last key in it.** An
+  emptied `[app.io-cli.gates]` is not neutral — a gates section that names no kind
+  is *refused* rather than read as "no gate" — so the leftover header turned a key
+  you removed into a configuration that would not resolve.
 
 - **The contentless gate line is gone.** It read "the gate command printed output"
   — a sentence announcing that a diagnosis exists without being one — and it is

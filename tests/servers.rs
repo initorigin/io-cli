@@ -1333,3 +1333,61 @@ fn f10_the_driver_writes_into_the_scope_the_lookup_found() {
          on, so the verb cannot go dead by either half being retyped",
     );
 }
+
+/// **`io mcp get` shows a reference and never a value.**
+///
+/// This is the surface most likely to be asked to print a credential: an MCP
+/// server's `env` table is where a token goes, and an HTTP server's headers are
+/// where an `Authorization` goes. io-cli reads no credential anywhere, and the
+/// inspection has to keep that true — a value echoed here lands in a terminal, a
+/// scrollback and a CI log at once.
+///
+/// `${env:NAME}` is a *name*, so it is drawn whole: it is the form `/import`
+/// writes and the thing an operator needs to see to know which variable to export.
+/// Anything else is somebody's literal and is reported as set without being shown.
+///
+/// Sabotage: return the value unchanged from `servers::reference` and the last two
+/// assertions fail together.
+#[test]
+fn f9_an_inspection_shows_a_reference_and_never_a_secret() {
+    // The transport is built by hand: `McpServer` publishes no `with_env`, and the
+    // env table is the whole subject of this test.
+    let mut stdio = io_harness::McpServer::stdio("semlith", "semlith");
+    stdio.transport = io_harness::McpTransport::Stdio {
+        command: "semlith".into(),
+        args: vec!["--store".into(), "/tmp/store".into(), "mcp".into()],
+        env: BTreeMap::from([
+            ("TOKEN".to_string(), "${env:SEMLITH_TOKEN}".to_string()),
+            ("PASTED".to_string(), "sk-a-real-looking-secret".to_string()),
+        ]),
+    };
+
+    let rows = servers::detail(&stdio);
+    let rendered: String = rows
+        .iter()
+        .map(|(label, value)| format!("{label}\t{value}\n"))
+        .collect();
+
+    assert!(
+        rendered.contains("command\tsemlith"),
+        "the command is not shown: {rendered}",
+    );
+    assert!(
+        rendered.contains("--store"),
+        "the arguments are not shown: {rendered}",
+    );
+    assert!(
+        rendered.contains("${env:SEMLITH_TOKEN}"),
+        "a reference is what an operator needs and it is not shown: {rendered}",
+    );
+    assert!(
+        !rendered.contains("sk-a-real-looking-secret"),
+        "a literal value was echoed into the inspection, which puts it in a \
+         terminal, a scrollback and a CI log at once: {rendered}",
+    );
+    assert!(
+        rendered.contains("PASTED") && rendered.contains("not shown"),
+        "a literal must still be reported as set, or an operator cannot tell it \
+         from an absent one: {rendered}",
+    );
+}

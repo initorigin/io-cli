@@ -53,6 +53,22 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub full_access: bool,
 
+    // **`global` as of 0.41.0, which is the whole of the change.** It sat on
+    // `Exec` alone, so `io --sandbox full-access exec "…"` was refused while
+    // `io --plain exec "…"` and `io -C dir exec "…"` worked — a flag whose
+    // acceptance depends on which side of a word it is typed, which is what the
+    // note on `Cli::dir` above calls a flag that works only on its author's
+    // machine. Reachable on either side now, and still meaningless to a
+    // subcommand that opens no run; clap accepts it there and nothing reads it,
+    // exactly as it accepts `-m` on `io config list`.
+    /// Where a command this run executes may write. Defaults to `[sandbox]`.
+    ///
+    /// Not the same axis as `--policy`: this is where the sandbox lets a command
+    /// write, `--policy` is what the agent may attempt at all. They share the word
+    /// `read-only` and mean different things by it.
+    #[arg(long, value_enum, value_name = "MODE", global = true)]
+    pub sandbox: Option<Sandbox>,
+
     /// A named profile from the configuration file, for this run only.
     ///
     /// `[profile.<name>]` is io-harness's own — a profile body is the file
@@ -120,17 +136,32 @@ pub enum Command {
     /// Add, list, inspect, change or remove an MCP server, without opening a
     /// session.
     ///
+    /// Verbs: `add`, `list`, `get`, `edit`, `enable`, `disable`, `probe`, `serve`,
+    /// `remove`.
+    ///
     /// For example: `io mcp add semlith -- semlith --store <path> mcp` declares a
     /// server io starts itself, and `io mcp probe semlith` goes and checks that it
     /// answers.
+    //
+    // **The verbs are named here because this is the only page that prints.**
+    // `Manage` carries one `trailing_var_arg` field, so clap has no subcommand
+    // list to enumerate and `io mcp --help` documented the global options at
+    // length while never naming a single verb — the only way to discover one was
+    // to type a wrong word and read the refusal. `tests/manage.rs` holds this
+    // line and `manage::verbs` to naming the same set, so the two cannot drift.
     Mcp(Manage),
     /// Add, list, search for or remove a capability bundle, and manage the
     /// marketplaces bundles come from, without opening a session.
+    ///
+    /// Verbs: `add` (also spelled `install`), `list`, `search`, `remove`,
+    /// `marketplace`.
     ///
     /// For example: `io plugin search review` prints one line per bundle any
     /// marketplace holds, and its first field is what `io plugin add` takes.
     Plugin(Manage),
     /// Read or write one configuration key, without opening a session.
+    ///
+    /// Verbs: `get`, `set`, `unset`, `list`.
     ///
     /// For example: `io config get app.io-cli.theme` says what a key is set to and
     /// which file decided it, and `io config set app.io-cli.theme dark` changes it.
@@ -149,6 +180,8 @@ pub enum Command {
     /// an unattended run has nobody to ask.
     Acp,
     /// Install, list or remove a skill, without opening a session.
+    ///
+    /// Verbs: `add`, `list`, `remove`.
     ///
     /// For example: `io skill add ./reviewer.md` copies one skill file into io's
     /// home, and `io skill list` names every skill installed there.
@@ -232,15 +265,13 @@ pub struct Exec {
     #[arg(long)]
     pub json: bool,
 
-    /// Where a command this run executes may write. Defaults to `[sandbox]`.
-    ///
-    /// This is not the same axis as `--policy`: `--sandbox` is where the
-    /// sandbox lets a command write, `--policy` is what the agent is permitted
-    /// to attempt at all. They share the word `read-only` and mean different
-    /// things by it.
-    #[arg(long, value_enum, value_name = "MODE")]
-    pub sandbox: Option<Sandbox>,
-
+    // **Moved to the top-level `Cli` as a `global` arg in 0.41.0.** `-C`, `-m`,
+    // `--profile` and `--plain` were all accepted on either side of a subcommand
+    // and this one was not, so `io --sandbox full-access exec "…"` failed while
+    // every neighbouring flag worked — the exact defect 0.5.0 shipped once and
+    // `Cli::dir`'s own comment warns about. The field for it now lives beside
+    // those four; this line is kept as a note so the next reader of `Exec` does
+    // not conclude the flag was dropped.
     /// The permission posture for this run. Defaults to `[policy]`.
     ///
     /// `ask-writes` is refused here: nothing in an unattended run can answer an
@@ -276,14 +307,25 @@ pub struct Exec {
 /// the right one is settled against the store by [`crate::exec::decision_for`].
 #[derive(Debug, clap::Args)]
 pub struct Resume {
-    /// The run to carry on. Omitted with `--list`.
-    #[arg(value_name = "RUN_ID", required_unless_present = "list")]
+    // **Optional as of 0.41.0, and the top-level help is why.** It has said since
+    // 0.23.0 that resume will "list the runs parked in the store, **or** carry one
+    // of them on" — and bare `io resume` answered
+    // `error: the following required arguments were not provided: <RUN_ID>`,
+    // which is the help page contradicting the binary in front of the reader. The
+    // listing only happened under `--list`, which that same help never mentioned.
+    /// The run to carry on. Omit it to list the runs that are waiting.
+    #[arg(value_name = "RUN_ID")]
     pub run: Option<i64>,
 
     /// List the runs waiting for a person and carry none of them on.
     ///
     /// Reads the store and calls no provider, so it costs nothing and takes no
     /// lease on anything it lists.
+    ///
+    /// **Kept as an alias now that bare `io resume` does this** — it is in shipped
+    /// scripts and in this repository's own guides, and a flag that stops working
+    /// is a worse answer to a help page's inaccuracy than a flag that agrees with
+    /// the default.
     #[arg(
         long,
         conflicts_with_all = ["run", "answer", "plan", "correction", "recovery", "account", "goal"]

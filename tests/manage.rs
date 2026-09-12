@@ -1517,6 +1517,168 @@ fn f1_a_quoted_command_line_is_refused_and_the_dash_dash_form_is_not() {
     );
 }
 
+/// **Every subcommand's `--help` names its verbs, and names the same ones the
+/// refusals do.**
+///
+/// `io mcp --help` documented the global options at length and never named `add`,
+/// `list`, `get`, `edit`, `enable`, `disable`, `probe`, `serve` or `remove` — so
+/// the only way to discover a verb was to type a wrong one and read the error.
+/// `io plugin` and `io skill` were the same. The cause is structural: `Manage`
+/// carries one `trailing_var_arg` field, so clap has no subcommand list to
+/// enumerate and prints nothing unless the variant's own description says it.
+///
+/// **Which is two places for one fact, so this is the gate that keeps them
+/// equal.** `manage::verbs` writes the list into every refusal and the doc comment
+/// writes it into every help page; a verb added to one and not the other is a
+/// binary that refuses a word its own help offered, or offers one it refuses.
+///
+/// Sabotage: drop `get` from either list and this names it.
+#[test]
+fn f9_each_subcommand_help_names_the_verbs_its_refusal_names() {
+    let fixture = tempfile::tempdir().expect("a temporary home");
+    let home = fixture.path();
+
+    for (surface, expected) in [
+        ("mcp", ["add", "list", "get", "edit", "enable"].as_slice()),
+        ("plugin", ["add", "list", "search", "remove"].as_slice()),
+        ("skill", ["add", "list", "remove"].as_slice()),
+        ("config", ["get", "set", "unset", "list"].as_slice()),
+    ] {
+        let (help, _, code) = io_code(home, &[surface, "--help"]);
+        assert_eq!(code, 0, "`io {surface} --help` failed");
+        for verb in expected {
+            assert!(
+                help.contains(verb),
+                "`io {surface} --help` never names the `{verb}` verb, so the only way to find it \
+                 is to type a wrong word and read the refusal:\n{help}",
+            );
+        }
+
+        // And the refusal for a wrong word names the same set, which is what stops
+        // the help page and the error message drifting into two vocabularies.
+        let (_, refusal, _) = io_code(home, &[surface, "definitely-not-a-verb"]);
+        for verb in expected {
+            assert!(
+                refusal.contains(verb),
+                "`io {surface}`'s refusal does not name `{verb}` while its help page does",
+            );
+        }
+    }
+}
+
+/// **`io mcp get` inspects, and `io mcp list` with nothing configured says so.**
+///
+/// `io mcp …`'s own summary promises "Add, list, **inspect**, change or remove",
+/// and `get` printed the single line `list` prints — no command, no args, no env.
+/// An operator checking why a server will not start learned its id, its transport
+/// and its origin, all of which the row above already said. Separately,
+/// `io mcp list` with no servers printed **nothing at all**, which at a terminal is
+/// indistinguishable from a verb that hung or a binary that did not run.
+///
+/// **No value is ever echoed.** An `env` entry is shown as its name and the
+/// reference the file carries, so a `${env:TOKEN}` is drawn whole and a literal
+/// somebody pasted into their configuration reads `set (value not shown)` rather
+/// than landing in a scrollback or a CI log.
+///
+/// Sabotage: have `get` print only the `list` row and the `command` assertion
+/// fails; echo the env value and the last one does.
+#[test]
+fn f9_mcp_get_inspects_and_an_empty_list_says_so() {
+    let fixture = tempfile::tempdir().expect("a temporary home");
+    let home = fixture.path();
+
+    // Nothing configured: the listing says so, on stderr, and stdout stays empty
+    // so a script still reads zero rows.
+    let (rows, said, code) = io_code(home, &["mcp", "list"]);
+    assert_eq!(code, 0);
+    assert!(
+        rows.trim().is_empty(),
+        "an empty listing wrote rows to stdout: {rows:?}",
+    );
+    assert!(
+        said.contains("no servers configured"),
+        "an empty listing said nothing at all: {said:?}",
+    );
+
+    // No `--env` in the fixture: io-harness refuses a `${env:NAME}` whose variable
+    // is not set, so declaring one here would test this machine's environment
+    // rather than this verb. The rule about how a value is *shown* is asserted
+    // directly on `servers::detail` in `tests/servers.rs`, where it belongs.
+    let (_, _, added) = io_code(
+        home,
+        &[
+            "mcp",
+            "add",
+            "semlith",
+            "--",
+            "semlith",
+            "--store",
+            "/tmp/store",
+            "mcp",
+        ],
+    );
+    assert_eq!(added, 0, "the fixture server was not added");
+
+    let (shown, _, code) = io_code(home, &["mcp", "get", "semlith"]);
+    assert_eq!(code, 0);
+    assert!(
+        shown.contains("command") && shown.contains("semlith"),
+        "`get` does not show the command it would run: {shown:?}",
+    );
+    assert!(
+        shown.contains("--store"),
+        "`get` does not show the arguments: {shown:?}",
+    );
+
+    // And it is genuinely more than `list` prints, which is the whole complaint.
+    let (listed, _, _) = io_code(home, &["mcp", "list"]);
+    assert!(
+        shown.lines().count() > listed.lines().count(),
+        "`get` printed no more than `list` did, so it inspects nothing:\nget:\n{shown}\nlist:\n{listed}",
+    );
+}
+
+/// **`--sandbox` is accepted on either side of the subcommand.**
+///
+/// `-C`, `-m`, `--profile` and `--plain` all were and this one was not, so
+/// `io --sandbox full-access exec "…"` failed while every neighbouring flag
+/// worked. A flag whose acceptance depends on which side of a word it is typed is
+/// what `Cli::dir`'s own note calls a flag that works only on its author's machine.
+///
+/// Asserted on the parse rather than on a run: the two spellings must reach the
+/// same value, and a run would need a provider.
+#[test]
+fn f9_the_sandbox_flag_is_accepted_on_either_side() {
+    use clap::Parser;
+
+    let before = io_cli::cli::Cli::try_parse_from([
+        "io",
+        "--sandbox",
+        "full-access",
+        "exec",
+        "do the thing",
+    ])
+    .expect("`--sandbox` before the subcommand parses");
+    let after = io_cli::cli::Cli::try_parse_from([
+        "io",
+        "exec",
+        "--sandbox",
+        "full-access",
+        "do the thing",
+    ])
+    .expect("`--sandbox` after the subcommand parses");
+
+    assert_eq!(
+        format!("{:?}", before.sandbox),
+        format!("{:?}", after.sandbox),
+        "the two spellings reach different values",
+    );
+    assert!(
+        before.sandbox.is_some(),
+        "the flag parsed but carried nothing",
+    );
+}
+
 /// **`io config get` on a key that does not exist exits 1.**
 ///
 /// It exited `0`, so `if io config get some.key >/dev/null; then …` took the
@@ -1544,6 +1706,115 @@ fn f5_config_get_exits_one_for_a_key_that_does_not_exist() {
         "a real key that no file sets was reported as not existing, which is the \
          over-correction this exit code invites",
     );
+}
+
+/// **The provider's head is readable from a script and writable from nowhere.**
+///
+/// `io config get provider.model` answered `no such key`, so an operator with no
+/// terminal had no way to ask which model was configured other than opening
+/// `io.toml` and reading it — on a surface whose entire argument is that a value
+/// and the file that decided it belong together.
+///
+/// **And it is read-only (D5).** `/provider` and `-m` already own that write, and a
+/// second writer over one value is a shape this product has corrected three times.
+///
+/// The origin column is the half that was nearly wrong: io-harness records an
+/// origin for `provider` and not for its leaves, so asking for `provider.model`
+/// answers nothing and the row fell through to `default` — naming a crate default
+/// as the source of a model the operator had plainly written in a file, which is
+/// the exact failure `src/configure.rs` exists to prevent and which `home::origin`
+/// shipped once in 0.15.0.
+///
+/// Sabotage: drop the `provider` arm from `setting`'s origin match and the `user`
+/// assertion fails while every value assertion still passes.
+#[test]
+fn f5_the_provider_head_is_readable_and_is_not_writable() {
+    let fixture = tempfile::tempdir().expect("a temporary home");
+    let home = fixture.path();
+
+    let (_, _, added) = io_code(
+        home,
+        &[
+            "config",
+            "set",
+            "app.io-cli.theme",
+            "dark",
+            "--scope",
+            "user",
+        ],
+    );
+    assert_eq!(added, 0, "the fixture write failed");
+
+    // With nothing configured the key exists and is unset — `default`, not
+    // "no such key", which is the distinction `f5` above keeps.
+    let (unset, _, code) = io_code(home, &["config", "get", "provider.model"]);
+    assert_eq!(code, 0, "a real key was reported as not existing");
+    assert!(unset.contains("default"), "{unset:?}");
+
+    // Writing is refused on all three, and the refusal names the surface that owns
+    // it — an operator who typed this wants the model changed, not a lecture.
+    for key in ["provider.model", "provider.kind", "provider.base_url"] {
+        let (_, refusal, code) = io_code(home, &["config", "set", key, "something"]);
+        assert_eq!(code, 1, "`config set {key}` was accepted: {refusal}");
+        assert!(
+            refusal.contains("/provider"),
+            "the refusal for `{key}` does not name the surface that does own the \
+             write: {refusal}",
+        );
+    }
+}
+
+/// **`config unset` takes the header with the last key in it.**
+///
+/// Unsetting the only key left `[run]` or `[app.io-cli.gates]` standing empty, and
+/// that is not neutral: `gates::Settings::criterion` **refuses** a section naming no
+/// kind rather than reading it as "no gate", so the leftover header turned a key an
+/// operator removed into a configuration that would not resolve.
+///
+/// **The primitive is unchanged and that is deliberate.** `Edit::unset` names a key
+/// and `Edit::remove` names a region; `tests/edit.rs` pins them apart, and
+/// collapsing them is the destructive ambiguity the two verbs exist to prevent. The
+/// *verb* composes them, because there the operator's intent is known.
+///
+/// Sabotage: always plan the `unset` and the first file keeps its `[run]`; always
+/// plan the `remove` and the second loses a key it was not asked about.
+#[test]
+fn f5_unsetting_the_last_key_takes_its_section_with_it() {
+    let fixture = tempfile::tempdir().expect("a temporary home");
+    let home = fixture.path();
+    // `home::adopt` makes `~/.io-cli` the user scope's home and points
+    // `IO_CONFIG_HOME` at it, which is where a user-scope write lands.
+    let file = home.join(".io-cli").join("io.toml");
+
+    for (key, value) in [
+        ("run.max_steps", "5"),
+        ("app.io-cli.theme", "dark"),
+        ("app.io-cli.plain", "true"),
+    ] {
+        let (_, said, code) = io_code(home, &["config", "set", key, value, "--scope", "user"]);
+        assert_eq!(code, 0, "the fixture write for {key} failed: {said}");
+    }
+
+    // The only key of `[run]`: the header goes with it.
+    let (_, _, code) = io_code(home, &["config", "unset", "run.max_steps"]);
+    assert_eq!(code, 0, "the unset was refused");
+    let text = std::fs::read_to_string(&file).expect("the file is readable");
+    assert!(
+        !text.contains("[run]"),
+        "the emptied section is still standing, and an empty `[app.io-cli.gates]` \
+         of this shape refuses to resolve at all:\n{text}",
+    );
+
+    // One of two in `[app.io-cli]`: the header stays, and so does its sibling.
+    let (_, _, code) = io_code(home, &["config", "unset", "app.io-cli.plain"]);
+    assert_eq!(code, 0, "the second unset was refused");
+    let text = std::fs::read_to_string(&file).expect("the file is readable");
+    assert!(
+        text.contains("[app.io-cli]") && text.contains("theme"),
+        "a section with keys left in it lost its header, taking a setting nobody \
+         asked about:\n{text}",
+    );
+    assert!(!text.contains("plain"), "the key was not removed:\n{text}");
 }
 
 /// **`-C` on a path that names nothing is refused, and creates nothing.**

@@ -1169,10 +1169,28 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
         .find(|sub| sub.get_name() == "exec")
         .expect("`io exec` is a subcommand");
 
+    // **The subcommand's OWN flags are what this page owes a sentence for.** The
+    // `global` ones reach `io exec` too, but they reach every other subcommand
+    // equally and `docs/CONTRACT.md` documents them once at the argv surface —
+    // requiring each of `-C`, `--profile`, `--plain` and `--full-access` to be
+    // re-explained on the headless page would spread one fact over five pages to
+    // drift between.
     let flags: Vec<String> = exec
         .get_arguments()
         .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
         .filter(|long| long != "--help")
+        .collect();
+
+    // **The other direction consults the globals as well**, and 0.41.0 is why.
+    // `--sandbox` moved from `Exec` to a `global` on `Cli` in this release, so it
+    // stopped being one of this subcommand's own arguments while remaining a flag
+    // an operator types on `io exec` every day. A gate reading only the line above
+    // would have reported that the binary had *lost* it and invited somebody to
+    // delete a true sentence from the guide.
+    let reachable: Vec<String> = exec
+        .get_arguments()
+        .chain(cli.get_arguments().filter(|arg| arg.is_global_set()))
+        .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
         .collect();
 
     assert!(!flags.is_empty(), "there should be flags to check");
@@ -1183,10 +1201,11 @@ fn the_readme_lists_every_flag_io_exec_actually_takes() {
         );
     }
 
-    // And nothing the guide promises has been removed from the binary.
+    // And nothing the guide promises has been removed from the binary — measured
+    // against everything `io exec` can be handed, its own and the globals alike.
     for promised in ["--json", "--sandbox", "--policy", "--provider"] {
         assert!(
-            flags.iter().any(|flag| flag == promised),
+            reachable.iter().any(|flag| flag == promised),
             "the guide documents {promised} and `io exec` no longer takes it",
         );
     }

@@ -856,6 +856,7 @@ pub async fn main(
     config: Config,
     root: std::path::PathBuf,
     model_override: Option<String>,
+    sandbox: Option<crate::cli::Sandbox>,
 ) -> Result<u8, String> {
     // Before a store is opened, a session is created or a provider is built, so
     // a refused posture costs nothing and leaves no run behind.
@@ -907,6 +908,7 @@ pub async fn main(
             config,
             policy,
             args,
+            sandbox,
         },
     )
     .await?
@@ -919,6 +921,13 @@ struct Headless {
     config: Config,
     policy: Policy,
     args: crate::cli::Exec,
+    /// `--sandbox`, which became a `global` flag in 0.41.0 and therefore lives on
+    /// the top-level `Cli` rather than on `Exec`.
+    ///
+    /// Carried here rather than read back from anywhere, for the reason `plain` is
+    /// threaded into the session: it is a flag, it outranks the file, and a second
+    /// read at this depth would be a second answer to a settled question.
+    sandbox: Option<crate::cli::Sandbox>,
 }
 
 impl WithProvider for Headless {
@@ -934,7 +943,7 @@ impl WithProvider for Headless {
         // The two observers are the whole difference between the modes. Built
         // here rather than inside `turn` so that a test can hand in a writer it
         // can read back.
-        if let Some(line) = widening(self.args.sandbox.map(crate::cli::Sandbox::mode)) {
+        if let Some(line) = widening(self.sandbox.map(crate::cli::Sandbox::mode)) {
             eprintln!("io: {line}");
         }
         if let Some(line) = asks_nobody_can_answer(&self.policy) {
@@ -1010,7 +1019,7 @@ impl WithProvider for Headless {
             &self.config,
             &self.policy,
             self.args.goal.clone(),
-            self.args.sandbox.map(crate::cli::Sandbox::mode),
+            self.sandbox.map(crate::cli::Sandbox::mode),
             watcher,
         )
         .await;
@@ -1676,7 +1685,13 @@ pub async fn resume_main(
     let path = settings::store_path().ok_or("no place to keep the run store")?;
     let store = Store::open(&path).map_err(|error| error.to_string())?;
 
-    if args.list {
+    // **`--list` or nothing at all.** Bare `io resume` used to be a clap refusal
+    // naming a required `<RUN_ID>`, while the top-level help said resume would
+    // "list the runs parked in the store, **or** carry one of them on" — the help
+    // page contradicting the binary, with the listing reachable only through a flag
+    // that same page never mentioned. Listing is what an operator who typed
+    // `resume` with nothing in mind wants, and it costs nothing and takes no lease.
+    if args.list || args.run.is_none() {
         // One classification per run, each a handful of store reads and no
         // provider call. That is linear in the store's whole history rather than
         // in the parked runs, which is the right cost while a store holds
@@ -1695,12 +1710,14 @@ pub async fn resume_main(
         return Ok(OK);
     }
 
-    // clap guarantees this through `required_unless_present`, and the sentence is
-    // here rather than an `expect` because a parser's guarantee is not a reason to
-    // panic in front of an operator if it ever stops holding.
+    // **Unreachable as of 0.41.0 and kept anyway.** `run` is no longer
+    // `required_unless_present`, so clap guarantees nothing here — the branch above
+    // takes every `None`. A sentence costs one line and an `expect` in front of an
+    // operator costs their run, which is the same reason this was never an `expect`
+    // while clap *did* guarantee it.
     let run_id = args
         .run
-        .ok_or("`io resume` needs a run id, or `--list` to see which runs have one")?;
+        .ok_or("`io resume` needs a run id, or no argument at all to see which runs have one")?;
 
     // Everything that can refuse, before anything is built: the classification is
     // a few store reads, and an operator who names the one run that cannot be

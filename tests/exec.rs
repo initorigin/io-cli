@@ -934,12 +934,14 @@ async fn f8_no_provider_and_no_flag_fails_with_a_sentence_rather_than_a_prompt()
         io_cli::cli::Exec {
             goal: "do the thing".into(),
             json: false,
-            sandbox: None,
             policy: None,
             provider: None,
         },
         Config::from_toml("").expect("an empty configuration"),
         dir.path().to_path_buf(),
+        None,
+        // `--sandbox` is a `global` flag from 0.41.0, so it arrives beside the
+        // subcommand's own arguments rather than inside them.
         None,
     )
     .await
@@ -1543,8 +1545,6 @@ fn the_resume_subcommand_parses_in_every_form_it_offers() {
     // And the shapes clap itself refuses, which are the ones no code below would
     // otherwise have to think about.
     for argv in [
-        // Neither an id nor a listing.
-        vec!["io", "resume"],
         // A listing of one run is not a thing.
         vec!["io", "resume", "--list", "41"],
         // A correction with no plan to correct, and an account with no call.
@@ -1555,6 +1555,27 @@ fn the_resume_subcommand_parses_in_every_form_it_offers() {
             io_cli::cli::Cli::try_parse_from(&argv).is_err(),
             "{argv:?} should not parse",
         );
+    }
+
+    // **Bare `io resume` parses as of 0.41.0, and it lists.** It was in the block
+    // above as a shape clap refuses — which is what the binary did, and what the
+    // top-level help contradicted: that help has said since 0.23.0 that resume will
+    // "list the runs parked in the store, **or** carry one of them on", while the
+    // listing was reachable only through a `--list` the same page never mentioned.
+    // Asserted here rather than deleted from the refusal list silently, because the
+    // change is to a shipped argv surface.
+    let bare = io_cli::cli::Cli::try_parse_from(["io", "resume"]).expect("bare resume parses");
+    match bare.command {
+        Some(io_cli::cli::Command::Resume(resume)) => {
+            assert!(resume.run.is_none(), "bare resume named a run");
+            assert!(
+                !resume.list,
+                "bare resume must not set `--list` — the door decides to list from \
+                 the absent id, so a flag set here would hide a parser that had \
+                 started requiring one again",
+            );
+        }
+        other => panic!("`io resume` is not a resume: {other:?}"),
     }
 }
 
