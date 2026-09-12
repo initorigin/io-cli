@@ -197,6 +197,10 @@ surface stops being the thing that blocks you.
   all, which at a terminal was indistinguishable from a verb that hung. The
   sentence goes to stderr, so a script still reads zero rows.
 
+- **Bare `io resume` with nothing parked says so**, for the same reason and on the
+  same stream. It is the door you reach for when you do not know whether there is
+  anything to carry on, and it answered by printing nothing at all.
+
 - **`io config unset` takes the section header with the last key in it.** An
   emptied `[app.io-cli.gates]` is not neutral — a gates section that names no kind
   is *refused* rather than read as "no gate" — so the leftover header turned a key

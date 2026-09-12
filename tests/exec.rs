@@ -3151,3 +3151,44 @@ fn f7_every_headless_turn_still_refuses_every_approval() {
         );
     }
 }
+
+/// **Bare `io resume` with an empty store says so rather than printing nothing.**
+///
+/// Found by running the real binary against a fresh `IO_CONFIG_HOME` during this
+/// release's own verification, after the same defect had already been corrected
+/// for `io mcp list` two items earlier in the same contract. Silence at a terminal
+/// is indistinguishable from a verb that hung, a store that failed to open, or a
+/// binary that did not run — and this is the door an operator reaches for when
+/// they do not know whether there is anything to carry on.
+///
+/// Driven through the built binary rather than `resume_main`, because the store
+/// path comes from `settings::store_path` reading the environment, and because the
+/// claim is about what the command prints on which stream. Sabotage: drop the
+/// `rows == 0` arm in `src/exec.rs` and only this fails.
+#[test]
+fn f8_a_bare_resume_with_nothing_parked_says_so_on_stderr() {
+    let home = tempfile::tempdir().expect("a temporary configuration home");
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_io"));
+    command
+        .arg("resume")
+        .env(io_harness::config::CONFIG_HOME_VAR, home.path())
+        .env_remove(io_harness::config::CONFIG_VAR);
+
+    let run = command.output().expect("the built binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+
+    assert!(
+        stderr.contains("nothing to carry on"),
+        "an empty listing printed no sentence, so it is indistinguishable from a \
+         command that did not run; stdout was {stdout:?} and stderr {stderr:?}",
+    );
+    // And the machine surface is untouched: a script reading rows reads zero rows,
+    // which is the answer it asked for.
+    assert!(
+        stdout.trim().is_empty(),
+        "the sentence reached stdout, where a reader counting rows would parse it \
+         as a run: {stdout:?}",
+    );
+}

@@ -1698,15 +1698,30 @@ pub async fn resume_main(
         // hundreds; the way past it is a store-side query for the pending rows,
         // which io-harness does not publish.
         let mut out = std::io::stdout().lock();
+        let mut rows = 0usize;
         for run_id in store.runs().map_err(|error| error.to_string())? {
             let pending =
                 crate::resume::pending_for(&store, run_id).map_err(|error| error.to_string())?;
             let parked = Parked::of(&store, run_id);
             if let Some(row) = listed(run_id, &pending, &parked, args.json) {
+                rows += 1;
                 let _ = writeln!(out, "{row}");
             }
         }
         let _ = out.flush();
+        // **An empty listing says so, on stderr** — the same correction `io mcp
+        // list` gets in this release, and reached by the command an operator runs
+        // when they have no idea what is in the store. Printing nothing at all is
+        // indistinguishable at a terminal from a verb that hung, a store that
+        // failed to open, or a binary that did not run, and this is the door whose
+        // whole purpose is to answer "is there anything to carry on?".
+        //
+        // stderr rather than stdout, and unconditional rather than suppressed under
+        // `--json`, for one reason: a script reading rows still reads zero rows,
+        // which is the answer it asked for.
+        if rows == 0 {
+            eprintln!("io: no runs are parked, so there is nothing to carry on");
+        }
         return Ok(OK);
     }
 
