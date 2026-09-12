@@ -126,6 +126,14 @@ surface stops being the thing that blocks you.
   cap is named as killed rather than given an invented exit code. `io exec --json`
   forwards the whole bounded string.
 
+- **`io setup` asks about the fan-out.** A fresh install could not decompose a turn
+  at all, and nothing said so — the caps in `[app.io-cli.containment]` are the
+  switch, and the only way to find that out was to type `/contain on` and be told.
+  The wizard now offers the same four ceilings `/contain on` offers, spelled out on
+  the row that writes them. Declining is the default answer and writes nothing, so
+  an install that says no produces the file 0.40.0 produced. Both doors render the
+  same section, and a test parses both back and compares them so they cannot drift.
+
 ### Fixed
 
 - **`gates.retries` bounds a headless run at last.** The session has honoured it

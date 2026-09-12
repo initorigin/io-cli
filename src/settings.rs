@@ -415,6 +415,30 @@ pub fn containment_offer(caps: &io_harness::Containment) -> (String, Vec<crate::
     )
 }
 
+/// `[app.io-cli.containment]` as an inline table, for `/contain on`'s edit.
+///
+/// **The second of two doors onto the same section**, and the reason this is a
+/// function rather than a `format!` at the call site. The wizard's fan-out step
+/// reaches the same key through [`CliSettings::containment`] and `toml::to_string`
+/// — a whole file, rendered — while `/contain on` has to splice one value into a
+/// file somebody else wrote, which is what [`crate::edit::Edit::set`] takes. Two
+/// spellings of the same four ceilings is two things to keep true, so the shapes
+/// are compared: `tests/contain.rs` renders both and parses them back, and a key
+/// that appears on one door and not the other fails there rather than in a
+/// configuration file where only the operator would find it.
+///
+/// The four keys are named rather than serialized because the fields io-harness
+/// leaves `None` — `max_total_cost` and `max_total_duration` — must not be
+/// written as absent keys into a section that already exists.
+#[must_use]
+pub fn containment_inline(caps: &io_harness::Containment) -> String {
+    format!(
+        "{{ max_total_agents = {}, max_concurrent_agents = {}, max_depth = {}, \
+         max_total_tokens = {} }}",
+        caps.max_total_agents, caps.max_concurrent_agents, caps.max_depth, caps.max_total_tokens,
+    )
+}
+
 /// What a contained turn decides, in the words the session says it in.
 ///
 /// **Disclosure rather than decoration**, and through 0.11.0 the disclosure was
@@ -736,6 +760,12 @@ pub fn render(
     spec: &ProviderSpec,
     posture: Posture,
     theme: &str,
+    // **The fan-out ceilings, or `None` for an install that declined (0.41.0).**
+    // `None` writes no `[app.io-cli.containment]` at all, which is what every file
+    // this wizard has ever written did — so declining leaves a file byte-identical
+    // to the one 0.40.0 produced, and an operator who declines is not carrying a
+    // section they did not ask for.
+    containment: Option<io_harness::Containment>,
 ) -> Result<String, toml::ser::Error> {
     let file = File {
         provider: vec![spec],
@@ -776,7 +806,7 @@ pub fn render(
                 // fan-out, and a file that arrived with caps already in it would
                 // have put every turn through io-harness's spawn loop for
                 // somebody who never chose to.
-                containment: None,
+                containment,
                 // The capability keys are left out because the wizard asks about
                 // none of them and a file that arrived with an MCP server, a
                 // language server or a browser in it would have configured

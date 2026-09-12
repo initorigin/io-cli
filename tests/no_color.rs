@@ -196,6 +196,8 @@ fn f3_no_color_survives_the_first_run() {
     draw!();
     wizard.key(key(KeyCode::Enter)); // Posture: the first row.
     draw!();
+    wizard.key(key(KeyCode::Enter)); // Fan-out: row 0 declines.
+    draw!();
     assert_eq!(wizard.step(), Step::Confirm);
 
     let progress = wizard.key(key(KeyCode::Enter));

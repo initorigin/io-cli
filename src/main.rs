@@ -4457,14 +4457,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         }
                         Pick::ContainDefault(caps) => {
                             if io_cli::store::acts(index) {
-                                let inline = format!(
-                                    "{{ max_total_agents = {}, max_concurrent_agents = {}, \
-                                     max_depth = {}, max_total_tokens = {} }}",
-                                    caps.max_total_agents,
-                                    caps.max_concurrent_agents,
-                                    caps.max_depth,
-                                    caps.max_total_tokens,
-                                );
+                                let inline = settings::containment_inline(caps);
                                 let edit =
                                     io_cli::edit::Edit::set("app.io-cli.containment", inline);
                                 match io_cli::configure::write(
