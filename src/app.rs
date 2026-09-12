@@ -139,6 +139,14 @@ pub enum Command {
     /// verdict. See [`Command::Answered`] — this is the same arrangement for
     /// [`crate::resume::decide_plan`].
     Decided(io_harness::PlanVerdict),
+    /// An approval was answered `always`, and the rule has to reach a file.
+    ///
+    /// The same arrangement as [`Command::Answered`] and for the same reason:
+    /// this type has no configuration, no root and no writer, so an answer whose
+    /// meaning is "write this down" cannot be finished inside it. Coming back as a
+    /// `Command` makes the driver's obligation structural — a variant nobody
+    /// handles is a match arm the compiler asks about.
+    Remembered(io_harness::Rule),
 }
 
 /// What a paste turned out to be.
@@ -844,15 +852,35 @@ impl App {
     /// Answer the open question. The overlay closes, the run goes on, and the
     /// decision commits one line — so it is in the transcript as well as in the
     /// harness's own trace.
-    pub fn answer_approval(&mut self, answer: Answer) {
-        let Some(approval) = self.approval.take() else {
-            return;
-        };
+    /// Returns the rule to **write down**, for an `always` answer and no other.
+    ///
+    /// **`#[must_use]`, and that is the whole of the wiring.** This type has no
+    /// configuration, no root and no writer — it draws and it remembers — so an
+    /// answer that has to reach a file cannot be finished here. Handing the rule
+    /// back makes the driver's obligation structural rather than something a
+    /// later reader has to notice, which is the shape `answer_intent` and
+    /// `decide_plan` took in 0.23.0 for the same reason.
+    #[must_use]
+    pub fn answer_approval(&mut self, answer: Answer) -> Option<io_harness::Rule> {
+        let approval = self.approval.take()?;
         let act = crate::approval::act_word(approval.ask().act());
         let target = approval.ask().target().to_string();
-        if answer == Answer::Session {
-            self.remembered.push(approval.remembered());
-        }
+        // **`Always` remembers for the session too.** The written rule reaches a
+        // turn only after a reload re-reads the file, and the operator meant the
+        // next call and not the next session — so it is held in memory exactly as
+        // `Session` is, and the file is the part that outlives both.
+        let written = match answer {
+            Answer::Session => {
+                self.remembered.push(approval.remembered());
+                None
+            }
+            Answer::Always => {
+                let rule = approval.remembered();
+                self.remembered.push(rule.clone());
+                Some(rule)
+            }
+            Answer::Once | Answer::Deny => None,
+        };
         approval.answer(answer);
         self.record(
             if answer == Answer::Deny {
@@ -866,6 +894,7 @@ impl App {
                 answer.spoken()
             ),
         );
+        written
     }
 
     /// Everything the operator has allowed for the rest of this session, as
@@ -1941,7 +1970,12 @@ impl App {
         let interrupting = self.keys.hit(chord, None) == Some(Hit::Fire(Action::Interrupt));
         if let Some(open) = self.approval.as_mut().filter(|_| !interrupting) {
             if let Some(answer) = open.key(key) {
-                self.answer_approval(answer);
+                // The rule an `always` answer means, out to the driver, which is
+                // the only thing here that can write a file. `None` for every other
+                // answer, which is every answer that changes nothing on disk.
+                if let Some(rule) = self.answer_approval(answer) {
+                    return Command::Remembered(rule);
+                }
             }
             return Command::None;
         }

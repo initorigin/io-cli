@@ -4810,6 +4810,14 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
             Command::Exit => return Ok(()),
             // Nothing is running at an idle prompt, so there is nothing to stop.
             Command::Interrupt | Command::Abandon => {}
+            // **An approval answered `always`, at an idle prompt.** Unreachable in
+            // practice — an approval only opens while a turn is in flight, and that
+            // loop has its own arm — and handled rather than ignored because a
+            // variant silently doing nothing is how an operator's answer goes
+            // nowhere quietly. If it ever does arrive here, it writes.
+            Command::Remembered(rule) => {
+                remember_rule(&mut app, session.root(), &rule);
+            }
             Command::ClearViewport => {
                 // The viewport, and nothing above it.
                 paint(screen, &mut app)?;
@@ -7914,6 +7922,14 @@ async fn turn<P: Provider>(
         head: session.head(),
         last: last_run(session, store),
     };
+    // **The workspace root, taken before the turn borrows the session.** An
+    // approval answered `always` writes a rule into the user-scope file, and
+    // `configure::write` needs a root to discover the configuration from — but the
+    // turn below holds `&mut Session` for the whole of the select loop, so
+    // `session.root()` is not askable while a question is on screen. It is a path
+    // and it does not move, which is exactly why a snapshot is honest here, for the
+    // same reason `TurnFacts` above is.
+    let workspace_root = session.root().to_path_buf();
     app.contained = containment.is_some();
     // Built before the future borrows it, and for both arms alike.
     // **Every turn carries one now, contained or not.** Through 0.11.0 the flat
@@ -8651,6 +8667,20 @@ async fn turn<P: Provider>(
                             // here could not be sabotaged and would not be
                             // covered — `tests/queue.rs` asserts the queueing
                             // where a test can reach it.
+                            //
+                            // **`Command::Remembered` is named ABOVE the catch-all
+                            // and this is the arm that matters.** An approval only
+                            // opens while a turn is in flight, so this loop — not
+                            // the idle one — is where an `always` answer arrives.
+                            // Left to `_ => {}` the rule would have been swallowed
+                            // in silence: the operator would have seen "allowed,
+                            // and written to your own configuration" in the
+                            // transcript with nothing written anywhere, which is a
+                            // permission they believe is recorded and is not.
+                            Command::Remembered(ref rule) => {
+                                let rule = rule.clone();
+                                remember_rule(app, &workspace_root, &rule);
+                            }
                             _ => {}
                         }
                     }
@@ -12081,5 +12111,43 @@ impl Keyboard {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// Write an `always` answer's rule into the operator's own configuration.
+///
+/// **User scope or nowhere, and the refusal is the interesting half.** A
+/// `[[policy.layers]]` rule inside the workspace is a rule a `git clone` hands to
+/// everybody and a rule this run's own agent can write — which is precisely why
+/// io-harness refuses a widening from a workspace file. So an operator whose only
+/// writable scope is the workspace is told, and nothing is written; the allowance
+/// still holds for the session, because `App::answer_approval` remembered it
+/// before this was called.
+///
+/// The rule is spelled once, by `approval::written_rule`, and the same string is
+/// what a future preview would draw — a preview composed separately from the write
+/// is a preview that can disagree with it.
+fn remember_rule(app: &mut io_cli::app::App, root: &std::path::Path, rule: &io_harness::Rule) {
+    let edit = io_cli::edit::Edit::append(
+        "policy.layers",
+        io_cli::approval::written_rule(rule.act, &rule.pattern),
+    );
+    match io_cli::configure::write(root, io_harness::config::Scope::User, &[edit]) {
+        Ok(()) => app.record(
+            Tone::Muted,
+            format!(
+                "written to your own configuration, in the `{}` layer — `/policy revoke` takes it \
+                 back",
+                io_cli::approval::REMEMBERED_LAYER,
+            ),
+        ),
+        // Said and not swallowed. The act was still allowed and the session still
+        // remembers it; what failed is the part that was meant to outlive the
+        // session, and an operator who believes a permission is written down when
+        // it is not is the wrong direction for this to be wrong in.
+        Err(error) => app.record(
+            Tone::Error,
+            format!("allowed for this session, but not written down: {error}"),
+        ),
     }
 }

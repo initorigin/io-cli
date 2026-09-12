@@ -187,7 +187,7 @@ async fn f1_an_open_approval_commits_nothing_to_scrollback() {
         "the question was committed to scrollback: {bytes:?}",
     );
 
-    app.answer_approval(io_cli::approval::Answer::Deny);
+    let _ = app.answer_approval(io_cli::approval::Answer::Deny);
     deciding.await.expect("the approver did not panic");
 }
 
@@ -1171,6 +1171,6 @@ async fn f7_a_paste_does_not_land_behind_an_open_approval() {
         app.composer.text(),
     );
 
-    app.answer_approval(io_cli::approval::Answer::Deny);
+    let _ = app.answer_approval(io_cli::approval::Answer::Deny);
     deciding.await.expect("the run was told");
 }
