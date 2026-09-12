@@ -136,7 +136,7 @@ the directory; otherwise the platform default. io-cli's only contribution is to 
 `$IO_CONFIG_HOME` to its own home when the operator has set neither.
 
 `[app.io-cli]` is the one section io-harness deliberately does not validate, so it is this
-crate's own and this page is its contract. It carries **eighteen** keys:
+crate's own and this page is its contract. It carries **nineteen** keys:
 
 | Key | Shape |
 | --- | --- |
@@ -144,6 +144,7 @@ crate's own and this page is its contract. It carries **eighteen** keys:
 | `diff` | `unified` or `minimal`; absent means `unified` |
 | `glyphs` | `unicode` or `ascii`; absent means "ask the locale" |
 | `plain` | bool; the same switch as `--plain`, and the flag wins |
+| `escalate` | bool; **absent means on**. A deny that came from `policy.defaults` asks instead of refusing. A deny that came from a `[[policy.layers]]` rule never does, and neither does a path outside the workspace root. `false` restores 0.40.0 |
 | `keys` | a table of action name to chord |
 | `containment` | the caps a fan-out runs under — **this key is what turns the fleet on** |
 | `mcp` | MCP servers, merged with io-harness's own by id |

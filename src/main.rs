@@ -1610,6 +1610,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                         &policy,
                                         app.posture(),
                                         app.remembered(),
+                                        app.escalates(),
                                     );
                                     if let Some(run_id) =
                                         last_run(&session, &store).map(|turn| turn.run_id)
@@ -4200,6 +4201,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     &policy,
                                     app.posture(),
                                     app.remembered(),
+                                    app.escalates(),
                                 );
                                 match completion(
                                     session.root(),
@@ -4402,6 +4404,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                     &policy,
                                     app.posture(),
                                     app.remembered(),
+                                    app.escalates(),
                                 );
                                 let workspace = io_harness::tools::Workspace::with_policy(
                                     session.root(),
@@ -4536,7 +4539,8 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
         // already answered `a` to. Built the same way the turn below builds it,
         // so what the picker offers and what the agent may read cannot differ.
         if complete::opens(key, &app.composer.text(), app.armed()) {
-            let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+            let effective =
+                approval::session_policy(&policy, app.posture(), app.remembered(), app.escalates());
             match completion(session.root(), &effective, "", &app.theme.glyphs) {
                 Ok(Some(open)) => picker = Some(open),
                 // An empty root, or one the policy reads as empty. Said rather
@@ -4666,7 +4670,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 // So the answer decides. `Offer` is the one case the allowance is
                 // both effective and honest, and it is the only case it is applied
                 // in.
-                let effective = approval::session_policy(&policy, app.posture(), app.remembered());
+                let effective = approval::session_policy(
+                    &policy,
+                    app.posture(),
+                    app.remembered(),
+                    app.escalates(),
+                );
                 command = match io_cli::commit::asked(&effective) {
                     io_cli::commit::Asked::Offer(_) if allow => {
                         app.allow_git();
@@ -5057,6 +5066,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                 &config.policy().unwrap_or_default(),
                                 app.posture(),
                                 app.remembered(),
+                                app.escalates(),
                             );
                             match io_cli::servers::probe(&config, &id, &policy).await {
                                 Err(refusal) => app.record(Tone::Refused, refusal),
@@ -5234,6 +5244,7 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                                             &config.policy().unwrap_or_default(),
                                             app.posture(),
                                             app.remembered(),
+                                            app.escalates(),
                                         );
                                         let report = io_cli::preflight::check(server, &policy);
                                         app.record(
@@ -6999,8 +7010,12 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                         &bundle_skills(holdings.loaded()),
                     )
                     .0;
-                    let effective =
-                        approval::session_policy(&policy, app.posture(), app.remembered());
+                    let effective = approval::session_policy(
+                        &policy,
+                        app.posture(),
+                        app.remembered(),
+                        app.escalates(),
+                    );
                     let turned = turn(
                         screen,
                         inputs,
@@ -7219,7 +7234,8 @@ fn paste_picture<P: Provider>(
         app.composer.paste(path);
         return;
     }
-    let effective = approval::session_policy(policy, app.posture(), app.remembered());
+    let effective =
+        approval::session_policy(policy, app.posture(), app.remembered(), app.escalates());
     match io_cli::attach::prepare(session.root(), &effective, provider.accepts_images(), path) {
         Ok(staged) => {
             let number = app.attached(&staged.path);
@@ -7409,8 +7425,12 @@ fn mid_turn_picker(
                 Pick::Complete(entries) => match complete::pick(entries, index) {
                     Some(complete::Picked::Insert(path)) => app.composer.paste(&path),
                     Some(complete::Picked::Descend(dir)) => {
-                        let effective =
-                            approval::session_policy(policy, app.posture(), app.remembered());
+                        let effective = approval::session_policy(
+                            policy,
+                            app.posture(),
+                            app.remembered(),
+                            app.escalates(),
+                        );
                         match completion(root, &effective, &dir, &app.theme.glyphs) {
                             Ok(Some(open)) => descended = Some(open),
                             Ok(None) => {
@@ -7483,7 +7503,8 @@ fn commit_image<P: Provider>(
     let total = app.images();
     match which.and_then(|n| app.image(n).map(|path| (n, path.to_string()))) {
         Some((number, path)) => {
-            let effective = approval::session_policy(policy, app.posture(), app.remembered());
+            let effective =
+                approval::session_policy(policy, app.posture(), app.remembered(), app.escalates());
             match io_cli::attach::prepare(root, &effective, provider.accepts_images(), &path) {
                 Ok(staged) => {
                     let (drawable, graphics) = forms(app);
@@ -8022,6 +8043,7 @@ async fn turn<P: Provider>(
                                 policy,
                                 app.posture(),
                                 app.remembered(),
+                                app.escalates(),
                             );
                             match completion(&root, &effective, "", &app.theme.glyphs) {
                                 Ok(Some(open)) => picker = Some(open),

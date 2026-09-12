@@ -2170,13 +2170,19 @@ fn f5_a_max_steps_a_file_named_beats_the_gated_cap() {
 fn n3_the_key_catalogue_grows_only_when_a_release_says_so() {
     let through_0_39_0 = 37;
     let added_by_0_40_0 = 13;
+    // **0.41.0 adds exactly one: `app.io-cli.escalate`.** It is the switch for the
+    // permission escalation, and it is the one key in this section whose absence
+    // means *on* rather than "behave as the release before". A release that grew
+    // this list by more than it said would be changing what an operator has to
+    // know without telling them, which is what this number is for.
+    let added_by_0_41_0 = 1;
     assert_eq!(
         io_cli::configure::CATALOGUE.len(),
-        through_0_39_0 + added_by_0_40_0,
+        through_0_39_0 + added_by_0_40_0 + added_by_0_41_0,
         "a different number here means a release changed what an operator has to \
          configure without saying so. 0.40.0 added thirteen rows — \
          `reference_catalogue`, `prices.models`, the five browser keys it offers \
-         and the six containment ceilings.",
+         and the six containment ceilings. 0.41.0 added one, `escalate`.",
     );
 }
 

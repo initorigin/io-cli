@@ -913,12 +913,62 @@ pub fn session_policy(
     base: &io_harness::Policy,
     posture: Option<crate::settings::Posture>,
     remembered: &[Rule],
+    escalate: bool,
 ) -> io_harness::Policy {
     let mut policy = base.clone();
     if let Some(posture) = posture {
         policy.defaults = posture.defaults();
     }
+    if escalate {
+        policy.defaults = asking(policy.defaults);
+    }
     effective_policy(&policy, remembered)
+}
+
+/// The same tier defaults with every `Deny` turned into an `Ask`.
+///
+/// **This is the whole of the escalation, and where it sits is the whole of why
+/// it is safe.** A refusal that ends a train of thought is the thing operators hit
+/// hardest, and the only cure before this release was to leave the session, edit a
+/// file and come back. What this does instead is ask — but only where io-harness
+/// was answering from a *fallback*.
+///
+/// **io-cli decides nothing here and evaluates nothing.** A `Defaults` is what
+/// applies when no rule matches; every `[[policy.layers]]` rule is untouched, and
+/// io-harness resolves the policy afterwards exactly as it always has. So an
+/// explicit `deny` still refuses, silently and always, and deny-still-beats-allow
+/// across layers because none of that is reached from here. The distinction the
+/// release's security argument rests on — a default is not a decision — is
+/// therefore structural rather than something a test has to catch: this function
+/// cannot see a layer, so it cannot escalate one.
+///
+/// **That also rules out the implementation this was nearly written as.** Reading
+/// `Policy::check`'s `Effect` and turning a `Deny` into an approval would have made
+/// *every* explicit deny askable, which is the opposite of the claim, and it would
+/// have passed a test that only checked the grant works. `Verdict` does carry the
+/// deciding layer, so that version could have been made correct — but it would have
+/// been a second policy evaluation living in io-cli, which `workspace.yaml` forbids
+/// outright and for good reason.
+///
+/// **`Ask` and not `Allow`.** The operator answers; nothing is widened on their
+/// behalf. A posture that already asks is unchanged, and an `Allow` default stays
+/// an allow — this only ever moves the strictest tier one step towards a question.
+///
+/// The path that escapes the workspace root is not a policy verdict at all —
+/// `Workspace` holds one root and `check_path` refuses outside it with no layer
+/// attributed — so no setting here can reach it, which is why `docs/guide/limits.md`
+/// names it as the one refusal nothing lifts.
+fn asking(defaults: io_harness::policy::Defaults) -> io_harness::policy::Defaults {
+    let ask = |effect| match effect {
+        io_harness::Effect::Deny => io_harness::Effect::Ask,
+        other => other,
+    };
+    io_harness::policy::Defaults {
+        read: ask(defaults.read),
+        write: ask(defaults.write),
+        exec: ask(defaults.exec),
+        net: ask(defaults.net),
+    }
 }
 
 /// The program `io_harness::tools::git` spawns, spelled the way the harness

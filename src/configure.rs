@@ -182,6 +182,9 @@ pub const CATALOGUE: &[&str] = &[
     "app.io-cli.diff",
     "app.io-cli.glyphs",
     "app.io-cli.plain",
+    // Whether a default's refusal asks instead of refusing (0.41.0). Absent means
+    // on — the one key in this section whose absence is not "behave as before".
+    "app.io-cli.escalate",
     // Whether io asks a provider for its model catalogue at all. 0.39.0 shipped
     // this as the way to turn that network call off and left it unsettable: the
     // fall-through quoted it, `CliSettings` could not read `"false"` back, and the
@@ -771,6 +774,7 @@ pub fn kind_of(key: &str) -> Option<Kind> {
         "sandbox.allow_network"
         | "sandbox.force_floor"
         | "app.io-cli.plain"
+        | "app.io-cli.escalate"
         | "app.io-cli.detached_spawns"
         | "app.io-cli.gates.allow_self_review"
         | "app.io-cli.conversational"

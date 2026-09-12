@@ -113,7 +113,7 @@ fn f7_the_cycled_posture_is_what_the_next_turn_runs_under() {
     let mut app = App::new(DARK, "opus-5");
     app.set_posture(Some(Posture::Workspace));
 
-    let policy = approval::session_policy(&base, app.posture(), app.remembered());
+    let policy = approval::session_policy(&base, app.posture(), app.remembered(), false);
     assert_eq!(
         policy.check(Act::Write, "src/main.rs").effect,
         Effect::Allow,
@@ -121,7 +121,7 @@ fn f7_the_cycled_posture_is_what_the_next_turn_runs_under() {
     );
 
     app.key(shift_tab());
-    let policy = approval::session_policy(&base, app.posture(), app.remembered());
+    let policy = approval::session_policy(&base, app.posture(), app.remembered(), false);
     assert_eq!(
         policy.check(Act::Write, "src/main.rs").effect,
         Effect::Ask,
@@ -129,7 +129,7 @@ fn f7_the_cycled_posture_is_what_the_next_turn_runs_under() {
     );
 
     app.key(shift_tab());
-    let policy = approval::session_policy(&base, app.posture(), app.remembered());
+    let policy = approval::session_policy(&base, app.posture(), app.remembered(), false);
     assert_eq!(
         policy.check(Act::Write, "src/main.rs").effect,
         Effect::Deny,
@@ -144,7 +144,7 @@ fn f7_the_cycled_posture_is_what_the_next_turn_runs_under() {
 fn no_posture_can_unlock_what_a_layer_denied() {
     let base = Policy::default();
     for posture in Posture::ALL {
-        let policy = approval::session_policy(&base, Some(*posture), &[]);
+        let policy = approval::session_policy(&base, Some(*posture), &[], false);
         assert_eq!(
             policy.check(Act::Write, ".env").effect,
             Effect::Deny,
@@ -160,7 +160,7 @@ fn no_posture_can_unlock_what_a_layer_denied() {
 #[test]
 fn no_posture_means_the_file_decides() {
     let base = Policy::default();
-    assert_eq!(approval::session_policy(&base, None, &[]), base);
+    assert_eq!(approval::session_policy(&base, None, &[], false), base);
 }
 
 /// The three postures are the three `io_harness::Defaults` sets `settings.rs`
@@ -205,7 +205,7 @@ fn a_posture_is_recognised_from_the_defaults_it_is() {
 #[test]
 fn f1_an_asking_posture_asks_about_git_rather_than_allowing_it() {
     let base = Policy::default();
-    let policy = approval::session_policy(&base, Some(Posture::AskWrites), &[]);
+    let policy = approval::session_policy(&base, Some(Posture::AskWrites), &[], false);
     assert_eq!(
         policy.check(Act::Exec, "git").effect,
         Effect::Ask,
@@ -218,7 +218,7 @@ fn f1_an_asking_posture_asks_about_git_rather_than_allowing_it() {
 /// everything else the operator allows for the session.
 #[test]
 fn f1_the_git_allowance_turns_that_refusal_into_an_allow() {
-    let base = approval::session_policy(&Policy::default(), Some(Posture::AskWrites), &[]);
+    let base = approval::session_policy(&Policy::default(), Some(Posture::AskWrites), &[], false);
     let policy = approval::effective_policy(&base, &[approval::git_allowance()]);
     assert_eq!(
         policy.check(Act::Exec, "git").effect,
@@ -232,7 +232,7 @@ fn f1_the_git_allowance_turns_that_refusal_into_an_allow() {
 /// was for is a grant of the whole PATH.
 #[test]
 fn f1_the_git_allowance_changes_nothing_for_another_program() {
-    let base = approval::session_policy(&Policy::default(), Some(Posture::AskWrites), &[]);
+    let base = approval::session_policy(&Policy::default(), Some(Posture::AskWrites), &[], false);
     let before = base.check(Act::Exec, "curl").effect;
     let policy = approval::effective_policy(&base, &[approval::git_allowance()]);
     assert_eq!(
@@ -255,7 +255,8 @@ fn f1_the_git_allowance_changes_nothing_for_another_program() {
 fn f1_a_denied_exec_is_still_denied_after_the_git_allowance() {
     let base = Policy::default().layer("locked-down").deny_exec("git");
     for posture in Posture::ALL {
-        let policy = approval::session_policy(&base, Some(*posture), &[approval::git_allowance()]);
+        let policy =
+            approval::session_policy(&base, Some(*posture), &[approval::git_allowance()], false);
         assert_eq!(
             policy.check(Act::Exec, "git").effect,
             Effect::Deny,
@@ -263,4 +264,97 @@ fn f1_a_denied_exec_is_still_denied_after_the_git_allowance() {
             posture,
         );
     }
+}
+
+/// **F7 — escalation moves a fallback, and a written rule is untouched.**
+///
+/// This is the release's security argument and the pair is the whole test. A
+/// refusal that came from `policy.defaults` is io-harness answering because no
+/// rule matched, and turning that into a question is what stops a dead end. A
+/// refusal that came from a `[[policy.layers]]` rule is a decision the operator
+/// wrote down, and it must refuse exactly as it did before — silently, always.
+///
+/// **The negative arm is the one that matters.** An implementation that read
+/// `Policy::check`'s `Effect` and turned every `Deny` into an approval would pass
+/// every positive assertion here and ship the opposite of the claim. It is ruled
+/// out structurally rather than caught: `approval::asking` takes a `Defaults` and
+/// cannot see a layer. This asserts the structure holds.
+///
+/// Sabotage: make `asking` answer `Effect::Allow` instead of `Effect::Ask` and the
+/// third assertion fails; apply it to the whole `Policy` rather than to its
+/// defaults and the `.env` arm does.
+#[test]
+fn f7_escalation_moves_a_default_and_never_a_written_rule() {
+    // `Policy::default()` denies the secret paths as RULES in a layer and denies
+    // net as a tier DEFAULT. One policy carrying both kinds, which is what makes
+    // the comparison honest rather than two fixtures chosen to agree.
+    let base = Policy::default();
+    assert_eq!(
+        base.check(Act::Read, ".env").effect,
+        Effect::Deny,
+        "the fixture must start with a written deny or the negative arm proves nothing",
+    );
+    assert!(
+        base.check(Act::Read, ".env").layer.is_some(),
+        "`.env` must be refused by a LAYER for this test to be about the distinction it claims",
+    );
+    assert!(
+        base.check(Act::Net, "example.com").layer.is_none(),
+        "net must be refused by the tier DEFAULT, which is the thing escalation moves",
+    );
+
+    let off = approval::session_policy(&base, None, &[], false);
+    let on = approval::session_policy(&base, None, &[], true);
+
+    assert_eq!(
+        off, base,
+        "escalation off changed a policy nobody asked it to"
+    );
+
+    assert_eq!(
+        on.check(Act::Net, "example.com").effect,
+        Effect::Ask,
+        "a deny that came from the tier default did not become a question, so the \
+         dead end this release exists to remove is still there",
+    );
+
+    // **And the written rule is untouched.** Not `Ask` — a question here would be
+    // io asking whether to ignore something the operator wrote down.
+    assert_eq!(
+        on.check(Act::Read, ".env").effect,
+        Effect::Deny,
+        "a `[[policy.layers]]` deny became askable, which is the release shipping \
+         the opposite of its own security claim behind a green suite",
+    );
+    assert_eq!(
+        on.check(Act::Write, "id_rsa").effect,
+        Effect::Deny,
+        "the same, for a write to a private key",
+    );
+
+    // **An allow stays an allow.** Escalation only moves the strictest tier one
+    // step towards a question; it never tightens anything either.
+    let permissive = Policy::permissive();
+    let widened = approval::session_policy(&permissive, None, &[], true);
+    assert_eq!(
+        widened.check(Act::Read, "src/main.rs").effect,
+        permissive.check(Act::Read, "src/main.rs").effect,
+        "escalation changed a default that was not a deny",
+    );
+
+    // **A posture still decides the defaults, and escalation runs after it.**
+    // `read-only` denies writes as a tier default, so under escalation a write
+    // asks — which is the posture still in force rather than overridden: an
+    // operator who answers `n` is refused exactly as before.
+    let read_only = approval::session_policy(&base, Some(Posture::ReadOnly), &[], true);
+    assert_eq!(
+        read_only.check(Act::Write, "notes.txt").effect,
+        Effect::Ask,
+        "a posture's own deny default did not escalate, so the two do not compose",
+    );
+    assert_eq!(
+        read_only.check(Act::Read, ".env").effect,
+        Effect::Deny,
+        "and the written rule survives a posture and escalation together",
+    );
 }

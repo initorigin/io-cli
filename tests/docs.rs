@@ -332,6 +332,10 @@ fn every_setting() -> io_cli::settings::CliSettings {
         diff: Some("unified".into()),
         glyphs: Some("ascii".into()),
         plain: Some(false),
+        // 0.41.0. `Some` rather than `None` for the reason this whole fixture is
+        // struct literals: a `None` is dropped by `skip_serializing_if`, and a key
+        // invisible to the walk is a key neither list has to name.
+        escalate: Some(false),
         keys: Some(Default::default()),
         // A struct literal from 0.40.0, not `Containment::new`, which leaves
         // `max_total_cost` and `max_total_duration` at `None` — and a `None` is

@@ -19,7 +19,7 @@
 //!
 //! **The verdict half is asserted through `io_harness::Policy`, never through a rendered
 //! string alone.** The policy is built the way a session builds it —
-//! `approval::session_policy(base, posture, remembered)`, the same call `tests/policy.rs`
+//! `approval::session_policy(base, posture, remembered, escalate)`, the same call `tests/policy.rs`
 //! makes and the same value the next turn runs under — so what is checked is the merged
 //! stack, not a policy invented for the test. The sentence is asserted too, but only
 //! after the outcome is: a report that names the right rule while reaching the wrong
@@ -286,7 +286,7 @@ fn a_denied_binary_is_refused_and_names_the_rule_and_the_layer() {
     let base = Policy::default()
         .layer("ops-baseline")
         .deny_exec("github-mcp-server");
-    let policy = approval::session_policy(&base, Some(Posture::Workspace), &[]);
+    let policy = approval::session_policy(&base, Some(Posture::Workspace), &[], false);
 
     let p = preflight::check(&stdio("github", "github-mcp-server"), &policy);
 
@@ -317,7 +317,7 @@ fn a_denied_host_is_refused_and_names_the_rule_and_the_layer() {
     let base = Policy::default()
         .layer("ops-baseline")
         .deny_net("mcp.example.com");
-    let policy = approval::session_policy(&base, Some(Posture::Workspace), &[]);
+    let policy = approval::session_policy(&base, Some(Posture::Workspace), &[], false);
 
     let p = preflight::check(&http("remote", "https://mcp.example.com/mcp"), &policy);
 
@@ -339,7 +339,7 @@ fn an_allowed_binary_starts() {
     let base = Policy::default()
         .layer("app")
         .allow_exec("github-mcp-server");
-    let policy = approval::session_policy(&base, Some(Posture::ReadOnly), &[]);
+    let policy = approval::session_policy(&base, Some(Posture::ReadOnly), &[], false);
 
     let p = preflight::check(&stdio("github", "github-mcp-server"), &policy);
 
@@ -364,7 +364,7 @@ fn a_host_allowed_for_the_session_starts() {
     let base = Policy::default();
     let server = http("remote", "https://mcp.example.com/mcp");
 
-    let without = approval::session_policy(&base, Some(Posture::Workspace), &[]);
+    let without = approval::session_policy(&base, Some(Posture::Workspace), &[], false);
     let p = preflight::check(&server, &without);
     assert_eq!(
         p.outcome,
@@ -373,7 +373,7 @@ fn a_host_allowed_for_the_session_starts() {
     );
 
     let allowed = [remembered(Act::Net, Effect::Allow, "mcp.example.com")];
-    let with = approval::session_policy(&base, Some(Posture::Workspace), &allowed);
+    let with = approval::session_policy(&base, Some(Posture::Workspace), &allowed, false);
     let p = preflight::check(&server, &with);
 
     assert_eq!(p.outcome, Outcome::Permitted);
@@ -395,7 +395,7 @@ fn an_unresolvable_url_is_a_refusal_and_never_a_start() {
     // The most permissive policy that exists. Nothing here denies anything, so a
     // preflight that consulted the policy at all would answer *permitted* — the
     // refusal has to come from the unresolvable target itself.
-    let policy = approval::session_policy(&Policy::permissive(), None, &[]);
+    let policy = approval::session_policy(&Policy::permissive(), None, &[], false);
 
     for url in ["file:///usr/local/bin/server", "not-a-url", "https://"] {
         let p = preflight::check(&http("broken", url), &policy);
@@ -497,7 +497,8 @@ fn a_project_deny_beats_the_user_allow_and_the_tier_default() {
         .deny_exec("secrets-mcp-server");
     // `Posture::Workspace` allows exec by default, so the tier default would start
     // both of these. Only the merged layers say otherwise.
-    let policy = approval::session_policy(&user.merge(project), Some(Posture::Workspace), &[]);
+    let policy =
+        approval::session_policy(&user.merge(project), Some(Posture::Workspace), &[], false);
     assert_eq!(
         policy.defaults.exec,
         Effect::Allow,
@@ -537,7 +538,7 @@ fn an_asking_policy_stops_a_spawn_and_lets_a_dial_through() {
         .layer("cautious")
         .rule(Act::Exec, Effect::Ask, "local-mcp-server")
         .rule(Act::Net, Effect::Ask, "mcp.example.com");
-    let policy = approval::session_policy(&base, Some(Posture::Workspace), &[]);
+    let policy = approval::session_policy(&base, Some(Posture::Workspace), &[], false);
 
     let spawned = preflight::check(&stdio("local", "local-mcp-server"), &policy);
     assert_eq!(spawned.outcome, Outcome::Ask);
@@ -564,7 +565,7 @@ fn an_asking_policy_stops_a_spawn_and_lets_a_dial_through() {
 /// one-server configuration to ship.
 #[test]
 fn the_report_is_about_the_server_it_was_given() {
-    let policy = approval::session_policy(&Policy::permissive(), None, &[]);
+    let policy = approval::session_policy(&Policy::permissive(), None, &[], false);
     let p: Preflight = preflight::check(&stdio("notes", "notes-mcp-server"), &policy);
 
     assert_eq!(p.server, "notes");

@@ -45,6 +45,26 @@ pub struct CliSettings {
     /// a flag is this run and a file is every run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain: Option<bool>,
+    /// Whether a refusal that came from a *default* asks instead of refusing.
+    ///
+    /// **Absent means on**, which is the one default in this section that is not
+    /// "behave as every file written before this release did". It is on because
+    /// the behaviour it removes is a dead end: a deny that came from
+    /// `policy.defaults` ends a train of thought, and the only cure before this
+    /// release was to leave the session, edit a file and come back. An operator
+    /// who has to find a key never meets the fix, and the frustration is the
+    /// thing being fixed.
+    ///
+    /// **What makes that safe is the floor and not the switch.** Escalation moves
+    /// a *fallback* and never a decision: a deny that came from a
+    /// `[[policy.layers]]` rule is not escalated, not drawn and not asked, and
+    /// neither is a path that escapes the workspace root. So turning this on
+    /// widens nothing a configuration file could not already express — it changes
+    /// when io asks, never when io permits. See [`crate::approval::session_policy`].
+    ///
+    /// `false` restores 0.40.0's behaviour exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalate: Option<bool>,
     /// The session's keys, by action name: `[app.io-cli.keys]`.
     ///
     /// A map rather than a struct of named fields on purpose. A struct would
@@ -722,6 +742,13 @@ pub fn render(
                 // reader has to wonder about — and one that would have to be
                 // rewritten if the default ever changed.
                 diff: None,
+                // Left out for the same reason, and with the most force of the
+                // three: its absence means *on*, so writing `escalate = true`
+                // here would put the release's own default into every file the
+                // wizard has ever written, and an operator turning it off later
+                // would find a key already arguing with them. A fresh install
+                // meets the behaviour, not the setting.
+                escalate: None,
                 // Left out for the same reason, and with more force. The glyph
                 // set the wizard ran under was chosen from the locale of the
                 // machine it ran on; writing it down would freeze that answer

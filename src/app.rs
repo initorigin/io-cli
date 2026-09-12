@@ -340,6 +340,15 @@ pub struct App {
     /// says `custom` rather than naming one it is not, and the first press of the
     /// key moves to a posture the operator did choose.
     posture: Option<Posture>,
+    /// Whether a refusal that came from a default asks instead of refusing.
+    ///
+    /// Held here rather than read from the configuration at each of the ten sites
+    /// that build a turn's policy, for the reason the posture is: one answer per
+    /// session, so two turns cannot disagree about it, and one place for
+    /// `/policy` to change it from. Set from `[app.io-cli] escalate` at startup
+    /// and `true` when no file names it — see [`crate::settings::CliSettings`]
+    /// for why that default is the one key here whose absence is not "as before".
+    escalate: bool,
     /// Whether this turn has already been told why its git tools did nothing.
     ///
     /// **One paragraph per turn, not one per refused call.** A model that reaches
@@ -368,6 +377,11 @@ impl App {
             quits: 0,
             armed: None,
             contained: false,
+            // On unless a file says otherwise, which the driver applies at
+            // startup. `true` here rather than `false` so that every construction
+            // — the driver's, and every test that builds an `App` directly —
+            // meets the shipped behaviour rather than the disabled one.
+            escalate: true,
             queued: Vec::new(),
             prompts: Vec::new(),
             queue_open: false,
@@ -687,6 +701,17 @@ impl App {
 
     pub fn posture(&self) -> Option<Posture> {
         self.posture
+    }
+
+    /// Whether a default's refusal asks instead of refusing.
+    pub fn escalates(&self) -> bool {
+        self.escalate
+    }
+
+    /// Say whether it does. Read from the configuration at startup and changed by
+    /// `/policy`; a turn in flight keeps the answer it started with.
+    pub fn set_escalate(&mut self, escalate: bool) {
+        self.escalate = escalate;
     }
 
     /// Say which posture the session started under. The status line follows it.
