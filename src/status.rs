@@ -407,6 +407,20 @@ pub struct Status {
     /// showing the mode alone is reading an intention — `workspace-write` reaching
     /// a portable floor means resource caps and nothing else.
     pub containment: Option<String>,
+    /// The depth of the run the containment word above describes.
+    ///
+    /// **A contained turn has more than one answer to "how are commands
+    /// contained", and drawing the wrong one is the worst bug class this product
+    /// has.** The parent and each spawned child emit their own `Contained`, and
+    /// until 0.41.0 whichever arrived last won — so a field pass watched the line
+    /// read `read-only/macos-sandbox-exec` while a shell `echo >> a.txt` in the
+    /// child succeeded and changed the file. For an interface whose whole claim is
+    /// showing what it is allowed to do, a label that contradicts what just
+    /// happened is worse than no label.
+    ///
+    /// The deepest run wins, because the acts an operator is watching during a
+    /// fan-out are the children's. Cleared with the word it qualifies.
+    containment_depth: u32,
     /// What the sandbox backend's own boundary probe measured, as io-harness
     /// spelled it.
     ///
@@ -694,6 +708,7 @@ impl Status {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            containment_depth: 0,
             provider: None,
             effort: None,
             streaming: None,
@@ -763,6 +778,19 @@ impl Status {
     /// are still going to run. [`Status::branch`] is the sharpest of them:
     /// changing which conversation is on screen does not check out another
     /// branch, so clearing it here would blank a fact that is still true.
+    /// Record how a run's commands are contained, keeping the **deepest** answer.
+    ///
+    /// See [`Status::containment_depth`] for why the deepest rather than the
+    /// latest. Equal depth still overwrites: within one run the newest `Contained`
+    /// is the current one, and a re-placed sandbox should be able to say so.
+    pub fn note_contained(&mut self, depth: u32, mode: &str, backend: &str) {
+        if self.containment.is_some() && depth < self.containment_depth {
+            return;
+        }
+        self.containment_depth = depth;
+        self.containment = Some(format_containment(mode, backend));
+    }
+
     pub fn forget_run(&mut self) {
         self.tokens = None;
         // The estimate belongs to a step of the conversation being put down. It
@@ -800,6 +828,7 @@ impl Status {
         // anything.
         self.cached = None;
         self.containment = None;
+        self.containment_depth = 0;
         // Beside the containment word it qualifies, and for the same reason: a
         // measurement belongs to the run that took it, and carrying it onto the
         // next one would report a boundary that was never probed.

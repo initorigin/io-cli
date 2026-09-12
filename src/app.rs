@@ -1800,8 +1800,15 @@ impl App {
             | io_harness::EventKind::HandleOrphaned { .. } => {
                 self.status.jobs = self.status.jobs.saturating_sub(1);
             }
+            // **The event's own depth decides, not its arrival order.** During a
+            // fan-out the parent and every child emit one of these, and taking
+            // whichever landed last let a parent's word describe a child's act: a
+            // field pass read `read-only/macos-sandbox-exec` off this line while a
+            // shell `echo >> a.txt` in the child succeeded and changed the file.
+            // The deepest run wins, because the acts an operator is watching
+            // during a fan-out are the children's.
             io_harness::EventKind::Contained { mode, backend, .. } => {
-                self.status.containment = Some(crate::status::format_containment(mode, backend));
+                self.status.note_contained(event.depth, mode, backend);
             }
             // **The three connection fields, filled from what happened and never
             // from what was configured.** A server named in the file and a server
