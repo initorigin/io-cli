@@ -298,6 +298,21 @@ pub enum Action {
     /// refuses one while a run is in flight, since every command it dispatches
     /// moves something the running turn is about to write.
     Fleet,
+    /// Commit the running step's full text into the scrollback.
+    ///
+    /// **A key for the same reason [`Action::Fleet`] is one, and this overrides a
+    /// decision recorded in `src/commands.rs`.** That note said a key was cheap to
+    /// add later and expensive to take back once it is in anybody's fingers, which
+    /// is true and is why `/expand` shipped alone in 0.14.0. Later is now: the
+    /// moment a step's detail is worth reading is *while it is running*, and a
+    /// slash command cannot be typed then — the driver refuses one mid-turn
+    /// because every command it dispatches moves something the turn is about to
+    /// write. So the one surface that exists to show more of a running step could
+    /// not be reached while a step was running.
+    ///
+    /// `/expand` keeps working, keeps its argument, and is unbound by this — the
+    /// command takes a step number and the key takes the one in flight.
+    Expand,
 }
 
 impl Action {
@@ -311,6 +326,7 @@ impl Action {
         Action::Transcript,
         Action::Rewind,
         Action::Fleet,
+        Action::Expand,
     ];
 
     /// The name this action is called by in `[app.io-cli.keys]`.
@@ -323,6 +339,7 @@ impl Action {
             Self::Transcript => "transcript",
             Self::Rewind => "rewind",
             Self::Fleet => "fleet",
+            Self::Expand => "expand",
         }
     }
 
@@ -369,6 +386,12 @@ impl Action {
             // `tui-textarea`'s when this note was written, and the trade is
             // identical because that keymap was reproduced arm for arm.
             Self::Fleet => "ctrl+f",
+            // **`ctrl+e` may collide with a terminal or a multiplexer**, and the
+            // answer is that it is rebindable like every other action here —
+            // `docs/guide/keys.md` says so on this row rather than in prose
+            // somewhere else. It is not `ctrl+x` or `ctrl+r`, which readline and
+            // every shell built on it have spoken for.
+            Self::Expand => "ctrl+e",
         }
     }
 

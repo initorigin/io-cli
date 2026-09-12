@@ -147,6 +147,13 @@ pub enum Command {
     /// `Command` makes the driver's obligation structural — a variant nobody
     /// handles is a match arm the compiler asks about.
     Remembered(io_harness::Rule),
+    /// `Ctrl+E`: commit the running step's full detail into the scrollback.
+    ///
+    /// The keystroke spelling of `/expand`, and it exists because the moment that
+    /// detail is worth reading is while the step is running. Out as a command for
+    /// the reason [`Command::Transcript`] is: the lines are read from the store
+    /// and written to the terminal, and [`App`] holds neither.
+    Expand,
 }
 
 /// What a paste turned out to be.
@@ -2286,6 +2293,11 @@ impl App {
                 self.toggle_fleet();
                 Command::None
             }
+            // **The same point, and the reason this one is a `Command` rather
+            // than a method call.** Expanding a step reads the store, which this
+            // type does not hold — so it goes out the way `Transcript` does and
+            // the driver, which has the store and the screen, commits the lines.
+            Some(Hit::Fire(Action::Expand)) => Command::Expand,
             // The rewind chord with something typed, and every key this session
             // does not bind: the composer's, which is where they belong.
             _ => self.compose(key),

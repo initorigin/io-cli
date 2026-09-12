@@ -95,8 +95,14 @@ pub const KEYS: &[(&str, &str)] = &[
         "show the fleet: the children this turn has spawned",
     ),
     (
-        "y / a / n",
-        "choose an approval's answer: allow once, allow this session, deny — `Enter` gives it",
+        "Ctrl+E",
+        "put the running step's full text into the scrollback — what `/expand` shows, without \
+         typing a command while a step is moving",
+    ),
+    (
+        "y / a / w / n",
+        "choose an approval's answer: allow once, allow this session, allow and write it down, \
+         deny — `Enter` gives it",
     ),
     (
         "Esc",

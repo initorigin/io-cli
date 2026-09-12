@@ -763,7 +763,10 @@ fn the_key_table_covers_every_key_this_release_binds() {
         // 0.8.0. It has a key as well as `/fleet` because the moment it is worth
         // opening is mid-turn, and a slash command cannot be typed then.
         "Ctrl+F",
-        "y / a / n",
+        // 0.41.0 — the eighth rebindable action, and a key because the moment a
+        // step's detail is worth reading is while it is running.
+        "Ctrl+E",
+        "y / a / w / n",
         // 0.32.0. Not a chord and not rebindable: it is `Picker::key`'s, so it
         // applies to every list in the product rather than to one surface, and it
         // is the completion key an operator arrives already expecting. Until this
@@ -780,9 +783,11 @@ fn the_key_table_covers_every_key_this_release_binds() {
     ] {
         assert!(documented.contains(&key), "{key} is bound but undocumented");
     }
+    // Seventeen from 0.41.0: `Ctrl+E` is the eighth rebindable action, and the
+    // approval row gained `w` — the same row, one more letter in it.
     assert_eq!(
         documented.len(),
-        16,
+        17,
         "a key was added to the table without being added to this list, or the \
          other way round",
     );

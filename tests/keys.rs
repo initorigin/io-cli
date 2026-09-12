@@ -491,3 +491,71 @@ fn an_unbound_chord_reaches_the_prompt() {
         Some(Hit::Fire(Action::Rewind)),
     );
 }
+
+/// **F13 — `Ctrl+E` is the eighth action, and it is rebindable like the rest.**
+///
+/// `/expand` shipped in 0.14.0 without a key, and `src/commands.rs` recorded the
+/// reason: a key is cheap to add later and expensive to take back once it is in
+/// anybody's fingers. Later is now. The moment a step's full text is worth reading
+/// is *while the step is running*, and reaching `/expand` then means opening the
+/// palette and typing into a moving screen — so the one surface that exists to
+/// show more of a running step was the hardest to reach exactly when it mattered.
+///
+/// Sabotage: leave `Action::Expand` out of `Action::ALL` and the first assertion
+/// fails; bind it to `ctrl+c` in the table and the last one does.
+#[test]
+fn f13_expand_is_bindable_and_cannot_take_the_interrupt() {
+    use io_cli::keys::Action;
+
+    assert_eq!(
+        Action::ALL.len(),
+        8,
+        "the rebindable set changed; `Ctrl+E` is the eighth and the table, the \
+         guide and `tests/commands.rs` all count it",
+    );
+    assert!(
+        Action::ALL.contains(&Action::Expand),
+        "`expand` is not in the rebindable set, so `[app.io-cli.keys]` cannot name it",
+    );
+    assert_eq!(
+        Action::named("expand"),
+        Some(Action::Expand),
+        "the name in the configuration file does not resolve to the action",
+    );
+    assert_eq!(
+        Action::Expand.default_binding(),
+        "ctrl+e",
+        "the documented default and the working default must be one string",
+    );
+
+    // Rebindable, which is the answer to a terminal or a multiplexer that has
+    // already spoken for the chord.
+    let (keys, notices) = Keys::resolve(Some(&asked(&[("expand", "alt+e")])));
+    assert!(
+        notices.is_empty(),
+        "rebinding `expand` was refused: {notices:?}",
+    );
+    assert_eq!(
+        keys.hit(
+            Chord::of(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)),
+            None,
+        ),
+        Some(Hit::Fire(Action::Expand)),
+        "the rebound chord does not reach the action",
+    );
+
+    // **And it cannot be used to take the interrupt away**, which is the one
+    // binding no file may move — the same refusal every other action gets.
+    let (keys, notices) = Keys::resolve(Some(&asked(&[("expand", "ctrl+c")])));
+    let said = notices.join("\n");
+    assert!(
+        said.contains("Ctrl+C is not rebindable"),
+        "binding `expand` to Ctrl+C was accepted, which locks an operator inside a \
+         running agent: {said:?}",
+    );
+    assert_eq!(
+        keys.hit(Chord::of(ctrl('c')), None),
+        Some(Hit::Fire(Action::Interrupt)),
+        "the interrupt did not survive the refused binding",
+    );
+}

@@ -4823,6 +4823,15 @@ async fn loop_over<P: Provider, F: Fn(&str) -> Result<P, String>>(
                 paint(screen, &mut app)?;
             }
             Command::Transcript => commit_transcript(screen, &session, &store, &app.theme)?,
+            // **`Ctrl+E` at an idle prompt expands the last step**, which is the
+            // only step there is when nothing is running. The same lines
+            // `/expand` commits, through the same function, so the key and the
+            // command cannot show two different things.
+            Command::Expand => {
+                let last = last_run(&session, &store);
+                let lines = expand(last.as_ref(), &store, &app.theme, app.events.thought());
+                screen.commit(&lines).map_err(|e| e.to_string())?;
+            }
             Command::Attach(run_id) => {
                 watch_child(screen, &mut app, &store, inputs, run_id).await?;
             }
@@ -8680,6 +8689,20 @@ async fn turn<P: Provider>(
                             Command::Remembered(ref rule) => {
                                 let rule = rule.clone();
                                 remember_rule(app, &workspace_root, &rule);
+                            }
+                            // **`Ctrl+E` mid-turn, which is the only reason it is a
+                            // key.** `/expand` runs mid-turn too, but reaching it
+                            // means opening the palette and typing while a step is
+                            // moving; the key is the point. The same `expand` the
+                            // command calls, so the two cannot draw differently.
+                            Command::Expand => {
+                                let lines = expand(
+                                    facts.last.as_ref(),
+                                    store,
+                                    &app.theme,
+                                    app.events.thought(),
+                                );
+                                screen.commit(&lines).map_err(|e| e.to_string())?;
                             }
                             _ => {}
                         }
