@@ -97,7 +97,10 @@ const FIRST_RELEASED: &[(&str, (u64, u64, u64))] = &[("aarch64-unknown-linux-mus
 fn unix_targets_published_in(rows: &[(String, String)], version: &str) -> BTreeSet<String> {
     let parts: Vec<u64> = version
         .split('.')
-        .map(|part| part.parse().unwrap_or_else(|_| panic!("{version} is not x.y.z")))
+        .map(|part| {
+            part.parse()
+                .unwrap_or_else(|_| panic!("{version} is not x.y.z"))
+        })
         .collect();
     let declared = (parts[0], parts[1], parts[2]);
     rows.iter()
@@ -568,7 +571,11 @@ fn f5_the_generator_refuses_a_checksum_file_it_cannot_verify() {
         .filter(|line| !line.contains(arm64))
         .map(|line| format!("{line}\n"))
         .collect();
-    assert_eq!(four.lines().count(), 4, "the four-line fixture is not four lines");
+    assert_eq!(
+        four.lines().count(),
+        4,
+        "the four-line fixture is not four lines"
+    );
     let uppercased = full.replacen(&fixture_digest(0), &fixture_digest(0).to_uppercase(), 1);
 
     for (what, sums, says) in [

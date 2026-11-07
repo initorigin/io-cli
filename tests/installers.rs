@@ -343,7 +343,11 @@ fn resolved_target(os: &str, arch: &str) -> String {
     let empty = dir.path().join("release");
     std::fs::create_dir_all(&empty).expect("an empty release directory");
 
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let output = Command::new("sh")
         .arg(repo().join("install.sh"))
         .env("IO_VERSION", VERSION)
@@ -354,7 +358,10 @@ fn resolved_target(os: &str, arch: &str) -> String {
         .expect("the installer runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    match stdout.lines().find_map(|line| line.split("-> target ").nth(1)) {
+    match stdout
+        .lines()
+        .find_map(|line| line.split("-> target ").nth(1))
+    {
         Some(target) => target.trim().to_string(),
         None => format!("no target; stderr: {stderr}"),
     }
@@ -372,7 +379,10 @@ fn linux_arm64_resolves_the_aarch64_musl_artifact_under_both_spellings() {
             "Linux {arch}",
         );
     }
-    assert_eq!(resolved_target("Linux", "x86_64"), "x86_64-unknown-linux-musl");
+    assert_eq!(
+        resolved_target("Linux", "x86_64"),
+        "x86_64-unknown-linux-musl"
+    );
     assert_eq!(resolved_target("Darwin", "arm64"), "aarch64-apple-darwin");
     assert_eq!(resolved_target("Darwin", "x86_64"), "x86_64-apple-darwin");
 }
