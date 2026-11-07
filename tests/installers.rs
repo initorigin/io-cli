@@ -38,6 +38,7 @@ fn target() -> &'static str {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
         (os, arch) => panic!("{TARGET_HINT} is unknown for {os} {arch}"),
     }
 }
@@ -301,6 +302,7 @@ fn the_artifact_names_match_what_the_release_workflow_builds() {
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
         "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
         "x86_64-pc-windows-msvc",
     ] {
         assert!(
@@ -312,10 +314,67 @@ fn the_artifact_names_match_what_the_release_workflow_builds() {
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
         "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
     ] {
         assert!(shell.contains(target), "install.sh cannot resolve {target}");
     }
     assert!(powershell.contains("x86_64-pc-windows-msvc"));
+}
+
+/// The target `install.sh` resolves for an `uname -s` / `uname -m` pair, read off
+/// its own narration with a stand-in `uname` first on `PATH`.
+///
+/// The download afterwards fails — the release directory is empty — and that is
+/// fine: the mapping is printed before anything is fetched, and the mapping is
+/// what this asks about. A machine nobody here owns is the only way to reach the
+/// other arms, so the arms are reached by lying about the machine.
+fn resolved_target(os: &str, arch: &str) -> String {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("a bin directory");
+    let fake = bin.join("uname");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\ncase \"$1\" in -s) echo {os} ;; -m) echo {arch} ;; esac\n"),
+    )
+    .expect("the stand-in uname");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let empty = dir.path().join("release");
+    std::fs::create_dir_all(&empty).expect("an empty release directory");
+
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg(repo().join("install.sh"))
+        .env("IO_VERSION", VERSION)
+        .env("IO_BASE_URL", format!("file://{}", empty.display()))
+        .env("IO_INSTALL_DIR", dir.path().join("install"))
+        .env("PATH", path)
+        .output()
+        .expect("the installer runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match stdout.lines().find_map(|line| line.split("-> target ").nth(1)) {
+        Some(target) => target.trim().to_string(),
+        None => format!("no target; stderr: {stderr}"),
+    }
+}
+
+/// #117 — a Linux arm64 machine is installed, not refused, under both spellings
+/// `uname -m` uses for it; and the three mappings that already existed did not
+/// move while the fourth was added.
+#[test]
+fn linux_arm64_resolves_the_aarch64_musl_artifact_under_both_spellings() {
+    for arch in ["aarch64", "arm64"] {
+        assert_eq!(
+            resolved_target("Linux", arch),
+            "aarch64-unknown-linux-musl",
+            "Linux {arch}",
+        );
+    }
+    assert_eq!(resolved_target("Linux", "x86_64"), "x86_64-unknown-linux-musl");
+    assert_eq!(resolved_target("Darwin", "arm64"), "aarch64-apple-darwin");
+    assert_eq!(resolved_target("Darwin", "x86_64"), "x86_64-apple-darwin");
 }
 
 /// The README's promise that neither installer writes your environment.
