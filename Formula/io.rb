@@ -32,13 +32,13 @@ class Io < Formula
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/initorigin/io-cli/releases/download/v0.41.0/io-0.41.0-aarch64-apple-darwin.tar.gz"
-      sha256 "2726d0ae755c65492de9bacf774600c85e916c8b92695afdcc74e5e1095a1488"
+      url "https://github.com/initorigin/io-cli/releases/download/v0.42.0/io-0.42.0-aarch64-apple-darwin.tar.gz"
+      sha256 "0ad01bb5dd8909774798f4e5417efbe0d644c19b89eb0e2b65ae445197718c25"
     end
 
     if Hardware::CPU.intel?
-      url "https://github.com/initorigin/io-cli/releases/download/v0.41.0/io-0.41.0-x86_64-apple-darwin.tar.gz"
-      sha256 "fe2f2fb51aa86d962c5dcbdac05bbd2c454b846cc4d87aab5681bf687c4b2319"
+      url "https://github.com/initorigin/io-cli/releases/download/v0.42.0/io-0.42.0-x86_64-apple-darwin.tar.gz"
+      sha256 "a004d6dc39b238ca8ae6526b01186689ff1867a095d67d1516d6ec1e3f3fa392"
     end
   end
 
@@ -48,9 +48,14 @@ class Io < Formula
   # carries that artifact — until then this machine gets Homebrew's own refusal
   # rather than a URL that 404s halfway through an install.
   on_linux do
+    if Hardware::CPU.arm?
+      url "https://github.com/initorigin/io-cli/releases/download/v0.42.0/io-0.42.0-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "82e3c2986bce5de2f4fc99d14c8818880d110b775195d4106fb1f69fd903aa83"
+    end
+
     if Hardware::CPU.intel?
-      url "https://github.com/initorigin/io-cli/releases/download/v0.41.0/io-0.41.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "2483d875b2519ab0482090840ee26f49014d32b952531346b4d8b6b350d4e2c5"
+      url "https://github.com/initorigin/io-cli/releases/download/v0.42.0/io-0.42.0-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "2d901a2d08ca5e45d17a42dadb2e19968a6d07bd4a7a9e0ec8ce32f29168fa58"
     end
   end
 
