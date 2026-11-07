@@ -1,6 +1,6 @@
 //! Where this binary came from, and the one command that updates it.
 //!
-//! Three install paths reach the same four artifacts — the scripts, a Homebrew
+//! Three install paths reach the same five artifacts — the scripts, a Homebrew
 //! tap, and a scoop bucket — and each is updated by a different command. A
 //! binary that cannot say which one placed it has made updating harder than the
 //! single-path release it replaced.

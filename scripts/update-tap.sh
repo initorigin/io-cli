@@ -9,8 +9,8 @@
 # `OrganizationAdmin`, so a push from Actions is refused and Actions may not open
 # the pull request either.
 #
-# It fetches that Release's SHA256SUMS, refuses anything it cannot read as four
-# 64-character lowercase digests for the four artifacts the workflow builds, and
+# It fetches that Release's SHA256SUMS, refuses anything it cannot read as five
+# 64-character lowercase digests for the five artifacts the workflow builds, and
 # only then rewrites the version and the checksums in those two files. The
 # refusal is the point: a formula that names a digest for an artifact nobody
 # uploaded installs nothing, and it fails on the user's machine rather than here.
@@ -35,6 +35,7 @@ DOWNLOADS="https://github.com/$REPO/releases/download"
 MAC_ARM="aarch64-apple-darwin"
 MAC_INTEL="x86_64-apple-darwin"
 LINUX="x86_64-unknown-linux-musl"
+LINUX_ARM="aarch64-unknown-linux-musl"
 WINDOWS="x86_64-pc-windows-msvc"
 
 die() { printf 'update-tap: %s\n' "$*" >&2; exit 1; }
@@ -99,9 +100,10 @@ want() {
 mac_arm=$(want "$MAC_ARM" tar.gz)
 mac_intel=$(want "$MAC_INTEL" tar.gz)
 linux=$(want "$LINUX" tar.gz)
+linux_arm=$(want "$LINUX_ARM" tar.gz)
 windows=$(want "$WINDOWS" zip)
 
-# Nothing is written until all four have been read, so a Release missing one
+# Nothing is written until all five have been read, so a Release missing one
 # artifact leaves both files exactly as they were.
 #
 # Both rewrites replace the quoted VALUE on a line and leave the rest of the line
@@ -114,20 +116,40 @@ rewrite() {
     cat "$work/out" > "$_file"
 }
 
+# The Linux arm64 branch is new in 0.42.0. A formula that predates it gets the
+# branch written in, at the head of `on_linux`, with a url and a sha256 the
+# rules below then fill like any other — so the tap pull request that first
+# names it is generated like every other one, and a second run finds it there.
+if grep -q "$LINUX_ARM" "$formula"; then has_arm=1; else has_arm=0; fi
+
 rewrite "$formula" \
+    -v has_arm="$has_arm" \
     -v v="$version" -v downloads="$DOWNLOADS" \
-    -v arm="$MAC_ARM" -v intel="$MAC_INTEL" -v musl="$LINUX" \
-    -v h_arm="$mac_arm" -v h_intel="$mac_intel" -v h_musl="$linux" '
-    BEGIN { sha[arm] = h_arm; sha[intel] = h_intel; sha[musl] = h_musl }
+    -v arm="$MAC_ARM" -v intel="$MAC_INTEL" -v musl="$LINUX" -v musl_arm="$LINUX_ARM" \
+    -v h_arm="$mac_arm" -v h_intel="$mac_intel" -v h_musl="$linux" -v h_musl_arm="$linux_arm" '
+    BEGIN {
+        sha[arm] = h_arm; sha[intel] = h_intel
+        sha[musl] = h_musl; sha[musl_arm] = h_musl_arm
+    }
     # No version rule: the formula declares no `version` stanza, because
     # Homebrew scans it out of the url and `brew audit --strict` refuses a
     # second declaration of it. Rewriting the urls below is therefore what
     # moves the formula to a new version.
+    /^[[:space:]]*on_linux do/ && has_arm == 0 {
+        print
+        print "    if Hardware::CPU.arm?"
+        print "      url \"" downloads "/v" v "/io-" v "-" musl_arm ".tar.gz\""
+        print "      sha256 \"" sha[musl_arm] "\""
+        print "    end"
+        print ""
+        next
+    }
     /^[[:space:]]*url "/ {
         target = ""
         if (index($0, arm)) target = arm
         else if (index($0, intel)) target = intel
         else if (index($0, musl)) target = musl
+        else if (index($0, musl_arm)) target = musl_arm
         if (target == "") {
             print "update-tap: this url names no known target: " $0 > "/dev/stderr"
             exit 1
@@ -174,4 +196,5 @@ printf '%s\n' "Formula/io.rb and bucket/io.json now name $version:"
 printf '  %s  %s\n' "$mac_arm" "io-$version-$MAC_ARM.tar.gz"
 printf '  %s  %s\n' "$mac_intel" "io-$version-$MAC_INTEL.tar.gz"
 printf '  %s  %s\n' "$linux" "io-$version-$LINUX.tar.gz"
+printf '  %s  %s\n' "$linux_arm" "io-$version-$LINUX_ARM.tar.gz"
 printf '  %s  %s\n' "$windows" "io-$version-$WINDOWS.zip"

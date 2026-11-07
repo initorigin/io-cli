@@ -72,8 +72,7 @@ case "$os-$arch" in
     Darwin-arm64)   target="aarch64-apple-darwin" ;;
     Darwin-x86_64)  target="x86_64-apple-darwin" ;;
     Linux-x86_64)   target="x86_64-unknown-linux-musl" ;;
-    Linux-aarch64|Linux-arm64)
-        die "there is no Linux arm64 build yet. Build from source: cargo build --release" ;;
+    Linux-aarch64|Linux-arm64) target="aarch64-unknown-linux-musl" ;;
     *)
         die "no build for $os $arch. Build from source: cargo build --release" ;;
 esac

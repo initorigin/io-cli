@@ -1,6 +1,6 @@
 [package]
 name = "io-cli"
-version = "0.41.0"
+version = "0.42.0"
 edition = "2021"
 # io-harness declares 1.95, set by `libsqlite3-sys` calling the std `cfg_select!`
 # macro from its build script. Nothing here can be lower than what the harness
@@ -158,8 +158,9 @@ toml = "1"
 # rather than the version.
 #
 # `default-features = false` excludes `regex-onig`, which is oniguruma — a C
-# library. Two of this product's four artifacts are cross-compiled, to
-# `x86_64-unknown-linux-musl` and `x86_64-pc-windows-msvc`, and a native build
+# library. Three of this product's five artifacts are cross-compiled, to
+# `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` and
+# `x86_64-pc-windows-msvc`, and a native build
 # step in that path fails inside the release workflow rather than in a test.
 # `regex-fancy` is the pure-Rust engine that replaces it.
 #

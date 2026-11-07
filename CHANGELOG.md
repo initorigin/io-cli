@@ -6,6 +6,50 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-07
+
+io installs on Linux arm64 — a Raspberry Pi, a Graviton or Ampere server, an arm64
+container — from the same one-line installer and the same Homebrew tap as every
+other platform.
+
+### Added
+
+- **A Linux arm64 build.** Every Release now carries a fifth artifact,
+  `aarch64-unknown-linux-musl`: one statically linked binary that runs on any
+  distribution, built on an arm64 runner rather than cross-compiled, so the
+  `--version` smoke in the release workflow runs the binary that ships.
+  Thanks @Netsnake-TN (#117).
+- **`install.sh` installs it.** `uname -m` reporting `aarch64` or `arm64` on Linux
+  now resolves to the new artifact instead of the refusal "there is no Linux arm64
+  build yet". It is verified against `SHA256SUMS` before it is unpacked, like every
+  other artifact.
+- **The Homebrew tap serves it.** `scripts/update-tap.sh` writes an arm64 branch
+  into the formula's Linux block the first time it runs over a Release that has
+  the artifact — the tap update that follows this one — and now requires all
+  five digests before it writes anything.
+- **A dry run of the release workflow.** `gh workflow run release.yml -f
+  version=X.Y.Z -f dry_run=true` builds, smokes and checksums every target and
+  stops before creating a Release, so a change to the matrix is proved before a
+  tag, which cannot be deleted, exists.
+- **Contributors are credited in every release.** `.github/contributors.sh` prints
+  the Contributors section of these notes, and after a tag's Release is published the
+  workflow comments on each outside contributor's pull request and issue, once.
+
+### Changed
+
+- **io-harness 0.86.1.** Its seccomp filter did not compile for
+  `aarch64-unknown-linux-musl`, which the release workflow's dry run found while
+  building the new artifact. 0.86.1 fixes that and changes nothing else this
+  product uses.
+
+### Contributors
+
+Thank you to everyone outside the core team whose work is in this release.
+
+- @Netsnake-TN: reported feat: Linux arm64 support (#117)
+
+@dependabot kept dependencies current in #116, #119, #120, #123, #124, #125, #126, #127, #128, #129.
+
 ## [0.41.0] - 2026-09-12
 
 Everything the 0.40.0 field report found, fixed on io's side — and the permission
@@ -4059,7 +4103,8 @@ client, tool, sandbox, policy engine or session store of its own.
 - There is no crates.io publish and `cargo install` is not an install path.
 - No test in this release asserts on wall-clock time.
 
-[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/initorigin/io-cli/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/initorigin/io-cli/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/initorigin/io-cli/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/initorigin/io-cli/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/initorigin/io-cli/compare/v0.38.2...v0.39.0

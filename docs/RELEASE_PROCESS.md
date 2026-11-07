@@ -74,10 +74,26 @@ irreversible in front of something reviewable.
 
 ## What the workflow builds
 
-`release.yml` builds four targets — `aarch64-apple-darwin`, `x86_64-apple-darwin`,
-`x86_64-unknown-linux-musl`, `x86_64-pc-windows-msvc` — runs `--version` on each where the host
-can execute it, packages them, writes `SHA256SUMS`, and creates the Release. The release title is
-the bare `io-cli X.Y.Z`, and the notes come from the CHANGELOG entry.
+`release.yml` builds five targets — `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc` — runs
+`--version` on each where the host can execute it, packages them, writes `SHA256SUMS`, and creates
+the Release. Both Linux targets build on a runner of their own architecture (`ubuntu-latest` and
+`ubuntu-24.04-arm`), so the arm64 smoke runs the binary that ships. The release title is the bare
+`io-cli X.Y.Z`, and the notes come from the CHANGELOG entry.
+
+**A dry run before the tag.** A tag on this repository is protected and cannot be deleted, so a
+release that changes the matrix is built once without one:
+
+```sh
+gh workflow run release.yml --ref feat/X.Y.Z -f version=X.Y.Z -f dry_run=true
+```
+
+That run builds, smokes and checksums every target, then stops before the Release step. A
+dispatch without `dry_run` publishes a real Release, as it always has.
+
+**Contributors.** The CHANGELOG entry ends with the section
+`bash .github/contributors.sh section v<previous>` prints, and after a tag's Release is published
+the `thank` job comments on each outside contributor's pull request and issue in the range, once.
 
 ## Branch rules
 
