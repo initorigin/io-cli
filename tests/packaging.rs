@@ -76,10 +76,40 @@ fn matrix() -> Vec<(String, String)> {
     }
     assert_eq!(
         rows.len(),
-        4,
-        "the release matrix no longer has four rows; this test read {rows:?}",
+        5,
+        "the release matrix no longer has five rows; this test read {rows:?}",
     );
     rows
+}
+
+/// The Release that first published a target, for every target newer than the
+/// matrix's original four.
+///
+/// The formula names the artifacts of the Release it declares, and it is moved
+/// forward only after the next Release exists. So during the release that adds a
+/// target, the formula still declares the version before it — which has no such
+/// artifact to point at. A target is owed by the formula from its first Release
+/// on, and not a version earlier: a url naming an artifact the declared Release
+/// never uploaded installs nothing.
+const FIRST_RELEASED: &[(&str, (u64, u64, u64))] = &[("aarch64-unknown-linux-musl", (0, 42, 0))];
+
+/// The unix targets of the release matrix that the Release `version` published.
+fn unix_targets_published_in(rows: &[(String, String)], version: &str) -> BTreeSet<String> {
+    let parts: Vec<u64> = version
+        .split('.')
+        .map(|part| part.parse().unwrap_or_else(|_| panic!("{version} is not x.y.z")))
+        .collect();
+    let declared = (parts[0], parts[1], parts[2]);
+    rows.iter()
+        .filter(|(target, _)| !target.contains("windows"))
+        .filter(|(target, _)| {
+            FIRST_RELEASED
+                .iter()
+                .find(|(newer, _)| newer == target)
+                .is_none_or(|(_, since)| declared >= *since)
+        })
+        .map(|(target, _)| target.clone())
+        .collect()
 }
 
 /// Every URL in a packaging file, with scoop's `$version` template resolved.
@@ -218,11 +248,7 @@ fn f1_the_formula_and_the_manifest_name_the_artifacts_the_release_workflow_build
         seen.insert(relative, targets);
     }
 
-    let unix: BTreeSet<String> = rows
-        .iter()
-        .filter(|(target, _)| !target.contains("windows"))
-        .map(|(target, _)| target.clone())
-        .collect();
+    let unix = unix_targets_published_in(&rows, &version);
     let windows: BTreeSet<String> = rows
         .iter()
         .filter(|(target, _)| target.contains("windows"))
@@ -295,11 +321,13 @@ fn f2_the_formula_and_the_manifest_agree_on_one_released_version() {
 /// under another's URL. Neither looks wrong in a diff; both install nothing.
 #[test]
 fn f3_every_checksum_is_a_distinct_lowercase_hex_digest() {
-    let formula = digests(&read(FORMULA));
+    let text = read(FORMULA);
+    let unix = unix_targets_published_in(&matrix(), &declared(&text, FORMULA)).len();
+    let formula = digests(&text);
     let manifest = digests(&read(MANIFEST));
     assert_eq!(
         formula.len(),
-        3,
+        unix,
         "the formula names {} checksums, not one per unix target",
         formula.len(),
     );
@@ -474,7 +502,22 @@ fn f4_the_generator_is_idempotent_and_writes_only_those_two_files() {
         .into_iter()
         .chain(digests(&manifest))
         .collect();
-    let fixtured: BTreeSet<String> = (0..matrix().len()).map(fixture_digest).collect();
+    // Every row the staged files already carried a url for. The generator moves
+    // urls and digests; it adds no platform block, so a target newer than the
+    // formula's declared Release (see `FIRST_RELEASED`) is written by hand in the
+    // tap pull request that first names it, and F1 holds the formula to it from
+    // then on.
+    let staged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&before[FORMULA]),
+        String::from_utf8_lossy(&before[MANIFEST]),
+    );
+    let fixtured: BTreeSet<String> = matrix()
+        .iter()
+        .enumerate()
+        .filter(|(_, (target, _))| staged.contains(target.as_str()))
+        .map(|(row, _)| fixture_digest(row))
+        .collect();
     assert_eq!(
         written, fixtured,
         "the generator did not write the fixture's digests into both files",
@@ -516,6 +559,16 @@ fn f5_the_generator_refuses_a_checksum_file_it_cannot_verify() {
         .filter(|line| !line.contains(windows.0.as_str()))
         .map(|line| format!("{line}\n"))
         .collect();
+    // The shape every Release before 0.42.0 had: four lines, no Linux arm64.
+    // A generator still reading four would accept it and write a formula whose
+    // arm64 branch names a digest nobody computed.
+    let arm64 = "aarch64-unknown-linux-musl";
+    let four: String = full
+        .lines()
+        .filter(|line| !line.contains(arm64))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(four.lines().count(), 4, "the four-line fixture is not four lines");
     let uppercased = full.replacen(&fixture_digest(0), &fixture_digest(0).to_uppercase(), 1);
 
     for (what, sums, says) in [
@@ -526,6 +579,11 @@ fn f5_the_generator_refuses_a_checksum_file_it_cannot_verify() {
                 "does not mention io-{FIXTURE_VERSION}-{}.{}",
                 windows.0, windows.1
             ),
+        ),
+        (
+            "a four-line SHA256SUMS with no Linux arm64 artifact",
+            four.as_str(),
+            format!("does not mention io-{FIXTURE_VERSION}-{arm64}.tar.gz"),
         ),
         ("an empty SHA256SUMS", "", "is empty".to_string()),
         (
