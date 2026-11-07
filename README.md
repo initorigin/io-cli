@@ -199,10 +199,11 @@ surface, the exit codes, the configuration keys and the paths io writes.
 | --- | --- | --- |
 | macOS, Apple silicon | `aarch64-apple-darwin` | io-harness's own: `sandbox-exec` |
 | macOS, Intel | `x86_64-apple-darwin` | as above |
-| Linux | `x86_64-unknown-linux-musl`, statically linked | io-harness's chain: Landlock, `bwrap`, namespaces, floor |
+| Linux, x86_64 | `x86_64-unknown-linux-musl`, statically linked | io-harness's chain: Landlock, `bwrap`, namespaces, floor |
+| Linux, arm64 | `aarch64-unknown-linux-musl`, statically linked | as above |
 | Windows | `x86_64-pc-windows-msvc` | Job Object, with AppContainer opt-in |
 
-The four artifacts and their `SHA256SUMS` are attached to every GitHub Release,
+The five artifacts and their `SHA256SUMS` are attached to every GitHub Release,
 and the full test suite runs on Ubuntu, macOS and Windows in CI. **What confines
 a command is io-harness's, not this product's** — `io` shows you which backend
 actually answered on this host, in the footer, because the mode asked for and the

@@ -103,7 +103,7 @@ fn names_in(table: Option<&toml::Value>) -> BTreeSet<String> {
 /// N1 is about what `cargo tree --depth 1` prints, and `--depth 1` prints more
 /// tables than one. A `[build-dependencies]` entry is a crate compiled and *run*
 /// on the build machine. A `[target.'cfg(unix)'.dependencies] nix` is a direct
-/// dependency on three of the four release artifacts and invisible on the fourth
+/// dependency on four of the five release artifacts and invisible on the fifth
 /// — and `nix` is in `FORBIDDEN` below precisely because it is the shape a
 /// sandbox arrives in, which is also the shape that arrives `cfg`-guarded. Before
 /// this release either one could have been added and no gate in this file would
@@ -1631,9 +1631,9 @@ fn n1_the_crate_is_never_published() {
 /// N2 — the feature set, which is the load-bearing half of taking syntect.
 ///
 /// The name alone is not the contract. `syntect`'s DEFAULT features include
-/// `regex-onig`, which is oniguruma — a C library. Two of this product's four
-/// release artifacts are cross-compiled, to `x86_64-unknown-linux-musl` and
-/// `x86_64-pc-windows-msvc`, and a native build step in that path fails inside
+/// `regex-onig`, which is oniguruma — a C library. Three of this product's five
+/// release artifacts are cross-compiled, to `x86_64-unknown-linux-musl`,
+/// `aarch64-unknown-linux-musl` and `x86_64-pc-windows-msvc`, and a native build step in that path fails inside
 /// the release workflow rather than in a test. So a later `default-features =
 /// true`, or a merge that drops the feature list, has to fail here — where it
 /// costs a red check — instead of there, where it costs the Release.
@@ -2452,7 +2452,7 @@ fn f1_the_session_door_spells_a_config_value_through_the_one_speller() {
 ///
 /// **Deliberately narrow.** It looks for a version behind a word that *dates*
 /// something (`are 0.`, `since 0.`, `in 0.`), not for any number with dots: a
-/// citation like `io-harness-0.86.0/src/…` is a reference rather than a claim
+/// citation like `io-harness-0.86.1/src/…` is a reference rather than a claim
 /// about this binary, and a version compared at runtime is data rather than prose.
 ///
 /// Sabotage: put `are 0.5.0.` back into `src/term.rs` and this names the file.
@@ -2488,7 +2488,7 @@ fn n7_no_operator_facing_string_names_a_release_number() {
         // one, and it had to go for a reason worth keeping: spelling the prefix out
         // put a version string into THIS file, which `tests/docs.rs`'s citation
         // gate then read as a citation of an io-harness nobody pins. The narrowed
-        // phrases below cannot match a citation anyway — `io-harness-0.86.0/src/…`
+        // phrases below cannot match a citation anyway — `io-harness-0.86.1/src/…`
         // contains none of them — so the guard was buying a false positive in one
         // gate to prevent one that could not happen in this one.
         for lead in DATING {

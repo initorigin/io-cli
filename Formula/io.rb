@@ -7,8 +7,8 @@
 # io links io-harness, which carries rusqlite with a bundled C SQLite: building
 # from source here would put a C toolchain and several minutes between
 # `brew install` and a working binary, and it would hand the user bytes nobody
-# published a checksum for. The three archives named below are the ones the
-# release workflow built, and every sha256 is copied out of that Release's
+# published a checksum for. The archives named below are the ones the release
+# workflow built for macOS and Linux, and every sha256 is copied out of that Release's
 # SHA256SUMS by `scripts/update-tap.sh`. Never by hand — a hand-copied digest is
 # how a formula comes to name an artifact that does not exist.
 #
@@ -42,8 +42,10 @@ class Io < Formula
     end
   end
 
-  # Linux is musl and x86_64 only, exactly as the release matrix is. There is no
-  # Linux arm64 artifact to point at, so that machine gets Homebrew's own refusal
+  # Linux is musl only, exactly as the release matrix is: one static binary per
+  # architecture. The arm64 branch first exists in the Release after 0.41.0, and
+  # `scripts/update-tap.sh` writes it the first time it runs over a Release that
+  # carries that artifact — until then this machine gets Homebrew's own refusal
   # rather than a URL that 404s halfway through an install.
   on_linux do
     if Hardware::CPU.intel?

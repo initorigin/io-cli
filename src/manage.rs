@@ -1501,7 +1501,7 @@ fn mcp_add(args: &Args) -> Result<McpVerb, String> {
 
     // Built by hand rather than through `McpServer::stdio(…).with_args(…)`,
     // because `env` and `headers` have no builder at all and `with_args` is a
-    // silent no-op on an HTTP server (`io-harness-0.86.0/src/mcp.rs:441-449`: the
+    // silent no-op on an HTTP server (`io-harness-0.86.1/src/mcp.rs:441-449`: the
     // body writes only into the `Stdio` arm) — a constructor chain here would drop
     // the arguments of half the servers it was handed and say nothing.
     // Asked of the harness rather than written as literals, the way `servers::add`
