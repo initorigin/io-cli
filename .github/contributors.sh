@@ -121,7 +121,12 @@ thank() {
     n=$(jq -r .number <<< "$item")
     login=$(jq -r .login <<< "$item")
     kind=$(jq -r .kind <<< "$item")
-    if gh api --paginate "repos/$repo/issues/$n/comments" --jq '.[].body' | grep -qF "$marker"; then
+    # Read whole before searching: `grep -q` exits at the first match, and under
+    # pipefail the SIGPIPE that leaves a later page unread would read as "not
+    # found" and post this release's comment a second time.
+    local comments
+    comments=$(gh api --paginate "repos/$repo/issues/$n/comments" --jq '.[].body')
+    if grep -qF "$marker" <<< "$comments"; then
       echo "#$n: already thanked for $tag"
       continue
     fi

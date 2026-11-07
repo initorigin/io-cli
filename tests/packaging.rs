@@ -505,22 +505,9 @@ fn f4_the_generator_is_idempotent_and_writes_only_those_two_files() {
         .into_iter()
         .chain(digests(&manifest))
         .collect();
-    // Every row the staged files already carried a url for. The generator moves
-    // urls and digests; it adds no platform block, so a target newer than the
-    // formula's declared Release (see `FIRST_RELEASED`) is written by hand in the
-    // tap pull request that first names it, and F1 holds the formula to it from
-    // then on.
-    let staged = format!(
-        "{}{}",
-        String::from_utf8_lossy(&before[FORMULA]),
-        String::from_utf8_lossy(&before[MANIFEST]),
-    );
-    let fixtured: BTreeSet<String> = matrix()
-        .iter()
-        .enumerate()
-        .filter(|(_, (target, _))| staged.contains(target.as_str()))
-        .map(|(row, _)| fixture_digest(row))
-        .collect();
+    // Every row, the Linux arm64 one included: a formula from before 0.42.0 has
+    // no branch for it, and the generator is what writes one in.
+    let fixtured: BTreeSet<String> = (0..matrix().len()).map(fixture_digest).collect();
     assert_eq!(
         written, fixtured,
         "the generator did not write the fixture's digests into both files",

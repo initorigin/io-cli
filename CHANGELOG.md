@@ -23,15 +23,16 @@ other platform.
   now resolves to the new artifact instead of the refusal "there is no Linux arm64
   build yet". It is verified against `SHA256SUMS` before it is unpacked, like every
   other artifact.
-- **The Homebrew tap serves it.** The formula's Linux block gains an arm64 branch
-  in the tap update that follows this Release, and `scripts/update-tap.sh` now
-  requires all five digests before it writes anything.
+- **The Homebrew tap serves it.** `scripts/update-tap.sh` writes an arm64 branch
+  into the formula's Linux block the first time it runs over a Release that has
+  the artifact — the tap update that follows this one — and now requires all
+  five digests before it writes anything.
 - **A dry run of the release workflow.** `gh workflow run release.yml -f
   version=X.Y.Z -f dry_run=true` builds, smokes and checksums every target and
   stops before creating a Release, so a change to the matrix is proved before a
   tag, which cannot be deleted, exists.
 - **Contributors are credited in every release.** `.github/contributors.sh` prints
-  the section that ends these notes, and after a tag's Release is published the
+  the Contributors section of these notes, and after a tag's Release is published the
   workflow comments on each outside contributor's pull request and issue, once.
 
 ### Contributors
