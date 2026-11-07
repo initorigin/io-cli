@@ -14,6 +14,11 @@ on:
         description: "Version to release, without the leading v (e.g. 0.1.0). Must equal Cargo.toml's version."
         required: true
         type: string
+      dry_run:
+        description: "Build, smoke and checksum every target, then stop: no Release, no tag."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,7 +33,7 @@ env:
 
 jobs:
   # Cheap and first: a tag that does not match the manifest would cut a Release
-  # labelled with a version it was not built from, and four cross-compiles is an
+  # labelled with a version it was not built from, and five cross-compiles is an
   # expensive way to find that out.
   checks:
     runs-on: ubuntu-latest
@@ -60,7 +65,7 @@ jobs:
           fi
           echo "number=$version" >> "$GITHUB_OUTPUT"
 
-  # Four artifacts. musl for Linux deliberately: one static binary that runs on
+  # Five artifacts. musl for Linux deliberately: one static binary that runs on
   # any distribution beats two glibc builds and a support question about which
   # one a user needs.
   build:
@@ -68,7 +73,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
-      # One target failing must not hide the state of the other three.
+      # One target failing must not hide the state of the other four.
       fail-fast: false
       matrix:
         include:
@@ -80,6 +85,11 @@ jobs:
             archive: tar.gz
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            archive: tar.gz
+          # Built on an arm64 runner rather than cross-compiled, so the smoke
+          # below runs the binary on the architecture it ships for.
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
             archive: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -99,12 +109,18 @@ jobs:
       # dependency's build script, which reads like a toolchain bug and is not
       # one. This is the row most likely to break and the reason it was proved
       # before the release branch depended on it.
-      - if: matrix.target == 'x86_64-unknown-linux-musl'
+      # Both Linux rows build on a runner of their own architecture, so the
+      # distribution's musl-gcc is the right compiler for each.
+      - if: endsWith(matrix.target, '-linux-musl')
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y musl-tools
-          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          lower=$(echo "$TARGET" | tr '-' '_')
+          upper=$(echo "$lower" | tr '[:lower:]' '[:upper:]')
+          echo "CC_${lower}=musl-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
 
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -172,8 +188,8 @@ jobs:
           cd dist
           sha256sum ./*.tar.gz ./*.zip | sed 's|\./||' > SHA256SUMS
           cat SHA256SUMS
-          test "$(grep -c . SHA256SUMS)" -eq 4 || {
-            echo "::error::expected four artifacts, got $(grep -c . SHA256SUMS)"
+          test "$(grep -c . SHA256SUMS)" -eq 5 || {
+            echo "::error::expected five artifacts, got $(grep -c . SHA256SUMS)"
             exit 1
           }
 
@@ -234,7 +250,10 @@ jobs:
 
       # Release titles are the bare form this line of repositories uses:
       # "io-cli 0.1.0".
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+      # A dry run stops here: everything above has been built and checked, and
+      # nothing below it can be undone once a tag exists.
+      - if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: v${{ needs.checks.outputs.version }}
           name: io-cli ${{ needs.checks.outputs.version }}
@@ -244,6 +263,7 @@ jobs:
           fail_on_unmatched_files: true
 
       - name: What is left for a human
+        if: ${{ !inputs.dry_run }}
         env:
           VERSION: ${{ needs.checks.outputs.version }}
         run: |
@@ -252,3 +272,29 @@ jobs:
           echo "::notice::  2. run install.ps1 on a clean Windows machine"
           echo "::notice::  3. in each case run 'io --version' in a NEW shell"
           echo "::notice::There is no registry publish. The Release is the whole channel."
+
+  # Every outside contributor thanked where they will see it: one comment on
+  # each of their pull requests in the release, and on each issue of theirs a
+  # pull request in it closed, naming the Release (.github/contributors.sh thank,
+  # which skips anything already thanked for this tag). Its own job, so the one
+  # token that can comment holds nothing else. Tag pushes only: a dispatch has
+  # no tag to compare against the previous one.
+  thank:
+    needs: [release]
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Thank contributors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/contributors.sh thank "$GITHUB_REF_NAME"
