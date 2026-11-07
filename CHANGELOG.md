@@ -35,6 +35,13 @@ other platform.
   the Contributors section of these notes, and after a tag's Release is published the
   workflow comments on each outside contributor's pull request and issue, once.
 
+### Changed
+
+- **io-harness 0.86.1.** Its seccomp filter did not compile for
+  `aarch64-unknown-linux-musl`, which the release workflow's dry run found while
+  building the new artifact. 0.86.1 fixes that and changes nothing else this
+  product uses.
+
 ### Contributors
 
 Thank you to everyone outside the core team whose work is in this release.

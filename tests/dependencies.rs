@@ -2452,7 +2452,7 @@ fn f1_the_session_door_spells_a_config_value_through_the_one_speller() {
 ///
 /// **Deliberately narrow.** It looks for a version behind a word that *dates*
 /// something (`are 0.`, `since 0.`, `in 0.`), not for any number with dots: a
-/// citation like `io-harness-0.86.0/src/…` is a reference rather than a claim
+/// citation like `io-harness-0.86.1/src/…` is a reference rather than a claim
 /// about this binary, and a version compared at runtime is data rather than prose.
 ///
 /// Sabotage: put `are 0.5.0.` back into `src/term.rs` and this names the file.
@@ -2488,7 +2488,7 @@ fn n7_no_operator_facing_string_names_a_release_number() {
         // one, and it had to go for a reason worth keeping: spelling the prefix out
         // put a version string into THIS file, which `tests/docs.rs`'s citation
         // gate then read as a citation of an io-harness nobody pins. The narrowed
-        // phrases below cannot match a citation anyway — `io-harness-0.86.0/src/…`
+        // phrases below cannot match a citation anyway — `io-harness-0.86.1/src/…`
         // contains none of them — so the guard was buying a false positive in one
         // gate to prevent one that could not happen in this one.
         for lead in DATING {
